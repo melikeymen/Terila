@@ -1,0 +1,48 @@
+﻿{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "installDir": "${sourceDir}/out/install/${presetName}",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "cl.exe",
+        "CMAKE_CXX_COMPILER": "cl.exe",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "x64-debug",
+      "displayName": "x64 Debug — hızlı derleme, tam debug",
+      "inherits": "windows-base",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "$env{VSINSTALLDIR}Common7/IDE/CommonExtensions/Microsoft/CMake/cmake/Microsoft/SegmentHeap.cmake",
+        "CMAKE_CXX_FLAGS_DEBUG": "/MP /utf-8 /Z7 /Od /RTC1"
+      }
+    },
+    {
+      "name": "x64-release",
+      "displayName": "x64 Release — max çalışma hızı",
+      "inherits": "x64-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "$env{VSINSTALLDIR}Common7/IDE/CommonExtensions/Microsoft/CMake/cmake/Microsoft/SegmentHeap.cmake",
+        "CMAKE_CXX_FLAGS_RELEASE": "/MP /utf-8 /O2 /arch:AVX2",
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE": "ON",
+        "CMAKE_EXE_LINKER_FLAGS_RELEASE": "/OPT:REF /OPT:ICF /INCREMENTAL:NO"
+      }
+    }
+  ]
+}

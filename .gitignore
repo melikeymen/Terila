@@ -1,0 +1,76 @@
+# Build outputs
+out/
+build/
+bin/
+lib/
+_deps/
+
+# Visual Studio user-specific files
+.vs/
+*.user
+*.suo
+*.sln.docstates
+*.VC.db
+*.VC.VC.opendb
+
+# Compiler-generated files
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.idb
+*.exp
+*.lib
+*.dll
+*.so
+*.dylib
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CMakeUserPresets.json
+CTestTestfile.cmake
+Testing/
+
+# Precompiled headers
+*.ipch
+*.pch
+*.gch
+
+# Debug/Release artifacts
+Debug/
+Release/
+x64/
+x86/
+x64-debug/
+x64-release/
+x86-debug/
+x86-release/
+
+# Logs and databases
+*.log
+*.tlog
+*.sqlite
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# IDE-specific
+*.code-workspace
+.vscode/
+.idea/
+
+# GTest FetchContent cache (re-downloaded automatically)
+googletest-src/
+googletest-build/
+googletest-subbuild/
