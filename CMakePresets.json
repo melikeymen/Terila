@@ -20,7 +20,7 @@
     },
     {
       "name": "x64-debug",
-      "displayName": "x64 Debug — hızlı derleme, tam debug",
+      "displayName": "x64 Debug — fast build, full debug info",
       "inherits": "windows-base",
       "architecture": {
         "value": "x64",
@@ -34,7 +34,7 @@
     },
     {
       "name": "x64-release",
-      "displayName": "x64 Release — max çalışma hızı",
+      "displayName": "x64 Release — max runtime performance",
       "inherits": "x64-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
