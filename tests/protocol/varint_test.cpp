@@ -46,3 +46,11 @@ TEST(VarIntTest, StopsAtFirstVarInt) {
     EXPECT_EQ(result->consumed, 1);
 
 }
+
+TEST(VarIntTest, EncodesNegativeAsFiveBytes) {
+    std::vector<std::uint8_t> buffer;
+    terila::protocol::write_varint(buffer, -1);
+    EXPECT_EQ(buffer.size(), 5);
+    EXPECT_EQ(buffer[0], 0xFF);
+    EXPECT_EQ(buffer[4], 0x0F);
+}
