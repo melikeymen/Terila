@@ -1,15 +1,25 @@
-﻿# CMakeList.txt: Üst düzey CMake proje dosyası, genel yapılandırma gerçekleştirin
-# ve alt projeleri buraya ekleyin.
-#
-cmake_minimum_required (VERSION 3.10)
+﻿cmake_minimum_required(VERSION 3.20)
+project(terila LANGUAGES CXX)
 
-# Destekleniyorsa MSVC derleyicileri için Çalışırken Yeniden Yükleme aracını etkinleştirin.
-if (POLICY CMP0141)
-  cmake_policy(SET CMP0141 NEW)
-  set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<IF:$<AND:$<C_COMPILER_ID:MSVC>,$<CXX_COMPILER_ID:MSVC>>,$<$<CONFIG:Debug,RelWithDebInfo>:EditAndContinue>,$<$<CONFIG:Debug,RelWithDebInfo>:ProgramDatabase>>")
-endif()
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-project ("terila")
 
-# Alt projeleri ekleyin.
-add_subdirectory ("terila")
+add_executable(terila "src/main.cpp")
+target_include_directories(terila PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
+# Google Test
+include(FetchContent)
+FetchContent_Declare(
+  googletest
+  GIT_REPOSITORY https://github.com/google/googletest.git
+  GIT_TAG        v1.17.0
+)
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(googletest)
+
+# VarInt tests
+add_executable(varint_test "tests/protocol/varint_test.cpp")
+target_include_directories(varint_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(varint_test PRIVATE GTest::gtest_main)
