@@ -19,7 +19,11 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
-# VarInt tests
-add_executable(varint_test "tests/protocol/varint_test.cpp")
-target_include_directories(varint_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(varint_test PRIVATE GTest::gtest_main)
+
+# All tests in a single executable
+add_executable(tests
+    "tests/protocol/varint_test.cpp"
+    "tests/protocol/string_test.cpp"
+)
+target_include_directories(tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(tests PRIVATE GTest::gtest_main)

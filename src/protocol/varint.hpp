@@ -10,7 +10,7 @@ namespace terila::protocol {
 //		Minecraft VarInt encoding: 32-bit signed integer, LEB128
 //		Negative values ​​always occupy exactly 5 bytes of space. 
 
-	void write_varint(std::vector<std::uint8_t>& output, std::int32_t value) {
+	inline void write_varint(std::vector<std::uint8_t>& output, std::int32_t value) {
 
 		std::uint32_t unsigned_value = static_cast<std::uint32_t>(value);
 
@@ -36,7 +36,7 @@ namespace terila::protocol {
 		std::size_t   consumed;
 	};
 
-	std::optional<VarIntResult> read_varint(const std::uint8_t* data, std::size_t length) {
+	inline std::optional<VarIntResult> read_varint(const std::uint8_t* data, std::size_t length) {
 
 		if (data == nullptr || length == 0) {
 			return std::nullopt;
