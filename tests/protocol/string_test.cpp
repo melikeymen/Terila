@@ -1,4 +1,4 @@
-#include <gtest/gtest.h>
+﻿#include <gtest/gtest.h>
 #include "protocol/string.hpp"
 
 TEST(StringTest, WritesShortAscii) {
