@@ -9,6 +9,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_executable(terila "src/main.cpp")
 target_include_directories(terila PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
+target_sources(terila PRIVATE
+    "src/protocol/varint.hpp"
+    "src/protocol/string.hpp"
+    "src/protocol/packet.hpp"
+)
+
 # Google Test
 include(FetchContent)
 FetchContent_Declare(
@@ -19,11 +25,13 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
-
-# All tests in a single executable
+# tests
 add_executable(tests
     "tests/protocol/varint_test.cpp"
     "tests/protocol/string_test.cpp"
 )
-target_include_directories(tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(tests PRIVATE 
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${googletest_SOURCE_DIR}/googletest/include"
+)
 target_link_libraries(tests PRIVATE GTest::gtest_main)
