@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <optional>
 #include <vector>
+#include <bit>
+#include <algorithm>
 
 namespace terila::protocol {
 
@@ -69,4 +71,12 @@ namespace terila::protocol {
 		return std::nullopt;
 	}
 
+	inline std::size_t varint_size(std::int32_t value) {
+		// Cast to unsigned: bit_width on negative int32_t is undefined
+		std::uint32_t unsigned_value = static_cast<std::uint32_t>(value);
+		int bits = std::bit_width(unsigned_value);
+		// Integer ceiling of bits / 7 (each VarInt byte holds 7 data bits)
+		std::size_t size = std::max<std::size_t>(1, (bits + 6) / 7);
+		return size;
+	}
 }
