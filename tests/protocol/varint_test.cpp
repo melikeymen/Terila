@@ -54,3 +54,26 @@ TEST(VarIntTest, EncodesNegativeAsFiveBytes) {
     EXPECT_EQ(buffer[0], 0xFF);
     EXPECT_EQ(buffer[4], 0x0F);
 }
+
+TEST(VarIntTest, Size) {
+    EXPECT_EQ(terila::protocol::varint_size(INT32_MIN), 5);
+    EXPECT_EQ(terila::protocol::varint_size(INT32_MAX), 5);
+    EXPECT_EQ(terila::protocol::varint_size(1), 1);
+    EXPECT_EQ(terila::protocol::varint_size(127), 1);
+    EXPECT_EQ(terila::protocol::varint_size(128), 2);
+    EXPECT_EQ(terila::protocol::varint_size(16384), 3);
+    EXPECT_EQ(terila::protocol::varint_size(0), 1);
+    EXPECT_EQ(terila::protocol::varint_size(300), 2);
+    EXPECT_EQ(terila::protocol::varint_size(16383), 2);
+    EXPECT_EQ(terila::protocol::varint_size(-1), 5);
+}
+
+TEST(VarIntTest, SizeMatchesWriteVarint) {
+    const std::int32_t values[] = { 0, 1, 127, 128, 300, 16383, 16384, -1, INT32_MAX, INT32_MIN };
+
+    for (std::int32_t value : values) {
+        std::vector<std::uint8_t> buffer;
+        terila::protocol::write_varint(buffer, value);
+        EXPECT_EQ(terila::protocol::varint_size(value), buffer.size()) << "value: " << value;
+    }
+}
