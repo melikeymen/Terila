@@ -54,7 +54,8 @@ TEST(StringTest, RoundTrip) {
 
         auto result = terila::protocol::read_string(buffer.data(), buffer.size());
         ASSERT_TRUE(result.has_value());
-        EXPECT_EQ(result.value(), value);
+        EXPECT_EQ(result->value, value);
+        EXPECT_EQ(result->consumed, buffer.size());
 
     }
 }

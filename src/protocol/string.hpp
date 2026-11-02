@@ -9,6 +9,11 @@
 
 namespace terila::protocol {
 
+    struct StringResult {
+        std::string value;
+        std::size_t consumed;
+    };
+
     inline bool write_string(std::vector<std::uint8_t>& output, const std::string& value) {
 
         std::size_t byte_length = value.size();
@@ -25,7 +30,7 @@ namespace terila::protocol {
         return true;
     }
 
-    inline std::optional<std::string> read_string(const std::uint8_t* data, std::size_t length) {
+    inline std::optional<StringResult> read_string(const std::uint8_t* data, std::size_t length) {
 
         if (data == nullptr || length == 0) {
             return std::nullopt;
@@ -55,7 +60,7 @@ namespace terila::protocol {
         std::string result(reinterpret_cast<const char*>(data + header_size),
         static_cast<std::size_t>(string_length));
 
-        return result;
+        return StringResult{ result, header_size + string_length };
 
     }
 }
