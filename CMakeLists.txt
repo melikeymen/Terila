@@ -15,6 +15,7 @@ target_sources(terila PRIVATE
     "src/protocol/packet.hpp"
     "src/protocol/handshake.hpp"
     "src/protocol/primitives.hpp"
+    "src/protocol/status.hpp"
 )
 
 # Dependencies
@@ -37,6 +38,8 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nlohmann_json)
 
+target_link_libraries(terila PRIVATE nlohmann_json::nlohmann_json)
+
 # tests
 add_executable(tests
     "tests/protocol/varint_test.cpp"
@@ -44,6 +47,7 @@ add_executable(tests
     "tests/protocol/packet_test.cpp"
     "tests/protocol/handshake_test.cpp"
     "tests/protocol/primitives_test.cpp"
+    "tests/protocol/status_test.cpp"
 )
 target_include_directories(tests PRIVATE 
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
