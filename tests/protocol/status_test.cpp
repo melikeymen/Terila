@@ -43,3 +43,27 @@ TEST(StatusTest, PongRejectsWrongId) {
 
     EXPECT_FALSE(terila::protocol::read_pong(buffer.data(), buffer.size()).has_value());
 }
+
+TEST(StatusTest, StatusResponseRoundTrip) {
+
+    terila::protocol::StatusResponse response;
+    response.version_name = "26.3";
+    response.version_protocol = 777;
+    response.players_max = 20;
+    response.players_online = 0;
+    response.description = "Terila Server";
+    response.favicon = "data:image/png;base64,ABC";
+
+    std::vector<std::uint8_t> buffer;
+
+    EXPECT_TRUE(terila::protocol::write_status_response(buffer, response));
+    auto result = terila::protocol::read_status_response(buffer.data(), buffer.size());
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->version_name, "26.3");
+    EXPECT_EQ(result->version_protocol, 777);
+    EXPECT_EQ(result->players_max, 20);
+    EXPECT_EQ(result->players_online, 0);
+    EXPECT_EQ(result->description, "Terila Server");
+    EXPECT_EQ(result->favicon, "data:image/png;base64,ABC");
+}
