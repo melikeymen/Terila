@@ -43,4 +43,25 @@ namespace terila::protocol {
 
         return true;
     }
+
+    inline void write_ping(std::vector<std::uint8_t>& output, std::int64_t value) {
+        std::vector<std::uint8_t> payload;
+
+        write_int64(payload, value);
+        write_packet(output, 0x01, payload);
+    }
+
+    inline std::optional<std::int64_t> read_ping(const std::uint8_t* data, std::size_t length) {
+        auto result = read_packet(data, length);
+
+        if (!result.has_value()) {
+            return std::nullopt;
+        }
+
+        if (result->id != 0x01) {
+            return std::nullopt;
+        }
+
+        return read_int64(result->payload.data(), result->payload.size());
+    }
 }
