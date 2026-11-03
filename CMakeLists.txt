@@ -14,6 +14,7 @@ target_sources(terila PRIVATE
     "src/protocol/string.hpp"
     "src/protocol/packet.hpp"
     "src/protocol/handshake.hpp"
+    "src/protocol/primitives.hpp"
 )
 
 # Google Test
