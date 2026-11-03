@@ -13,6 +13,7 @@ target_sources(terila PRIVATE
     "src/protocol/varint.hpp"
     "src/protocol/string.hpp"
     "src/protocol/packet.hpp"
+    "src/protocol/handshake.hpp"
 )
 
 # Google Test
