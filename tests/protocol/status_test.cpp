@@ -22,3 +22,24 @@ TEST(StatusTest, PingRejectsWrongId) {
 
     EXPECT_FALSE(terila::protocol::read_ping(buffer.data(), buffer.size()).has_value());
 }
+
+TEST(StatusTest, PongRoundTrip) {
+
+    std::vector<std::uint8_t> buffer;
+
+    terila::protocol::write_pong(buffer, -1);
+    auto result = terila::protocol::read_pong(buffer.data(), buffer.size());
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result.value(), -1);
+}
+
+TEST(StatusTest, PongRejectsWrongId) {
+
+    std::vector<std::uint8_t> buffer;
+
+    std::vector<std::uint8_t> payload = { 0x01, 0x02 };
+    terila::protocol::write_packet(buffer, 0x00, payload);
+
+    EXPECT_FALSE(terila::protocol::read_pong(buffer.data(), buffer.size()).has_value());
+}
