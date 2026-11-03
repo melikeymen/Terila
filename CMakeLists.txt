@@ -31,6 +31,7 @@ add_executable(tests
     "tests/protocol/varint_test.cpp"
     "tests/protocol/string_test.cpp"
     "tests/protocol/packet_test.cpp"
+    "tests/protocol/handshake_test.cpp"
 )
 target_include_directories(tests PRIVATE 
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
