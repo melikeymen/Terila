@@ -16,6 +16,7 @@ target_sources(terila PRIVATE
     "src/protocol/handshake.hpp"
     "src/protocol/primitives.hpp"
     "src/protocol/status.hpp"
+    "src/network/connection.hpp"
 )
 
 # Dependencies
