@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <asio.hpp>
+#include "protocol/login.hpp"
 #include "protocol/packet.hpp"
 #include "protocol/handshake.hpp"
 #include "protocol/status.hpp"
@@ -37,6 +38,7 @@ namespace terila::network {
             Handshake,
             Status,
             Login,
+            Configuration,
             Play
         };
 
@@ -160,6 +162,33 @@ namespace terila::network {
                 break;
 
             case State::Login:
+                if (id == 0x00) {
+                    auto result = terila::protocol::read_login_start(read_accum_.data(), read_accum_.size());
+
+                    if (!result.has_value()) {
+                        return;
+                    }
+
+                    std::array<std::uint8_t, 16> uuid{};
+                    std::array<std::uint8_t, 16> session_id{};
+
+                    std::vector<std::uint8_t> out;
+
+                    if (!terila::protocol::write_login_success(out, result->username, uuid, session_id)) {
+                        std::cerr << "[Connection] write_login_success failed\n";
+                        return;
+                    }
+                    send(out);
+                    state_ = State::Configuration;
+                    std::cout << "[Connection] login success sent for " << result->username << "\n";
+
+
+                }
+
+                break;
+            case State::Configuration:              
+                break;
+
             case State::Play:
                 break;
             }
