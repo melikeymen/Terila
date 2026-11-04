@@ -16,11 +16,11 @@ namespace terila::protocol {
 	};
 
 	inline bool write_packet(std::vector<std::uint8_t>& output, std::int32_t id, const std::vector<std::uint8_t>& payload) {
-		
+
 		if (id < 0) {
 			return false;
 		}
-		
+
 		std::size_t packet_length = varint_size(id) + payload.size();
 
 		// Max packet size: 2 MB (DoS protection)
@@ -42,7 +42,7 @@ namespace terila::protocol {
 		}
 
 		auto packet_length_result = read_varint(data, length);
-		if (!packet_length_result.has_value() || packet_length_result->value > 2 * 1024 * 1024 || packet_length_result->value < 0 ) {
+		if (!packet_length_result.has_value() || packet_length_result->value > 2 * 1024 * 1024 || packet_length_result->value < 0) {
 			return std::nullopt;
 		}
 
@@ -65,10 +65,11 @@ namespace terila::protocol {
 		std::vector<std::uint8_t> payload(
 			data + packet_length_result->consumed + id_result->consumed,
 			data + packet_length_result->consumed + id_result->consumed + payload_size
-		);	
+		);
 
 		auto consumed = packet_length_result->consumed + packet_length_result->value;
 
 		return PacketResult{ id_result->value, payload, consumed };
 	}
+
 }

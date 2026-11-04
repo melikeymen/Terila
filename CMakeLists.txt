@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 
 add_executable(terila "src/main.cpp")
+target_compile_definitions(terila PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_include_directories(terila PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 target_sources(terila PRIVATE
@@ -52,6 +53,8 @@ add_library(terila_asio INTERFACE)
 target_include_directories(terila_asio INTERFACE ${asio_SOURCE_DIR}/asio/include)
 target_compile_definitions(terila_asio INTERFACE ASIO_STANDALONE)
 find_package(Threads REQUIRED)
+find_package(OpenSSL REQUIRED)
+target_link_libraries(terila PRIVATE OpenSSL::Crypto)
 target_link_libraries(terila_asio INTERFACE Threads::Threads)
 
 
