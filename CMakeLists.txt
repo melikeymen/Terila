@@ -38,7 +38,23 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nlohmann_json)
 
-target_link_libraries(terila PRIVATE nlohmann_json::nlohmann_json)
+# Standalone Asio
+FetchContent_Declare(
+  asio
+  GIT_REPOSITORY https://github.com/chriskohlhoff/asio.git
+  GIT_TAG        asio-1-30-2
+  GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(asio)
+
+add_library(terila_asio INTERFACE)
+target_include_directories(terila_asio INTERFACE ${asio_SOURCE_DIR}/asio/include)
+target_compile_definitions(terila_asio INTERFACE ASIO_STANDALONE)
+find_package(Threads REQUIRED)
+target_link_libraries(terila_asio INTERFACE Threads::Threads)
+
+
+target_link_libraries(terila PRIVATE nlohmann_json::nlohmann_json terila_asio)
 
 # tests
 add_executable(tests
@@ -53,4 +69,4 @@ target_include_directories(tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${googletest_SOURCE_DIR}/googletest/include"
 )
-target_link_libraries(tests PRIVATE GTest::gtest_main nlohmann_json::nlohmann_json)
+target_link_libraries(tests PRIVATE GTest::gtest_main nlohmann_json::nlohmann_json terila_asio)
