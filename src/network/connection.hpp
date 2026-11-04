@@ -2,6 +2,8 @@
 
 #include <asio.hpp>
 #include "protocol/packet.hpp"
+#include "protocol/handshake.hpp"
+#include "protocol/status.hpp"
 #include <memory>
 #include <array>
 #include <cstdint>
@@ -90,10 +92,73 @@ namespace terila::network {
 
         void handle_packet(std::int32_t id, const std::vector<std::uint8_t>& payload) {
             switch (state_) {
-            case State::Handshake:
+            case State::Handshake: {
+                auto hs = terila::protocol::read_handshake(read_accum_.data(), read_accum_.size());
+
+                if (!hs.has_value()) {
+                    std::cerr << "[Connection] invalid handshake\n";
+                    return;
+                }
+
+                std::cout << "[Connection] handshake: protocol=" << hs->protocol
+                          << " address=" << hs->address
+                          << " port=" << hs->port
+                          << " next_state=" << hs->next_state << "\n";
+                if (hs->next_state == 1) {
+                    state_ = State::Status;
+                } else if (hs->next_state == 2) {
+                    state_ = State::Login;
+                }
+                else {
+                    std::cerr << "[Connection] invalid next_state: " << hs->next_state << "\n";
+                }
                 break;
+            }
+                
             case State::Status:
+                if (id == 0x00) {
+                    if (!terila::protocol::read_status_request(read_accum_.data(), read_accum_.size())) {
+                        std::cerr << "[Connection] invalid status request\n";
+                        return;
+                    }
+
+                    terila::protocol::StatusResponse resp;
+
+                    resp.version_name = "26.3";
+                    resp.version_protocol = 777;
+                    resp.players_max = 20;
+                    resp.players_online = 0;
+                    resp.description = "Terila Server";
+                    resp.favicon = "";
+
+                    std::vector<std::uint8_t> out;
+                    if (terila::protocol::write_status_response(out, resp)) {
+                        send(out);
+                        std::cout << "[Connection] status response sent\n";
+                        break;
+                    }
+
+
+                }
+                else if (id == 0x01) {
+                    auto ping_value = terila::protocol::read_ping(read_accum_.data(), read_accum_.size());
+                    if (!ping_value.has_value()) {
+                        std::cerr << "[Connection] invalid ping\n";
+                        return;
+                    }
+
+                    std::vector<std::uint8_t> out;
+
+                    terila::protocol::write_pong(out, *ping_value);
+                    send(out);
+                    std::cout << "[Connection] pong sent\n";
+                }
+
+                else {
+                    std::cerr << "[Connection] unknown status packet id: " << id << "\n";
+                }
                 break;
+
             case State::Login:
             case State::Play:
                 break;
