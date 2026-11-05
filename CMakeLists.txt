@@ -19,6 +19,8 @@ target_sources(terila PRIVATE
     "src/protocol/status.hpp"
     "src/network/connection.hpp"
     "src/protocol/login.hpp"
+    "src/data/registry_data.hpp"
+    "src/data/registry_loader.hpp"
 )
 
 # Dependencies

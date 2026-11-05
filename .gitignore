@@ -1,4 +1,4 @@
-# Build outputs
+﻿# Build outputs
 out/
 build/
 bin/
@@ -74,3 +74,7 @@ Thumbs.db
 googletest-src/
 googletest-build/
 googletest-subbuild/
+
+# extractor outputs
+
+input/
