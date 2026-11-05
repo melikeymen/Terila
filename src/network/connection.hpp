@@ -180,12 +180,29 @@ namespace terila::network {
                         return;
                     }
                     send(out);
-                    state_ = State::Configuration;
                     std::cout << "[Connection] login success sent for " << result->username << "\n";
 
 
                 }
 
+                else if (id == 0x03) {
+                    state_ = State::Configuration;
+                    
+                    std::vector<std::uint8_t> payload;
+
+                    terila::protocol::write_varint(payload, 1);
+                    terila::protocol::write_string(payload, "minecraft");
+                    terila::protocol::write_string(payload, "core");
+                    terila::protocol::write_string(payload, "26.3");
+
+                    std::vector<std::uint8_t> out;
+                    terila::protocol::write_packet(out, 0x0F, payload);
+                    send(out);
+
+                    std::cout << "[Connection] select known packs sent\n";
+
+
+                }
                 break;
             case State::Configuration:              
                 break;
