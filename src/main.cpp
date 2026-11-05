@@ -57,7 +57,7 @@ int main() {
 
     auto do_accept = [&](auto&& self) -> void {
         acceptor.async_accept(
-            [&acceptor, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
+            [&acceptor, &data, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
                 if (error) {
                     std::cerr << "[Accept] " << error.message() << "\n";
                     self(self);
@@ -66,12 +66,12 @@ int main() {
 
                 std::cout << "[Accept] new connection\n";
 
-                auto conn = std::make_shared<terila::network::Connection>(std::move(socket));
+                auto conn = std::make_shared<terila::network::Connection>(std::move(socket), data);
                 conn->start();
                 self(self);
             }
         );
-        };
+    };
 
     do_accept(do_accept);
     io.run();

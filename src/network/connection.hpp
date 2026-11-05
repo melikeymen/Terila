@@ -5,6 +5,7 @@
 #include "protocol/packet.hpp"
 #include "protocol/handshake.hpp"
 #include "protocol/status.hpp"
+#include "data/registry_data.hpp"
 #include <memory>
 #include <array>
 #include <cstdint>
@@ -16,8 +17,8 @@ namespace terila::network {
     
     class Connection : public std::enable_shared_from_this<Connection> {
     public:
-        explicit Connection(asio::ip::tcp::socket socket)
-            : socket_(std::move(socket))
+        explicit Connection(asio::ip::tcp::socket socket, const terila::data::RegistryData& data)
+            : socket_(std::move(socket)), data_(data)
         {}
 
         void start() {
@@ -225,6 +226,7 @@ namespace terila::network {
         State state_ = State::Handshake;
         std::deque<std::vector<std::uint8_t>> write_queue_;
         bool writing_ = false;
+        const terila::data::RegistryData& data_;
     };
 
 } // namespace terila::network
