@@ -14,7 +14,7 @@
 #include <iostream>
 
 namespace terila::network {
-    
+
     class Connection : public std::enable_shared_from_this<Connection> {
     public:
         explicit Connection(asio::ip::tcp::socket socket, const terila::data::RegistryData& data)
@@ -24,7 +24,6 @@ namespace terila::network {
         void start() {
             do_read();
         }
-
 
         void send(const std::vector<std::uint8_t>& data) {
             write_queue_.push_back(data);
@@ -61,7 +60,7 @@ namespace terila::network {
 
             socket_.async_read_some(
                 asio::buffer(read_buffer_),
-                [self](const asio::error_code& error, std::size_t bytes) { // callback
+                [self](const asio::error_code& error, std::size_t bytes) {
                     self->handle_read(error, bytes);
                 }
             );
@@ -85,8 +84,8 @@ namespace terila::network {
             }
 
             read_accum_.insert(read_accum_.end(),
-                               read_buffer_.begin(),
-                               read_buffer_.begin() + bytes_transferred);
+                read_buffer_.begin(),
+                read_buffer_.begin() + bytes_transferred);
 
             process_packets();
 
@@ -104,12 +103,13 @@ namespace terila::network {
                 }
 
                 std::cout << "[Connection] handshake: protocol=" << hs->protocol
-                          << " address=" << hs->address
-                          << " port=" << hs->port
-                          << " next_state=" << hs->next_state << "\n";
+                    << " address=" << hs->address
+                    << " port=" << hs->port
+                    << " next_state=" << hs->next_state << "\n";
                 if (hs->next_state == 1) {
                     state_ = State::Status;
-                } else if (hs->next_state == 2) {
+                }
+                else if (hs->next_state == 2) {
                     state_ = State::Login;
                 }
                 else {
@@ -117,7 +117,7 @@ namespace terila::network {
                 }
                 break;
             }
-                
+
             case State::Status:
                 if (id == 0x00) {
                     if (!terila::protocol::read_status_request(read_accum_.data(), read_accum_.size())) {
@@ -140,8 +140,6 @@ namespace terila::network {
                         std::cout << "[Connection] status response sent\n";
                         break;
                     }
-
-
                 }
                 else if (id == 0x01) {
                     auto ping_value = terila::protocol::read_ping(read_accum_.data(), read_accum_.size());
@@ -151,12 +149,10 @@ namespace terila::network {
                     }
 
                     std::vector<std::uint8_t> out;
-
                     terila::protocol::write_pong(out, *ping_value);
                     send(out);
                     std::cout << "[Connection] pong sent\n";
                 }
-
                 else {
                     std::cerr << "[Connection] unknown status packet id: " << id << "\n";
                 }
@@ -181,30 +177,69 @@ namespace terila::network {
                     }
                     send(out);
                     std::cout << "[Connection] login success sent for " << result->username << "\n";
-
-
                 }
-
                 else if (id == 0x03) {
                     state_ = State::Configuration;
-                    
-                    std::vector<std::uint8_t> payload;
 
-                    terila::protocol::write_varint(payload, 1);
-                    terila::protocol::write_string(payload, "minecraft");
-                    terila::protocol::write_string(payload, "core");
-                    terila::protocol::write_string(payload, "26.3");
+                    std::vector<std::uint8_t> features_payload;
+                    terila::protocol::write_varint(features_payload, 1);
+                    terila::protocol::write_string(features_payload, "minecraft:vanilla");
+                    std::vector<std::uint8_t> features_out;
+                    terila::protocol::write_packet(features_out, 0x0D, features_payload);
+                    send(features_out);
+                    std::cout << "[Connection] update enabled features sent\n";
 
-                    std::vector<std::uint8_t> out;
-                    terila::protocol::write_packet(out, 0x0F, payload);
-                    send(out);
+                    std::vector<std::uint8_t> select_payload;
+                    terila::protocol::write_varint(select_payload, 1);
+                    terila::protocol::write_string(select_payload, "minecraft");
+                    terila::protocol::write_string(select_payload, "core");
+                    terila::protocol::write_string(select_payload, "26.3");
 
+                    std::vector<std::uint8_t> select_out;
+                    terila::protocol::write_packet(select_out, 0x0F, select_payload);
+                    send(select_out);
                     std::cout << "[Connection] select known packs sent\n";
-
-
                 }
                 break;
-            case State::Configuration:              
+
+            case State::Configuration:
+                if (id == 0x07) {
+                    int count = 0;
+                    for (const auto& registry_id : data_.datapack_registries) {
+                        auto it = data_.nbt_payloads.find(registry_id);
+                        if (it == data_.nbt_payloads.end()) {
+                            std::cerr << "[Connection] missing payload for " << registry_id << "\n";
+                            continue;
+                        }
+
+                        std::vector<std::uint8_t> out;
+                        if (!terila::protocol::write_packet(out, 0x07, it->second)) {
+                            std::cerr << "[Connection] write_packet FAILED for " << registry_id << "\n";
+                            continue;
+                        }
+                        send(out);
+                        ++count;
+                    }
+                    std::cout << "[Connection] sent " << count << " registry data packets total\n";
+
+                    std::vector<std::uint8_t> tags_out;
+                    if (!terila::protocol::write_packet(tags_out, 0x0E, data_.tag_payload)) {
+                        std::cerr << "[Connection] write_packet FAILED for tags\n";
+                        return;
+                    }
+                    send(tags_out);
+                    std::cout << "[Connection] update tags sent (" << data_.tag_payload.size() << " bytes)\n";
+
+                    std::vector<std::uint8_t> finish_out;
+                    terila::protocol::write_packet(finish_out, 0x03, {});
+                    send(finish_out);
+
+                    std::cout << "[Connection] configuration data sent\n";
+                }
+                else if (id == 0x03) {
+                    state_ = State::Play;
+                    std::cout << "[Connection] client finished configuration\n";
+                }
                 break;
 
             case State::Play:
@@ -227,7 +262,6 @@ namespace terila::network {
                     if (error) {
                         std::cerr << "[Connection] write: " << error.message()
                             << " (" << error.value() << ")\n";
-
                         return;
                     }
 

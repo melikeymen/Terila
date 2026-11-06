@@ -10,6 +10,7 @@ namespace terila::data {
 	struct RegistryData {
 		
 		std::unordered_map<std::string, std::vector<std::uint8_t>> nbt_payloads;
+		std::vector<std::string> datapack_registries;
 		std::vector<std::uint8_t> tag_payload;
 		std::vector<std::uint8_t> recipe_payload;
 		std::vector<std::uint8_t> loot_payload;

@@ -1,8 +1,11 @@
 ﻿#pragma once
 
 #include "data/registry_data.hpp"
+#include "protocol/varint.hpp"
+#include "protocol/string.hpp"
 
 #include <cstdint>
+#include <algorithm>
 #include <string>
 #include <vector>
 #include <fstream>
