@@ -1,4 +1,5 @@
 ﻿#include <asio.hpp>
+#include "log/logger.hpp"
 #include "network/connection.hpp"
 #include "data/registry_data.hpp"
 #include "data/registry_loader.hpp"
@@ -12,6 +13,13 @@
 
 int main() {
 
+    terila::log::Config cfg;
+
+    cfg.min_level = terila::log::Level::Info;
+    terila::log::init(cfg);
+
+    LOG_INFO(Main, "server starting");
+
     terila::data::RegistryData data;
 
     namespace fs = std::filesystem;
@@ -22,7 +30,7 @@ int main() {
     }
 
     if (!fs::exists(base / "input")) {
-        std::cerr << "ERROR: input/ bulunamadi. Baslangic: " << fs::current_path() << "\n";
+        std::cerr << "ERROR: input not found. Start: " << fs::current_path() << "\n";
         return 1;
     }
 
