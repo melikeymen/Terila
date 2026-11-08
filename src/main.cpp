@@ -4,7 +4,6 @@
 #include "data/registry_data.hpp"
 #include "data/registry_loader.hpp"
 #include <nlohmann/json.hpp>
-#include <iostream>
 #include <memory>
 #include <filesystem>
 #include <string>
@@ -14,48 +13,55 @@
 int main() {
 
     terila::log::Config cfg;
-
     cfg.min_level = terila::log::Level::Info;
     terila::log::init(cfg);
 
     LOG_INFO(Main, "server starting");
 
     terila::data::RegistryData data;
-
     namespace fs = std::filesystem;
 
     auto base = fs::current_path();
-    while (!fs::exists(base / "input") && base.has_parent_path()) {
-        base = base.parent_path();
+    while (true) {
+        std::error_code ec;
+        if (fs::exists(base / "input", ec) && !ec) break;
+        auto next = base.parent_path();
+        if (next == base) break;
+        base = next;
     }
 
-    if (!fs::exists(base / "input")) {
-        std::cerr << "ERROR: input not found. Start: " << fs::current_path() << "\n";
-        return 1;
+    std::error_code ec;
+    if (!fs::exists(base / "input", ec) || ec) {
+        LOG_FATAL(Main, "input/ not found. cwd={}, ec={}", fs::current_path().string(), ec.message());
     }
 
     const std::string input_dir = (base / "input").string();
-    std::cout << "Input dir: " << input_dir << "\n";
+    LOG_INFO(Main, "input dir: {}", input_dir);
 
-    for (auto& entry : fs::recursive_directory_iterator(input_dir + "/registries/nbt")) {
-        if (entry.path().extension() != ".nbt") continue;
+    try {
+        for (auto& entry : fs::recursive_directory_iterator(input_dir + "/registries/nbt")) {
+            if (entry.path().extension() != ".nbt") continue;
 
-        auto rel = entry.path().lexically_relative(input_dir + "/registries/nbt");
-        std::string id = rel.generic_string();
-        id = id.substr(0, id.size() - 4);
+            auto rel = entry.path().lexically_relative(input_dir + "/registries/nbt");
+            std::string id = rel.generic_string();
+            id = id.substr(0, id.size() - 4);
 
-        auto slash = id.find('/');
-        if (slash != std::string::npos) id[slash] = ':';
+            auto slash = id.find('/');
+            if (slash != std::string::npos) id[slash] = ':';
 
-        terila::data::load_binary(data.nbt_payloads[id], entry.path().string());
+            terila::data::load_binary(data.nbt_payloads[id], entry.path().string());
+            LOG_TRACE(Registry, "loaded nbt: {} ({} bytes)", id, data.nbt_payloads[id].size());
+        }
+    }
+    catch (const fs::filesystem_error& e) {
+        LOG_FATAL(Registry, "cannot iterate nbt dir: {}", e.what());
     }
 
     terila::data::load_binary(data.tag_payload, input_dir + "/tags/client_tags.bin");
 
     std::ifstream idx_file(input_dir + "/registries/index.json");
     if (!idx_file) {
-        std::cerr << "ERROR: index.json bulunamadi\n";
-        return 1;
+        LOG_FATAL(Registry, "index.json not found: {}", input_dir + "/registries/index.json");
     }
     auto idx = nlohmann::json::parse(idx_file);
 
@@ -65,7 +71,7 @@ int main() {
         }
     }
 
-    std::cout << "Datapack registries: " << data.datapack_registries.size() << "\n";
+    LOG_INFO(Registry, "datapack registries: {}", data.datapack_registries.size());
 
     const std::vector<std::string> vanilla_registries = {
         "minecraft:worldgen/biome",
@@ -113,33 +119,34 @@ int main() {
     }
 
     data.datapack_registries = filtered_regs;
-    std::cout << "Filtered registries: " << data.datapack_registries.size() << "\n";
+    LOG_INFO(Registry, "filtered registries: {}", data.datapack_registries.size());
 
     terila::data::load_binary(data.recipe_payload, input_dir + "/recipes/minecraft.nbt");
     terila::data::load_binary(data.loot_payload, input_dir + "/loot/minecraft.nbt");
     terila::data::load_binary(data.advancement_payload, input_dir + "/advancements/minecraft.nbt");
     terila::data::load_command_tree(data.command_tree_payload, input_dir + "/commands/tree.nbt");
 
-    std::cout << "Loaded " << data.nbt_payloads.size() << " registry payloads\n";
-    std::cout << "Tags (client_tags.bin): " << data.tag_payload.size() << " bytes\n";
-    std::cout << "Recipes: " << data.recipe_payload.size() << " bytes\n";
-    std::cout << "Loot: " << data.loot_payload.size() << " bytes\n";
-    std::cout << "Advancements: " << data.advancement_payload.size() << " bytes\n";
-    std::cout << "Command tree: " << data.command_tree_payload.size() << " bytes\n";
+    LOG_INFO(Registry, "loaded {} registry payloads", data.nbt_payloads.size());
+    LOG_INFO(Registry, "tags: {} bytes", data.tag_payload.size());
+    LOG_INFO(Registry, "recipes: {} bytes", data.recipe_payload.size());
+    LOG_INFO(Registry, "loot: {} bytes", data.loot_payload.size());
+    LOG_INFO(Registry, "advancements: {} bytes", data.advancement_payload.size());
+    LOG_INFO(Registry, "command tree: {} bytes", data.command_tree_payload.size());
 
     asio::io_context io;
     asio::ip::tcp::acceptor acceptor(io, asio::ip::tcp::endpoint(asio::ip::tcp::v4(), 25565));
+    LOG_INFO(Network, "listening on 0.0.0.0:25565");
 
     auto do_accept = [&](auto&& self) -> void {
         acceptor.async_accept(
             [&acceptor, &data, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
                 if (error) {
-                    std::cerr << "[Accept] " << error.message() << "\n";
+                    LOG_ERROR(Network, "accept failed: {} ({})", error.message(), error.value());
                     self(self);
                     return;
                 }
 
-                std::cout << "[Accept] new connection\n";
+                LOG_INFO(Network, "new connection");
 
                 auto conn = std::make_shared<terila::network::Connection>(std::move(socket), data);
                 conn->start();
@@ -151,5 +158,6 @@ int main() {
     do_accept(do_accept);
     io.run();
 
+    terila::log::shutdown();
     return 0;
 }

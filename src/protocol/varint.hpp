@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include "log/logger.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -9,8 +10,8 @@
 
 namespace terila::protocol {
 
-//		Minecraft VarInt encoding: 32-bit signed integer, LEB128
-//		Negative values ​​always occupy exactly 5 bytes of space. 
+	//		Minecraft VarInt encoding: 32-bit signed integer, LEB128
+	//		Negative values ​​always occupy exactly 5 bytes of space. 
 
 	inline void write_varint(std::vector<std::uint8_t>& output, std::int32_t value) {
 
@@ -41,6 +42,7 @@ namespace terila::protocol {
 	inline std::optional<VarIntResult> read_varint(const std::uint8_t* data, std::size_t length) {
 
 		if (data == nullptr || length == 0) {
+			LOG_TRACE(Protocol, "read_varint: null data or zero length");
 			return std::nullopt;
 		}
 
@@ -49,6 +51,7 @@ namespace terila::protocol {
 
 		for (std::size_t index = 0; index < length; ++index) {
 			if (index >= 5) {
+				LOG_WARN(Protocol, "read_varint: exceeds max 5 bytes (protocol violation)");
 				return std::nullopt;
 			}
 
@@ -68,6 +71,7 @@ namespace terila::protocol {
 			shift += 7;
 		}
 
+		LOG_TRACE(Protocol, "read_varint: incomplete (no terminator byte in {} bytes)", length);
 		return std::nullopt;
 	}
 

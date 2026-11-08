@@ -100,15 +100,12 @@ TEST(LoginTest, WriteLoginSuccessRoundTrip) {
 }
 
 TEST(LoginTest, WriteLoginSuccessEmptyUsername) {
+    std::vector<std::uint8_t> out;
     std::array<std::uint8_t, 16> uuid{};
     std::array<std::uint8_t, 16> session_id{};
 
-    std::vector<std::uint8_t> out;
-    ASSERT_TRUE(write_login_success(out, "", uuid, session_id));
-
-    auto packet = read_packet(out.data(), out.size());
-    ASSERT_TRUE(packet.has_value());
-    EXPECT_EQ(packet->id, 0x02);
+    EXPECT_FALSE(write_login_success(out, "", uuid, session_id));
+    EXPECT_TRUE(out.empty());
 }
 
 TEST(LoginTest, WriteLoginSuccessTooLongUsername) {

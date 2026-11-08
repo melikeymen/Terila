@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <asio.hpp>
+#include "log/logger.hpp"
 #include "protocol/login.hpp"
 #include "protocol/packet.hpp"
 #include "protocol/handshake.hpp"
@@ -11,7 +12,6 @@
 #include <cstdint>
 #include <vector>
 #include <deque>
-#include <iostream>
 
 namespace terila::network {
 
@@ -42,6 +42,17 @@ namespace terila::network {
             Play
         };
 
+        static const char* state_name(State s) noexcept {
+            switch (s) {
+            case State::Handshake:     return "Handshake";
+            case State::Status:        return "Status";
+            case State::Login:         return "Login";
+            case State::Configuration: return "Configuration";
+            case State::Play:          return "Play";
+            }
+            return "Unknown";
+        }
+
         void process_packets() {
             while (true) {
                 auto packet = terila::protocol::read_packet(read_accum_.data(), read_accum_.size());
@@ -68,20 +79,21 @@ namespace terila::network {
 
         void handle_read(const asio::error_code& error, std::size_t bytes_transferred) {
             if (error == asio::error::eof) {
-                std::cout << "[Connection] client disconnected (eof)\n";
+                LOG_DEBUG(Network, "client disconnected (eof)");
                 return;
             }
 
             if (error) {
-                std::cerr << "[Connection] read: " << error.message()
-                    << " (" << error.value() << ")\n";
+                LOG_ERROR(Network, "read failed: {} ({})", error.message(), error.value());
                 return;
             }
 
             if (bytes_transferred == 0) {
-                std::cerr << "[Connection] read 0 bytes without error, closing (possible peer half-close)\n";
+                LOG_WARN(Network, "read 0 bytes without error, closing (possible peer half-close)");
                 return;
             }
+
+            LOG_TRACE(Network, "read {} bytes, accum={}", bytes_transferred, read_accum_.size() + bytes_transferred);
 
             read_accum_.insert(read_accum_.end(),
                 read_buffer_.begin(),
@@ -93,27 +105,31 @@ namespace terila::network {
         }
 
         void handle_packet(std::int32_t id, const std::vector<std::uint8_t>& payload) {
+            LOG_TRACE(Network, "packet id=0x{:02X} payload={} bytes in state {}",
+                id, payload.size(), state_name(state_));
+
             switch (state_) {
             case State::Handshake: {
                 auto hs = terila::protocol::read_handshake(read_accum_.data(), read_accum_.size());
 
                 if (!hs.has_value()) {
-                    std::cerr << "[Connection] invalid handshake\n";
+                    LOG_WARN(Network, "invalid handshake packet");
                     return;
                 }
 
-                std::cout << "[Connection] handshake: protocol=" << hs->protocol
-                    << " address=" << hs->address
-                    << " port=" << hs->port
-                    << " next_state=" << hs->next_state << "\n";
+                LOG_INFO(Network, "handshake: protocol={} address={} port={} next_state={}",
+                    hs->protocol, hs->address, hs->port, hs->next_state);
+
                 if (hs->next_state == 1) {
                     state_ = State::Status;
+                    LOG_DEBUG(Network, "state: Handshake → Status");
                 }
                 else if (hs->next_state == 2) {
                     state_ = State::Login;
+                    LOG_DEBUG(Network, "state: Handshake → Login");
                 }
                 else {
-                    std::cerr << "[Connection] invalid next_state: " << hs->next_state << "\n";
+                    LOG_WARN(Network, "invalid next_state={} in handshake", hs->next_state);
                 }
                 break;
             }
@@ -121,7 +137,7 @@ namespace terila::network {
             case State::Status:
                 if (id == 0x00) {
                     if (!terila::protocol::read_status_request(read_accum_.data(), read_accum_.size())) {
-                        std::cerr << "[Connection] invalid status request\n";
+                        LOG_WARN(Network, "invalid status request");
                         return;
                     }
 
@@ -137,24 +153,25 @@ namespace terila::network {
                     std::vector<std::uint8_t> out;
                     if (terila::protocol::write_status_response(out, resp)) {
                         send(out);
-                        std::cout << "[Connection] status response sent\n";
+                        LOG_DEBUG(Network, "status response sent ({} bytes)", out.size());
                         break;
                     }
+                    LOG_WARN(Network, "write_status_response failed");
                 }
                 else if (id == 0x01) {
                     auto ping_value = terila::protocol::read_ping(read_accum_.data(), read_accum_.size());
                     if (!ping_value.has_value()) {
-                        std::cerr << "[Connection] invalid ping\n";
+                        LOG_WARN(Network, "invalid ping packet");
                         return;
                     }
 
                     std::vector<std::uint8_t> out;
                     terila::protocol::write_pong(out, *ping_value);
                     send(out);
-                    std::cout << "[Connection] pong sent\n";
+                    LOG_TRACE(Network, "pong sent, value={}", *ping_value);
                 }
                 else {
-                    std::cerr << "[Connection] unknown status packet id: " << id << "\n";
+                    LOG_WARN(Network, "unknown status packet id=0x{:02X}", id);
                 }
                 break;
 
@@ -163,6 +180,7 @@ namespace terila::network {
                     auto result = terila::protocol::read_login_start(read_accum_.data(), read_accum_.size());
 
                     if (!result.has_value()) {
+                        LOG_WARN(Network, "invalid login start packet");
                         return;
                     }
 
@@ -172,13 +190,14 @@ namespace terila::network {
                     std::vector<std::uint8_t> out;
 
                     if (!terila::protocol::write_login_success(out, result->username, uuid, session_id)) {
-                        std::cerr << "[Connection] write_login_success failed\n";
+                        LOG_ERROR(Network, "write_login_success failed for username={}", result->username);
                         return;
                     }
                     send(out);
-                    std::cout << "[Connection] login success sent for " << result->username << "\n";
+                    LOG_INFO(Network, "login success sent: username={}", result->username);
                 }
                 else if (id == 0x03) {
+                    LOG_DEBUG(Network, "state: Login → Configuration");
                     state_ = State::Configuration;
 
                     std::vector<std::uint8_t> features_payload;
@@ -187,7 +206,7 @@ namespace terila::network {
                     std::vector<std::uint8_t> features_out;
                     terila::protocol::write_packet(features_out, 0x0D, features_payload);
                     send(features_out);
-                    std::cout << "[Connection] update enabled features sent\n";
+                    LOG_DEBUG(Network, "update enabled features sent");
 
                     std::vector<std::uint8_t> select_payload;
                     terila::protocol::write_varint(select_payload, 1);
@@ -198,51 +217,61 @@ namespace terila::network {
                     std::vector<std::uint8_t> select_out;
                     terila::protocol::write_packet(select_out, 0x0F, select_payload);
                     send(select_out);
-                    std::cout << "[Connection] select known packs sent\n";
+                    LOG_DEBUG(Network, "select known packs sent");
+                }
+                else {
+                    LOG_WARN(Network, "unknown login packet id=0x{:02X}", id);
                 }
                 break;
 
             case State::Configuration:
                 if (id == 0x07) {
+                    LOG_DEBUG(Registry, "sending configuration data: {} registries", data_.datapack_registries.size());
+
                     int count = 0;
                     for (const auto& registry_id : data_.datapack_registries) {
                         auto it = data_.nbt_payloads.find(registry_id);
                         if (it == data_.nbt_payloads.end()) {
-                            std::cerr << "[Connection] missing payload for " << registry_id << "\n";
+                            LOG_WARN(Registry, "missing payload for registry: {}", registry_id);
                             continue;
                         }
 
                         std::vector<std::uint8_t> out;
                         if (!terila::protocol::write_packet(out, 0x07, it->second)) {
-                            std::cerr << "[Connection] write_packet FAILED for " << registry_id << "\n";
+                            LOG_ERROR(Registry, "write_packet failed for registry: {}", registry_id);
                             continue;
                         }
                         send(out);
                         ++count;
                     }
-                    std::cout << "[Connection] sent " << count << " registry data packets total\n";
+                    LOG_INFO(Registry, "sent {} registry data packets", count);
 
                     std::vector<std::uint8_t> tags_out;
                     if (!terila::protocol::write_packet(tags_out, 0x0E, data_.tag_payload)) {
-                        std::cerr << "[Connection] write_packet FAILED for tags\n";
+                        LOG_ERROR(Registry, "write_packet failed for tags ({} bytes)", data_.tag_payload.size());
                         return;
                     }
                     send(tags_out);
-                    std::cout << "[Connection] update tags sent (" << data_.tag_payload.size() << " bytes)\n";
+                    LOG_DEBUG(Registry, "update tags sent ({} bytes)", data_.tag_payload.size());
 
                     std::vector<std::uint8_t> finish_out;
                     terila::protocol::write_packet(finish_out, 0x03, {});
                     send(finish_out);
 
-                    std::cout << "[Connection] configuration data sent\n";
+                    LOG_DEBUG(Network, "configuration data sent, awaiting client ack");
                 }
                 else if (id == 0x03) {
+                    LOG_DEBUG(Network, "state: Configuration → Play");
                     state_ = State::Play;
-                    std::cout << "[Connection] client finished configuration\n";
+                    LOG_INFO(Network, "client finished configuration");
+                }
+                else {
+                    LOG_WARN(Network, "unknown configuration packet id=0x{:02X}", id);
                 }
                 break;
 
             case State::Play:
+                LOG_WARN(Network, "unhandled play packet id=0x{:02X} ({} bytes)", id, payload.size());
                 break;
             }
         }
@@ -260,11 +289,11 @@ namespace terila::network {
                 asio::buffer(write_queue_.front()),
                 [self](const asio::error_code& error, std::size_t bytes_transferred) {
                     if (error) {
-                        std::cerr << "[Connection] write: " << error.message()
-                            << " (" << error.value() << ")\n";
+                        LOG_ERROR(Network, "write failed: {} ({})", error.message(), error.value());
                         return;
                     }
 
+                    LOG_TRACE(Network, "wrote {} bytes", bytes_transferred);
                     self->write_queue_.pop_front();
                     self->do_write();
                 }

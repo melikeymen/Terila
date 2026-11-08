@@ -7,7 +7,19 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 
 add_executable(terila "src/main.cpp")
-target_compile_definitions(terila PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+
+if(WIN32)
+    target_compile_definitions(terila PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+
+if(MSVC)
+    target_compile_options(terila PRIVATE /utf-8)
+endif()
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(terila PRIVATE -Wno-character-conversion)
+endif()
+
 target_include_directories(terila PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 target_sources(terila PRIVATE
@@ -59,10 +71,7 @@ add_library(terila_asio INTERFACE)
 target_include_directories(terila_asio INTERFACE ${asio_SOURCE_DIR}/asio/include)
 target_compile_definitions(terila_asio INTERFACE ASIO_STANDALONE)
 find_package(Threads REQUIRED)
-find_package(OpenSSL REQUIRED)
-target_link_libraries(terila PRIVATE OpenSSL::Crypto)
 target_link_libraries(terila_asio INTERFACE Threads::Threads)
-
 
 target_link_libraries(terila PRIVATE nlohmann_json::nlohmann_json terila_asio)
 
@@ -75,9 +84,22 @@ add_executable(tests
     "tests/protocol/primitives_test.cpp"
     "tests/protocol/status_test.cpp"
     "tests/protocol/login_test.cpp"
+    "src/log/logger.cpp"
 )
-target_include_directories(tests PRIVATE 
+
+if(MSVC)
+    target_compile_options(tests PRIVATE /utf-8)
+endif()
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(tests PRIVATE -Wno-character-conversion)
+endif()
+
+target_include_directories(tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${googletest_SOURCE_DIR}/googletest/include"
 )
 target_link_libraries(tests PRIVATE GTest::gtest_main nlohmann_json::nlohmann_json terila_asio)
+
+enable_testing()
+add_test(NAME protocol_tests COMMAND tests)

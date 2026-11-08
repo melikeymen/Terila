@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include "log/logger.hpp"
 #include <vector>
 #include "protocol/varint.hpp"
 #include "protocol/string.hpp"
@@ -19,7 +20,7 @@ namespace terila::protocol {
         std::int32_t      players_max;      // 20
         std::int32_t   players_online;      // 0
         std::string       description;      // "Terila Server"
-        std::string           favicon;      // "data:image/png;base64,..." veya ""
+        std::string           favicon;      // "data:image/png;base64,..." or ""
     };
 
     inline void write_status_request(std::vector<std::uint8_t>& output) {
@@ -34,10 +35,12 @@ namespace terila::protocol {
         }
 
         if (result->id != 0x00) {
+            LOG_WARN(Protocol, "read_status_request: unexpected packet id=0x{:02X} (expected 0x00)", result->id);
             return false;
         }
 
         if (!result->payload.empty()) {
+            LOG_WARN(Protocol, "read_status_request: expected empty payload, got {} bytes", result->payload.size());
             return false;
         }
 
@@ -49,6 +52,8 @@ namespace terila::protocol {
 
         write_int64(payload, value);
         write_packet(output, 0x01, payload);
+
+        LOG_TRACE(Protocol, "write_ping: value={}", value);
     }
 
     inline std::optional<std::int64_t> read_ping(const std::uint8_t* data, std::size_t length) {
@@ -59,33 +64,48 @@ namespace terila::protocol {
         }
 
         if (result->id != 0x01) {
+            LOG_WARN(Protocol, "read_ping: unexpected packet id=0x{:02X} (expected 0x01)", result->id);
             return std::nullopt;
         }
 
-        return read_int64(result->payload.data(), result->payload.size());
+        auto value = read_int64(result->payload.data(), result->payload.size());
+        if (!value.has_value()) {
+            LOG_WARN(Protocol, "read_ping: failed to read int64 (payload={} bytes)", result->payload.size());
+            return std::nullopt;
+        }
+
+        LOG_TRACE(Protocol, "read_ping: value={}", *value);
+        return value;
     }
 
     inline void write_pong(std::vector<std::uint8_t>& output, std::int64_t value) {
-
         std::vector<std::uint8_t> payload;
 
         write_int64(payload, value);
         write_packet(output, 0x01, payload);
+
+        LOG_TRACE(Protocol, "write_pong: value={}", value);
     }
 
     inline std::optional<std::int64_t> read_pong(const std::uint8_t* data, std::size_t length) {
-
         auto result = read_packet(data, length);
-        
+
         if (!result.has_value()) {
             return std::nullopt;
         }
 
         if (result->id != 0x01) {
+            LOG_WARN(Protocol, "read_pong: unexpected packet id=0x{:02X} (expected 0x01)", result->id);
             return std::nullopt;
         }
 
-        return read_int64(result->payload.data(), result->payload.size());
+        auto value = read_int64(result->payload.data(), result->payload.size());
+        if (!value.has_value()) {
+            LOG_WARN(Protocol, "read_pong: failed to read int64 (payload={} bytes)", result->payload.size());
+            return std::nullopt;
+        }
+
+        return value;
     }
 
     inline bool write_status_response(std::vector<std::uint8_t>& output, const StatusResponse& response) {
@@ -105,10 +125,18 @@ namespace terila::protocol {
 
         std::vector<std::uint8_t> payload;
         if (!write_string(payload, json_str)) {
+            LOG_WARN(Protocol, "write_status_response: failed to write json string ({} bytes)", json_str.size());
             return false;
         }
 
-        return write_packet(output, 0x00, payload);
+        if (!write_packet(output, 0x00, payload)) {
+            LOG_WARN(Protocol, "write_status_response: failed to write packet");
+            return false;
+        }
+
+        LOG_DEBUG(Protocol, "write_status_response: {} players online, json={} bytes",
+            response.players_online, json_str.size());
+        return true;
     }
 
     inline std::optional<StatusResponse> read_status_response(const std::uint8_t* data, std::size_t length) {
@@ -120,11 +148,14 @@ namespace terila::protocol {
         }
 
         if (packet->id != 0x00) {
+            LOG_WARN(Protocol, "read_status_response: unexpected packet id=0x{:02X} (expected 0x00)", packet->id);
             return std::nullopt;
         }
 
         auto json_result = read_string(packet->payload.data(), packet->payload.size());
         if (!json_result.has_value()) {
+            LOG_WARN(Protocol, "read_status_response: failed to read json string (payload={} bytes)",
+                packet->payload.size());
             return std::nullopt;
         }
 
@@ -147,7 +178,8 @@ namespace terila::protocol {
 
             return response;
         }
-        catch (const nlohmann::json::exception&) {
+        catch (const nlohmann::json::exception& e) {
+            LOG_WARN(Protocol, "read_status_response: json parse failed: {}", e.what());
             return std::nullopt;
         }
     }

@@ -33,6 +33,9 @@ namespace terila::log {
 
         void enable_windows_ansi() {
 #ifdef _WIN32
+
+            SetConsoleOutputCP(CP_UTF8);
+            SetConsoleCP(CP_UTF8);
             HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
             if (h == INVALID_HANDLE_VALUE) return;
             DWORD mode = 0;
@@ -65,21 +68,26 @@ namespace terila::log {
             auto epoch_ms = duration_cast<milliseconds>(epoch);
             auto ms_part = epoch_ms % 1000;
 
+            auto tp_sec = time_point_cast<seconds>(now);
+            auto tp_ms = time_point_cast<milliseconds>(now);
+            auto tp_us = time_point_cast<microseconds>(now);
+            auto tp_ns = time_point_cast<nanoseconds>(now);
+
             switch (fmt) {
             case TimestampFormat::Seconds:
-                return std::format("{:%H:%M:%S}", now);
+                return std::format("{:%H:%M:%S}", tp_sec);
             case TimestampFormat::Millis:
-                return std::format("{:%H:%M:%S}.{:03}", now, ms_part.count());
+                return std::format("{:%H:%M:%S}.{:03}", tp_sec, ms_part.count());
             case TimestampFormat::Micros: {
                 auto us_part = duration_cast<microseconds>(epoch) % 1000000;
-                return std::format("{:%H:%M:%S}.{:06}", now, us_part.count());
+                return std::format("{:%H:%M:%S}.{:06}", tp_sec, us_part.count());
             }
             case TimestampFormat::Nanos: {
                 auto ns_part = duration_cast<nanoseconds>(epoch) % 1000000000;
-                return std::format("{:%H:%M:%S}.{:09}", now, ns_part.count());
+                return std::format("{:%H:%M:%S}.{:09}", tp_sec, ns_part.count());
             }
             case TimestampFormat::Date:
-                return std::format("{:%Y-%m-%d %H:%M:%S}.{:03}", now, ms_part.count());
+                return std::format("{:%Y-%m-%d %H:%M:%S}.{:03}", tp_sec, ms_part.count());
             case TimestampFormat::Unix:
                 return std::format("{}.{:03}", epoch_ms.count() / 1000, epoch_ms.count() % 1000);
             case TimestampFormat::None:
@@ -156,24 +164,29 @@ namespace terila::log {
         std::string ts = format_timestamp(g_timestamp);
         bool color = g_color.load();
 
+        std::string level_part;
+        level_part += '[';
+        level_part += level_name(lvl);
+        level_part += "] ";
+
         std::string line;
         line.reserve(ts.size() + msg.size() + 64);
-
-        line += '[';
-        line += ts;
-        line += "] [";
-        line += level_name(lvl);
-        line += "] [";
-        line += scope_name(sc);
-        line += "] ";
+        line += '[';  line += ts;                  line += "] ";
+        line += level_part;
+        line += '[';  line += scope_name(sc);      line += "] ";
         line += msg;
         line += '\n';
 
         std::string console_line;
+        console_line.reserve(line.size() + 16);
         if (color) {
+            console_line += '[';  console_line += ts;  console_line += "] ";
             console_line += level_color(lvl);
-            console_line += line;
+            console_line += level_part;
             console_line += "\033[0m";
+            console_line += '[';  console_line += scope_name(sc);  console_line += "] ";
+            console_line += msg;
+            console_line += '\n';
         }
         else {
             console_line = line;
@@ -188,8 +201,7 @@ namespace terila::log {
             g_file.flush();
         }
 
-        if (lvl >= g_exit_on_level.load() && lvl >= Level::Fatal
-            || (lvl >= Level::Critical && g_exit_on_level.load() <= Level::Critical)) {
+        if (lvl >= g_exit_on_level.load()) {
             if (g_file.is_open()) g_file.flush();
             std::fflush(stdout);
             std::exit(7);

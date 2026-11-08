@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include "log/logger.hpp"
 #include <vector>
 #include <cstdint>
 #include <optional>
@@ -14,6 +15,7 @@ namespace terila::protocol {
 
 	inline std::optional<std::uint16_t> read_uint16(const std::uint8_t* data, std::size_t length) {
 		if (data == nullptr || length < 2) {
+			LOG_TRACE(Protocol, "read_uint16: insufficient data (length={})", length);
 			return std::nullopt;
 		}
 		auto high = data[0];
@@ -31,6 +33,7 @@ namespace terila::protocol {
 
 	inline std::optional<std::int64_t> read_int64(const std::uint8_t* data, std::size_t length) {
 		if (data == nullptr || length < 8) {
+			LOG_TRACE(Protocol, "read_int64: insufficient data (length={})", length);
 			return std::nullopt;
 		}
 		uint64_t value = 0;
@@ -40,7 +43,6 @@ namespace terila::protocol {
 		}
 
 		return static_cast<int64_t>(value);
-
 	}
 
 }
