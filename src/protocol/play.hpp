@@ -4,154 +4,119 @@
 #include "protocol/varint.hpp"
 #include "protocol/string.hpp"
 #include "protocol/packet.hpp"
+#include "protocol/packet_ids.hpp"
 #include <vector>
 #include <cstdint>
 #include <string>
 #include <cstring>
 
 
-
 namespace terila::protocol {
 
     inline bool write_login_play(std::vector<std::uint8_t>& output,
         std::int32_t entity_id, bool hardcore,
-        std::uint8_t gamemode, const std::string& dimension) {
-
-        // currently some data is static
-
+        std::uint8_t gamemode, const std::string& dimension)
+    {
         std::vector<std::uint8_t> payload;
 
-        // Entity ID — unique per player, assigned by server (used in most play packets)
-        write_varint(payload, entity_id);
+        // playerId — 4-byte int (NOT VarInt)
+        payload.push_back(static_cast<std::uint8_t>((entity_id >> 24) & 0xFF));
+        payload.push_back(static_cast<std::uint8_t>((entity_id >> 16) & 0xFF));
+        payload.push_back(static_cast<std::uint8_t>((entity_id >> 8) & 0xFF));
+        payload.push_back(static_cast<std::uint8_t>(entity_id & 0xFF));
 
-        // Is Hardcore — if true, hearts show as hardcore texture
+        // hardcore
         payload.push_back(hardcore ? 1 : 0);
 
-        // Dimension Names — array of all dimensions the client knows about
-        // Count (VarInt): how many dimensions follow
-        write_varint(payload, 1);
-        // First (and only) dimension name
-        write_string(payload, dimension);
+        // levels — 3 vanilla dimensions (client expects all)
+        write_varint(payload, 3);
+        write_string(payload, "minecraft:overworld");
+        write_string(payload, "minecraft:the_nether");
+        write_string(payload, "minecraft:the_end");
 
-        // Max Players — shown in the tab list (informational, not enforced here)
+        // maxPlayers
         write_varint(payload, 20);
 
-        // View Distance — how many chunks the client renders around itself
+        // chunkRadius
         write_varint(payload, 10);
 
-        // Simulation Distance — how far entities/ticks are simulated
+        // simulationDistance
         write_varint(payload, 10);
 
-        // Reduced Debug Info — if true, F3 screen shows less info (anti-cheat)
+        // reducedDebugInfo
         payload.push_back(0);
 
-        // Enable Respawn Screen — if true, death shows "Respawn" button
+        // showDeathScreen
         payload.push_back(1);
 
-        // Do Limited Crafting — if true, crafting recipes are limited (1.20.2+)
+        // doLimitedCrafting
         payload.push_back(0);
 
-        // Dimension Type — ID into `minecraft:dimension_type` registry
-        // 0 = overworld (registry index, not the dimension name)
-        write_varint(payload, 0);
+        // commonPlayerSpawnInfo
+        write_varint(payload, 0);              // dimensionType (registry index)
+        write_string(payload, dimension);      // dimension name
+        payload.insert(payload.end(), 8, 0);   // seed (long)
+        payload.push_back(gamemode);           // gameType (byte)
+        payload.push_back(0);                  // previousGameType (byte)
+        payload.push_back(0);                  // isDebug
+        payload.push_back(0);                  // isFlat
+        payload.push_back(0);                  // hasDeathLocation
+        write_varint(payload, 0);              // portalCooldown
+        write_varint(payload, 63);             // seaLevel
 
-        // Dimension Name — used for respawn; must match a name in Dimension Names above
-        write_string(payload, dimension);
-
-        // Hashed Seed — 8 bytes (Long); hash of world seed for client-side features
-        // (biome blending, structure locating). 0 is safe for now.
-        payload.insert(payload.end(), 8, 0);
-
-        // Game Mode — 0=survival, 1=creative, 2=adventure, 3=spectator
-        payload.push_back(gamemode);
-
-        // Previous Game Mode — 0xFF means -1 (no previous; first join)
-        payload.push_back(0xFF);
-
-        // Is Debug World — true for the flat debug world (all block states)
+        // onlineMode
         payload.push_back(0);
 
-        // Is Flat World — true if the world was generated flat
+        // enforcesSecureChat
         payload.push_back(0);
 
-        // Has Death Location — if false, no extra fields follow
-        // (if true: dimension name + 8-byte position would follow)
-        payload.push_back(0);
-
-        // Portal Cooldown — ticks until player can use a portal again
-        write_varint(payload, 0);
-
-        // Sea Level — Y coordinate of sea level (63 overworld, -63 nether/end)
-        // Used for ambient/fog rendering; added in 1.21.2
-        write_varint(payload, 63);
-
-        if (!write_packet(output, 0x2B, payload)) {
+        if (!write_packet(output, packet_ids().play_login, payload)) {
             LOG_WARN(Protocol, "write_login_play: failed to write packet");
             return false;
         }
 
         LOG_DEBUG(Protocol, "write_login_play: entity_id={} dimension={}", entity_id, dimension);
         return true;
-
     }
 
-    // Set Center Chunk (0x52) — client keeps chunks around this point loaded
-    inline bool write_set_center_chunk(std::vector<std::uint8_t>& output,
-        std::int32_t chunk_x, std::int32_t chunk_z)
-    {
-        std::vector<std::uint8_t> payload;
-
-        // Chunk X — 16-block units (chunk coordinate), not blocks
-        write_varint(payload, chunk_x);
-        // Chunk Z
-        write_varint(payload, chunk_z);
-
-        if (!write_packet(output, 0x52, payload)) {
-            LOG_WARN(Protocol, "write_set_center_chunk: failed");
-            return false;
-        }
-        LOG_DEBUG(Protocol, "set_center_chunk: ({}, {})", chunk_x, chunk_z);
-        return true;
-    }
-
-    // Player Position (0x40) — absolute teleport
     inline bool write_player_position(std::vector<std::uint8_t>& output,
+        std::int32_t teleport_id,
         double x, double y, double z,
-        float yaw, float pitch, std::int32_t teleport_id)
+        double dx, double dy, double dz,
+        float yaw, float pitch)
     {
         std::vector<std::uint8_t> payload;
 
-        // X, Y, Z — 8 bytes each (big-endian double)
         auto write_double = [](std::vector<std::uint8_t>& out, double v) {
             std::uint64_t bits;
             std::memcpy(&bits, &v, sizeof(bits));
-            for (int i = 7; i >= 0; --i) {
+            for (int i = 7; i >= 0; --i)
                 out.push_back(static_cast<std::uint8_t>((bits >> (i * 8)) & 0xFF));
-            }
             };
-
-        // Yaw, Pitch — 4 bytes each (big-endian float)
         auto write_float = [](std::vector<std::uint8_t>& out, float v) {
             std::uint32_t bits;
             std::memcpy(&bits, &v, sizeof(bits));
-            for (int i = 3; i >= 0; --i) {
+            for (int i = 3; i >= 0; --i)
                 out.push_back(static_cast<std::uint8_t>((bits >> (i * 8)) & 0xFF));
-            }
             };
+
+        write_varint(payload, teleport_id);
 
         write_double(payload, x);
         write_double(payload, y);
         write_double(payload, z);
+        write_double(payload, dx);
+        write_double(payload, dy);
+        write_double(payload, dz);
         write_float(payload, yaw);
         write_float(payload, pitch);
 
-        // Flags — 0 = all absolute (bit per axis: 0x01=X, 0x02=Y, 0x04=Z, etc.)
+        payload.push_back(0);
+        payload.push_back(0);
+        payload.push_back(0);
         payload.push_back(0);
 
-        // Teleport ID — client echoes in Confirm Teleport (0x00) to acknowledge
-        write_varint(payload, teleport_id);
-
-        if (!write_packet(output, 0x40, payload)) {
+        if (!write_packet(output, packet_ids().play_player_position, payload)) {
             LOG_WARN(Protocol, "write_player_position: failed");
             return false;
         }

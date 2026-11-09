@@ -4,6 +4,7 @@
 #include "data/registry_data.hpp"
 #include "data/registry_loader.hpp"
 #include "config/server_config.hpp"
+#include "protocol/packet_ids_loader.hpp"
 #include <nlohmann/json.hpp>
 #include <memory>
 #include <filesystem>
@@ -12,8 +13,6 @@
 #include <algorithm>
 
 int main() {
-
-    terila::data::RegistryData data;
     namespace fs = std::filesystem;
 
     auto base = fs::current_path();
@@ -42,23 +41,23 @@ int main() {
     terila::log::init(cfg);
 
     LOG_INFO(Main, "server starting");
-    LOG_DEBUG(Main, "config: bind={} port={} log_level={}",
-        srv.bind_address, srv.port, srv.log_level);
+    LOG_DEBUG(Main, "config: bind={} port={} log_level={}", srv.bind_address, srv.port, srv.log_level);
 
+    terila::protocol::load_packet_ids((base / "input" / "packets" / "ids.json").string());
+
+    terila::data::RegistryData data;
     const std::string input_dir = (base / "input").string();
+
     LOG_DEBUG(Main, "input dir: {}", input_dir);
 
     try {
         for (auto& entry : fs::recursive_directory_iterator(input_dir + "/registries/nbt")) {
             if (entry.path().extension() != ".nbt") continue;
-
             auto rel = entry.path().lexically_relative(input_dir + "/registries/nbt");
             std::string id = rel.generic_string();
             id = id.substr(0, id.size() - 4);
-
             auto slash = id.find('/');
             if (slash != std::string::npos) id[slash] = ':';
-
             terila::data::load_binary(data.nbt_payloads[id], entry.path().string());
         }
     }
@@ -75,79 +74,62 @@ int main() {
         return 7;
     }
     auto idx = nlohmann::json::parse(idx_file);
-
     for (const auto& entry : idx["index"]) {
         if (entry["source"] == "datapack") {
             data.datapack_registries.push_back(entry["id"].get<std::string>());
         }
     }
 
-    LOG_DEBUG(Registry, "datapack registries: {}", data.datapack_registries.size());
-
     const std::vector<std::string> vanilla_registries = {
-        "minecraft:worldgen/biome",
-        "minecraft:painting_variant",
-        "minecraft:damage_type",
-        "minecraft:banner_pattern",
-        "minecraft:enchantment",
-        "minecraft:jukebox_song",
-        "minecraft:decorated_pot_pattern",
-        "minecraft:chat_type",
-        "minecraft:trim_pattern",
-        "minecraft:trim_material",
-        "minecraft:wolf_variant",
-        "minecraft:wolf_sound_variant",
-        "minecraft:pig_variant",
-        "minecraft:pig_sound_variant",
-        "minecraft:frog_variant",
-        "minecraft:cat_variant",
-        "minecraft:cat_sound_variant",
-        "minecraft:cow_sound_variant",
-        "minecraft:cow_variant",
-        "minecraft:chicken_sound_variant",
-        "minecraft:chicken_variant",
-        "minecraft:zombie_nautilus_variant",
-        "minecraft:sulfur_cube_archetype",
-        "minecraft:dimension_type",
-        "minecraft:test_environment",
-        "minecraft:test_instance",
-        "minecraft:dialog",
-        "minecraft:instrument",
-        "minecraft:world_clock",
-        "minecraft:timeline",
-        "minecraft:block_transformer",
-        "minecraft:worldgen/block_state_provider",
+        "minecraft:worldgen/biome", "minecraft:painting_variant", "minecraft:damage_type",
+        "minecraft:banner_pattern", "minecraft:enchantment", "minecraft:jukebox_song",
+        "minecraft:decorated_pot_pattern", "minecraft:chat_type", "minecraft:trim_pattern",
+        "minecraft:trim_material", "minecraft:wolf_variant", "minecraft:wolf_sound_variant",
+        "minecraft:pig_variant", "minecraft:pig_sound_variant", "minecraft:frog_variant",
+        "minecraft:cat_variant", "minecraft:cat_sound_variant", "minecraft:cow_sound_variant",
+        "minecraft:cow_variant", "minecraft:chicken_sound_variant", "minecraft:chicken_variant",
+        "minecraft:zombie_nautilus_variant", "minecraft:sulfur_cube_archetype", "minecraft:dimension_type",
+        "minecraft:test_environment", "minecraft:test_instance", "minecraft:dialog",
+        "minecraft:instrument", "minecraft:world_clock", "minecraft:timeline",
+        "minecraft:block_transformer", "minecraft:worldgen/block_state_provider"
     };
 
     std::vector<std::string> filtered_regs;
     for (const auto& id : data.datapack_registries) {
-        bool is_vanilla = std::find(vanilla_registries.begin(),
-            vanilla_registries.end(), id)
-            != vanilla_registries.end();
-        if (is_vanilla) {
+        if (std::find(vanilla_registries.begin(), vanilla_registries.end(), id) != vanilla_registries.end()) {
             filtered_regs.push_back(id);
         }
     }
-
     data.datapack_registries = filtered_regs;
-    LOG_DEBUG(Registry, "filtered registries: {}", data.datapack_registries.size());
 
     terila::data::load_binary(data.recipe_payload, input_dir + "/recipes/minecraft.nbt");
     terila::data::load_binary(data.loot_payload, input_dir + "/loot/minecraft.nbt");
     terila::data::load_binary(data.advancement_payload, input_dir + "/advancements/minecraft.nbt");
     terila::data::load_command_tree(data.command_tree_payload, input_dir + "/commands/tree.nbt");
 
+    LOG_DEBUG(Registry, "datapack registries: {}", data.datapack_registries.size());
     LOG_DEBUG(Registry, "loaded {} registry payloads", data.nbt_payloads.size());
-    LOG_DEBUG(Registry, "tags: {} bytes", data.tag_payload.size());
-    LOG_DEBUG(Registry, "recipes: {} bytes", data.recipe_payload.size());
-    LOG_DEBUG(Registry, "loot: {} bytes", data.loot_payload.size());
-    LOG_DEBUG(Registry, "advancements: {} bytes", data.advancement_payload.size());
-    LOG_DEBUG(Registry, "command tree: {} bytes", data.command_tree_payload.size());
 
     asio::io_context io;
-    asio::ip::address bind_addr = asio::ip::make_address(srv.bind_address);
+
+    asio::ip::address bind_addr = asio::ip::make_address(srv.bind_address, ec);
+    if (ec) {
+        LOG_FATAL(Network, "invalid bind address '{}': {}", srv.bind_address, ec.message());
+        return 7;
+    }
+
     asio::ip::tcp::endpoint endpoint(bind_addr, srv.port);
-    asio::ip::tcp::acceptor acceptor(io, endpoint);
+    asio::ip::tcp::acceptor acceptor(io);
+
+    acceptor.open(endpoint.protocol(), ec);
+    if (!ec) acceptor.set_option(asio::ip::tcp::acceptor::reuse_address(true), ec);
+    if (!ec) acceptor.bind(endpoint, ec);
+    if (!ec) acceptor.listen(asio::socket_base::max_listen_connections, ec);
+
+    if (ec) {
+        LOG_FATAL(Network, "failed to bind to {}:{} - {}", srv.bind_address, srv.port, ec.message());
+        return 7;
+    }
 
     LOG_INFO(Network, "listening on {}:{}", srv.bind_address, srv.port);
 
@@ -161,10 +143,9 @@ int main() {
                 }
 
                 asio::error_code ep_ec;
-                auto endpoint = socket.remote_endpoint(ep_ec);
+                auto remote_ep = socket.remote_endpoint(ep_ec);
                 if (!ep_ec) {
-                    LOG_INFO(Network, "new connection from {}:{}",
-                        endpoint.address().to_string(), endpoint.port());
+                    LOG_INFO(Network, "new connection from {}:{}", remote_ep.address().to_string(), remote_ep.port());
                 }
                 else {
                     LOG_INFO(Network, "new connection (endpoint unavailable: {})", ep_ec.message());

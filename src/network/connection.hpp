@@ -2,10 +2,12 @@
 
 #include <asio.hpp>
 #include "log/logger.hpp"
+#include "protocol/play.hpp"
 #include "protocol/login.hpp"
 #include "protocol/packet.hpp"
 #include "protocol/handshake.hpp"
 #include "protocol/status.hpp"
+#include "protocol/packet_ids.hpp"
 #include "data/registry_data.hpp"
 #include <memory>
 #include <array>
@@ -89,7 +91,7 @@ namespace terila::network {
             }
 
             if (bytes_transferred == 0) {
-                LOG_ERROR(Network, "read 0 bytes without error — TCP invariant violated (possible Asio bug or race condition)"); 
+                LOG_ERROR(Network, "read 0 bytes without error — TCP invariant violated");
                 return;
             }
 
@@ -107,6 +109,8 @@ namespace terila::network {
         void handle_packet(std::int32_t id, const std::vector<std::uint8_t>& payload) {
             LOG_TRACE(Network, "packet id=0x{:02X} payload={} bytes in state {}",
                 id, payload.size(), state_name(state_));
+
+            const auto& ids = terila::protocol::packet_ids();
 
             switch (state_) {
             case State::Handshake: {
@@ -135,14 +139,13 @@ namespace terila::network {
             }
 
             case State::Status:
-                if (id == 0x00) {
+                if (id == ids.status_request) {
                     if (!terila::protocol::read_status_request(read_accum_.data(), read_accum_.size())) {
                         LOG_WARN(Network, "invalid status request");
                         return;
                     }
 
                     terila::protocol::StatusResponse resp;
-
                     resp.version_name = "26.3";
                     resp.version_protocol = 777;
                     resp.players_max = 20;
@@ -158,7 +161,7 @@ namespace terila::network {
                     }
                     LOG_ERROR(Network, "write_status_response failed");
                 }
-                else if (id == 0x01) {
+                else if (id == ids.ping) {
                     auto ping_value = terila::protocol::read_ping(read_accum_.data(), read_accum_.size());
                     if (!ping_value.has_value()) {
                         LOG_WARN(Network, "invalid ping packet");
@@ -176,7 +179,7 @@ namespace terila::network {
                 break;
 
             case State::Login:
-                if (id == 0x00) {
+                if (id == ids.login_start) {
                     auto result = terila::protocol::read_login_start(read_accum_.data(), read_accum_.size());
 
                     if (!result.has_value()) {
@@ -196,7 +199,7 @@ namespace terila::network {
                     send(out);
                     LOG_INFO(Network, "login success sent: username={}", result->username);
                 }
-                else if (id == 0x03) {
+                else if (id == ids.login_acknowledged) {
                     LOG_DEBUG(Network, "state: Login → Configuration");
                     state_ = State::Configuration;
 
@@ -204,7 +207,7 @@ namespace terila::network {
                     terila::protocol::write_varint(features_payload, 1);
                     terila::protocol::write_string(features_payload, "minecraft:vanilla");
                     std::vector<std::uint8_t> features_out;
-                    terila::protocol::write_packet(features_out, 0x0D, features_payload);
+                    terila::protocol::write_packet(features_out, ids.config_update_enabled_features, features_payload);
                     send(features_out);
                     LOG_DEBUG(Network, "update enabled features sent");
 
@@ -215,7 +218,7 @@ namespace terila::network {
                     terila::protocol::write_string(select_payload, "26.3");
 
                     std::vector<std::uint8_t> select_out;
-                    terila::protocol::write_packet(select_out, 0x0F, select_payload);
+                    terila::protocol::write_packet(select_out, ids.config_select_known_packs, select_payload);
                     send(select_out);
                     LOG_DEBUG(Network, "select known packs sent");
                 }
@@ -225,7 +228,7 @@ namespace terila::network {
                 break;
 
             case State::Configuration:
-                if (id == 0x07) {
+                if (id == ids.config_registry_data) {
                     LOG_DEBUG(Registry, "sending configuration data: {} registries", data_.datapack_registries.size());
 
                     int count = 0;
@@ -237,7 +240,7 @@ namespace terila::network {
                         }
 
                         std::vector<std::uint8_t> out;
-                        if (!terila::protocol::write_packet(out, 0x07, it->second)) {
+                        if (!terila::protocol::write_packet(out, ids.config_registry_data, it->second)) {
                             LOG_ERROR(Registry, "write_packet failed for registry: {}", registry_id);
                             continue;
                         }
@@ -247,7 +250,7 @@ namespace terila::network {
                     LOG_DEBUG(Registry, "sent {} registry data packets", count);
 
                     std::vector<std::uint8_t> tags_out;
-                    if (!terila::protocol::write_packet(tags_out, 0x0E, data_.tag_payload)) {
+                    if (!terila::protocol::write_packet(tags_out, ids.config_update_tags, data_.tag_payload)) {
                         LOG_ERROR(Registry, "write_packet failed for tags ({} bytes)", data_.tag_payload.size());
                         return;
                     }
@@ -255,18 +258,33 @@ namespace terila::network {
                     LOG_DEBUG(Registry, "update tags sent ({} bytes)", data_.tag_payload.size());
 
                     std::vector<std::uint8_t> finish_out;
-                    terila::protocol::write_packet(finish_out, 0x03, {});
+                    terila::protocol::write_packet(finish_out, ids.config_finish, {});
                     send(finish_out);
 
                     LOG_DEBUG(Network, "configuration data sent, awaiting client ack");
                 }
-                else if (id == 0x03) {
+                else if (id == ids.config_finish) {
                     LOG_DEBUG(Network, "state: Configuration → Play");
+
+                    std::vector<std::uint8_t> out;
+
+                    if (!terila::protocol::write_login_play(out, 76, false, 0, "minecraft:overworld")) {
+                        LOG_ERROR(Network, "failed to send login (play)");
+                        return;
+                    }
+                    send(out); out.clear();
+
+                    if (!terila::protocol::write_player_position(out, 1,
+                        0.5, 64.0, 0.5,       // position
+                        0.0, 0.0, 0.0,        // deltaMovement
+                        0.0f, 0.0f)) {        // yaw, pitch
+                        LOG_ERROR(Network, "failed to send player position");
+                        return;
+                    }
+                    send(out);
+
                     state_ = State::Play;
                     LOG_INFO(Network, "client finished configuration");
-                }
-                else {
-                    LOG_DEBUG(Network, "unknown configuration packet id=0x{:02X}", id);
                 }
                 break;
 
