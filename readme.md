@@ -2,8 +2,6 @@
 
 A Minecraft server implementation in C++23.
 
-[![build & test](https://github.com/melikeymen/Terila/actions/workflows/cmake.yml/badge.svg)](https://github.com/melikeymen/Terila/actions/workflows/cmake.yml)
-
 ## Build
 
 Requires CMake 3.20+ and a C++23 compiler.

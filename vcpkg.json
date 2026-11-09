@@ -1,8 +1,5 @@
-{
+﻿{
   "name": "terila",
-  "version": "0.1.0",
-  "builtin-baseline": "a1cae005c39be7b18ba319fced856b68d7276271",
-  "dependencies": [
-    "openssl"
-  ]
+  "version": "0.3.1",
+  "builtin-baseline": "a1cae005c39be7b18ba319fced856b68d7276271"
 }
