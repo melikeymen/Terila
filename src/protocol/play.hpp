@@ -7,6 +7,8 @@
 #include <vector>
 #include <cstdint>
 #include <string>
+#include <cstring>
+
 
 
 namespace terila::protocol {
@@ -91,6 +93,70 @@ namespace terila::protocol {
         LOG_DEBUG(Protocol, "write_login_play: entity_id={} dimension={}", entity_id, dimension);
         return true;
 
+    }
+
+    // Set Center Chunk (0x52) — client keeps chunks around this point loaded
+    inline bool write_set_center_chunk(std::vector<std::uint8_t>& output,
+        std::int32_t chunk_x, std::int32_t chunk_z)
+    {
+        std::vector<std::uint8_t> payload;
+
+        // Chunk X — 16-block units (chunk coordinate), not blocks
+        write_varint(payload, chunk_x);
+        // Chunk Z
+        write_varint(payload, chunk_z);
+
+        if (!write_packet(output, 0x52, payload)) {
+            LOG_WARN(Protocol, "write_set_center_chunk: failed");
+            return false;
+        }
+        LOG_DEBUG(Protocol, "set_center_chunk: ({}, {})", chunk_x, chunk_z);
+        return true;
+    }
+
+    // Player Position (0x40) — absolute teleport
+    inline bool write_player_position(std::vector<std::uint8_t>& output,
+        double x, double y, double z,
+        float yaw, float pitch, std::int32_t teleport_id)
+    {
+        std::vector<std::uint8_t> payload;
+
+        // X, Y, Z — 8 bytes each (big-endian double)
+        auto write_double = [](std::vector<std::uint8_t>& out, double v) {
+            std::uint64_t bits;
+            std::memcpy(&bits, &v, sizeof(bits));
+            for (int i = 7; i >= 0; --i) {
+                out.push_back(static_cast<std::uint8_t>((bits >> (i * 8)) & 0xFF));
+            }
+            };
+
+        // Yaw, Pitch — 4 bytes each (big-endian float)
+        auto write_float = [](std::vector<std::uint8_t>& out, float v) {
+            std::uint32_t bits;
+            std::memcpy(&bits, &v, sizeof(bits));
+            for (int i = 3; i >= 0; --i) {
+                out.push_back(static_cast<std::uint8_t>((bits >> (i * 8)) & 0xFF));
+            }
+            };
+
+        write_double(payload, x);
+        write_double(payload, y);
+        write_double(payload, z);
+        write_float(payload, yaw);
+        write_float(payload, pitch);
+
+        // Flags — 0 = all absolute (bit per axis: 0x01=X, 0x02=Y, 0x04=Z, etc.)
+        payload.push_back(0);
+
+        // Teleport ID — client echoes in Confirm Teleport (0x00) to acknowledge
+        write_varint(payload, teleport_id);
+
+        if (!write_packet(output, 0x40, payload)) {
+            LOG_WARN(Protocol, "write_player_position: failed");
+            return false;
+        }
+        LOG_DEBUG(Protocol, "player_position: ({:.2f}, {:.2f}, {:.2f})", x, y, z);
+        return true;
     }
 
 }
