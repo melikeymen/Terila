@@ -89,7 +89,7 @@ namespace terila::network {
             }
 
             if (bytes_transferred == 0) {
-                LOG_WARN(Network, "read 0 bytes without error, closing (possible peer half-close)");
+                LOG_ERROR(Network, "read 0 bytes without error — TCP invariant violated (possible Asio bug or race condition)"); 
                 return;
             }
 
@@ -117,7 +117,7 @@ namespace terila::network {
                     return;
                 }
 
-                LOG_INFO(Network, "handshake: protocol={} address={} port={} next_state={}",
+                LOG_DEBUG(Network, "handshake: protocol={} address={} port={} next_state={}",
                     hs->protocol, hs->address, hs->port, hs->next_state);
 
                 if (hs->next_state == 1) {
@@ -156,7 +156,7 @@ namespace terila::network {
                         LOG_DEBUG(Network, "status response sent ({} bytes)", out.size());
                         break;
                     }
-                    LOG_WARN(Network, "write_status_response failed");
+                    LOG_ERROR(Network, "write_status_response failed");
                 }
                 else if (id == 0x01) {
                     auto ping_value = terila::protocol::read_ping(read_accum_.data(), read_accum_.size());
@@ -171,7 +171,7 @@ namespace terila::network {
                     LOG_TRACE(Network, "pong sent, value={}", *ping_value);
                 }
                 else {
-                    LOG_WARN(Network, "unknown status packet id=0x{:02X}", id);
+                    LOG_DEBUG(Network, "unknown status packet id=0x{:02X}", id);
                 }
                 break;
 
@@ -220,7 +220,7 @@ namespace terila::network {
                     LOG_DEBUG(Network, "select known packs sent");
                 }
                 else {
-                    LOG_WARN(Network, "unknown login packet id=0x{:02X}", id);
+                    LOG_DEBUG(Network, "unknown login packet id=0x{:02X}", id);
                 }
                 break;
 
@@ -244,7 +244,7 @@ namespace terila::network {
                         send(out);
                         ++count;
                     }
-                    LOG_INFO(Registry, "sent {} registry data packets", count);
+                    LOG_DEBUG(Registry, "sent {} registry data packets", count);
 
                     std::vector<std::uint8_t> tags_out;
                     if (!terila::protocol::write_packet(tags_out, 0x0E, data_.tag_payload)) {
@@ -266,12 +266,12 @@ namespace terila::network {
                     LOG_INFO(Network, "client finished configuration");
                 }
                 else {
-                    LOG_WARN(Network, "unknown configuration packet id=0x{:02X}", id);
+                    LOG_DEBUG(Network, "unknown configuration packet id=0x{:02X}", id);
                 }
                 break;
 
             case State::Play:
-                LOG_WARN(Network, "unhandled play packet id=0x{:02X} ({} bytes)", id, payload.size());
+                LOG_DEBUG(Network, "unhandled play packet id=0x{:02X} ({} bytes)", id, payload.size());
                 break;
             }
         }
