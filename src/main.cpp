@@ -126,12 +126,12 @@ int main() {
     terila::data::load_binary(data.advancement_payload, input_dir + "/advancements/minecraft.nbt");
     terila::data::load_command_tree(data.command_tree_payload, input_dir + "/commands/tree.nbt");
 
-    LOG_INFO(Registry, "loaded {} registry payloads", data.nbt_payloads.size());
-    LOG_INFO(Registry, "tags: {} bytes", data.tag_payload.size());
-    LOG_INFO(Registry, "recipes: {} bytes", data.recipe_payload.size());
-    LOG_INFO(Registry, "loot: {} bytes", data.loot_payload.size());
-    LOG_INFO(Registry, "advancements: {} bytes", data.advancement_payload.size());
-    LOG_INFO(Registry, "command tree: {} bytes", data.command_tree_payload.size());
+    LOG_DEBUG(Registry, "loaded {} registry payloads", data.nbt_payloads.size());
+    LOG_DEBUG(Registry, "tags: {} bytes", data.tag_payload.size());
+    LOG_DEBUG(Registry, "recipes: {} bytes", data.recipe_payload.size());
+    LOG_DEBUG(Registry, "loot: {} bytes", data.loot_payload.size());
+    LOG_DEBUG(Registry, "advancements: {} bytes", data.advancement_payload.size());
+    LOG_DEBUG(Registry, "command tree: {} bytes", data.command_tree_payload.size());
 
     asio::io_context io;
     asio::ip::tcp::acceptor acceptor(io, asio::ip::tcp::endpoint(asio::ip::tcp::v4(), 25565));
