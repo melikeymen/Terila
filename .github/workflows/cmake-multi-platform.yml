@@ -1,5 +1,4 @@
-name: CMake on multiple platforms
-
+name: build & test
 on:
   push:
     branches: [ "main" ]
