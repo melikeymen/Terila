@@ -12,6 +12,7 @@ _deps/
 *.sln.docstates
 *.VC.db
 *.VC.VC.opendb
+enc_temp_folder/
 
 # Compiler-generated files
 *.obj

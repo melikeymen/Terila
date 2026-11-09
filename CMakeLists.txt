@@ -36,6 +36,7 @@ target_sources(terila PRIVATE
     "src/log/level.hpp"
     "src/log/logger.cpp"
     "src/log/logger.hpp"
+    "src/protocol/play.hpp"
 )
 
 # Dependencies
