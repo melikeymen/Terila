@@ -25,11 +25,12 @@ namespace terila::protocol {
         std::int32_t config_update_tags = 0x0E;
         std::int32_t config_finish = 0x03;
 
-        // Play
-        std::int32_t play_login = 0x32;
-        std::int32_t play_player_position = 0x49;
-        std::int32_t play_game_event = 0x27;
-        std::int32_t play_level_chunk = 0x2E;
+        // Play — must be resolved from ids.json at startup
+        std::int32_t play_login = -1;
+        std::int32_t play_player_position = -1;
+        std::int32_t play_game_event = -1;
+        std::int32_t play_set_center_chunk = -1;
+        std::int32_t play_level_chunk = -1;
     };
 
     inline PacketIds& packet_ids() {

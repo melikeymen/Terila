@@ -9,11 +9,17 @@
 #include "protocol/status.hpp"
 #include "protocol/packet_ids.hpp"
 #include "data/registry_data.hpp"
+#include "world/chunk.hpp"
+#include "world/chunk_decoder.hpp"
+#include "world/chunk_encoder.hpp"
+#include "world/flat_generator.hpp"
 #include <memory>
 #include <array>
 #include <cstdint>
 #include <vector>
 #include <deque>
+#include <optional>
+#include <string_view>
 
 namespace terila::network {
 
@@ -266,20 +272,70 @@ namespace terila::network {
                 else if (id == ids.config_finish) {
                     LOG_DEBUG(Network, "state: Configuration → Play");
 
+                    auto resolve_block = [this](std::string_view name) -> std::optional<std::int32_t> {
+                        auto it = data_.block_state_ids.find(std::string(name));
+                        if (it == data_.block_state_ids.end()) return std::nullopt;
+                        return it->second;
+                        };
+                    auto resolve_biome = [this](std::string_view name) -> std::optional<std::int32_t> {
+                        auto it = data_.biome_ids.find(std::string(name));
+                        if (it == data_.biome_ids.end()) return std::nullopt;
+                        return it->second;
+                        };
+
+                    terila::world::flat::FlatSpec spec;
+                    auto chunk_opt = terila::world::flat::generate(0, 0, spec, resolve_block, resolve_biome);
+                    if (!chunk_opt) {
+                        LOG_ERROR(Network, "cannot generate flat chunk");
+                        return;
+                    }
+
+                    auto wire = terila::world::encode::encode(*chunk_opt);
+                    LOG_DEBUG(Chunk, "flat chunk encoded: {} bytes", wire.size());
+
+                    // Debug: dump first 128 bytes as hex so we can compare with vanilla
+                    {
+                        std::string hex;
+                        hex.reserve(128 * 5);
+                        const size_t n = std::min<size_t>(128, wire.size());
+                        for (size_t i = 0; i < n; ++i) {
+                            char buf[8];
+                            std::snprintf(buf, sizeof(buf), "%02X ", wire[i]);
+                            hex += buf;
+                        }
+                        LOG_TRACE(Chunk, "chunk hex[0..{}]: {}", n, hex);
+                    }
+
                     std::vector<std::uint8_t> out;
 
+                    // 1. login
                     if (!terila::protocol::write_login_play(out, 76, false, 0, "minecraft:overworld")) {
-                        LOG_ERROR(Network, "failed to send login (play)");
-                        return;
+                        LOG_ERROR(Network, "login_play failed"); return;
                     }
                     send(out); out.clear();
 
+                    // 2. set_center_chunk
+                    if (!terila::protocol::write_set_center_chunk(out, 0, 0)) {
+                        LOG_ERROR(Network, "set_center_chunk failed"); return;
+                    }
+                    send(out); out.clear();
+
+                    // 3. game_event(13) — "waiting for chunks" — MUST be before chunk
+                    if (!terila::protocol::write_game_event(out, 13, 0.0f)) {
+                        LOG_ERROR(Network, "game_event failed"); return;
+                    }
+                    send(out); out.clear();
+
+                    // 4. chunk_data
+                    if (!terila::protocol::write_chunk_data(out, wire)) {
+                        LOG_ERROR(Network, "chunk_data failed"); return;
+                    }
+                    send(out); out.clear();
+
+                    // 5. player_position
                     if (!terila::protocol::write_player_position(out, 1,
-                        0.5, 64.0, 0.5,       // position
-                        0.0, 0.0, 0.0,        // deltaMovement
-                        0.0f, 0.0f)) {        // yaw, pitch
-                        LOG_ERROR(Network, "failed to send player position");
-                        return;
+                        8.5, -59.0, 8.5, 0.0, 0.0, 0.0, 0.0f, 0.0f)) {
+                        LOG_ERROR(Network, "player_position failed"); return;
                     }
                     send(out);
 
@@ -289,6 +345,7 @@ namespace terila::network {
                 break;
 
             case State::Play:
+                if (id == 0x0D) break;
                 LOG_DEBUG(Network, "unhandled play packet id=0x{:02X} ({} bytes)", id, payload.size());
                 break;
             }

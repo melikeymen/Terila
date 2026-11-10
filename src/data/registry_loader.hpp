@@ -11,6 +11,9 @@
 #include <vector>
 #include <fstream>
 #include <iterator>
+#include <unordered_map>
+#include <exception>
+#include <nlohmann/json.hpp>
 
 namespace terila::data {
 
@@ -55,6 +58,127 @@ namespace terila::data {
 
 		LOG_DEBUG(Data, "command tree ready: {} bytes", out.size());
 		return true;
+	}
+
+	// blocks/state_ids.json format:
+	//   { data: [ { id: "minecraft:acacia_button", default_state_id: N,
+	//               min_state_id: N, max_state_id: N, properties: {...} } ] }
+	inline void load_block_state_ids(std::unordered_map<std::string, std::int32_t>& out, const std::string& path) {
+		std::ifstream f(path);
+		if (!f) {
+			LOG_WARN(Data, "cannot open {}", path);
+			return;
+		}
+
+		try {
+			auto j = nlohmann::json::parse(f);
+
+			if (!j.contains("data") || !j["data"].is_array()) {
+				LOG_WARN(Data, "unexpected format in {} (no 'data' array)", path);
+				return;
+			}
+
+			for (const auto& e : j["data"]) {
+				if (!e.contains("id") || !e["id"].is_string()) continue;
+				std::string name = e["id"].get<std::string>();
+
+				std::int32_t id = -1;
+				if (e.contains("default_state_id"))      id = e["default_state_id"].get<std::int32_t>();
+				else if (e.contains("min_state_id"))     id = e["min_state_id"].get<std::int32_t>();
+				if (id < 0) continue;
+
+				if (out.find(name) == out.end()) out[name] = id;
+			}
+		}
+		catch (const std::exception& e) {
+			LOG_WARN(Data, "parse failed: {} ({})", path, e.what());
+		}
+
+		LOG_DEBUG(Data, "block_state_ids: {} entries", out.size());
+	}
+
+	// worldgen/biomes.json format:
+	//   { data: [ { id: "minecraft:badlands", protocol_id: N, data: {...} } ] }
+	inline void load_biome_ids(std::unordered_map<std::string, std::int32_t>& out, const std::string& path) {
+		std::ifstream f(path);
+		if (!f) {
+			LOG_WARN(Data, "cannot open {}", path);
+			return;
+		}
+
+		try {
+			auto j = nlohmann::json::parse(f);
+
+			if (!j.contains("data") || !j["data"].is_array()) {
+				LOG_WARN(Data, "unexpected format in {} (no 'data' array)", path);
+				return;
+			}
+
+			for (const auto& e : j["data"]) {
+				if (!e.contains("id") || !e["id"].is_string()) continue;
+				if (!e.contains("protocol_id")) continue;
+
+				std::string name = e["id"].get<std::string>();
+				std::int32_t id = e["protocol_id"].get<std::int32_t>();
+				out[name] = id;
+			}
+		}
+		catch (const std::exception& e) {
+			LOG_WARN(Data, "parse failed: {} ({})", path, e.what());
+		}
+
+		LOG_DEBUG(Data, "biome_ids: {} entries", out.size());
+	}
+
+	// worldgen/dimensions.json format (best-effort):
+	//   - Array of { id: "minecraft:overworld", min_y, height, logical_height }
+	//   - OR object keyed by "minecraft:overworld" / "overworld"
+	inline void load_dimensions(DimensionInfo& out, const std::string& path) {
+		std::ifstream f(path);
+		if (!f) {
+			LOG_WARN(Data, "cannot open {}", path);
+			return;
+		}
+
+		try {
+			auto j = nlohmann::json::parse(f);
+			nlohmann::json ow;
+
+			if (j.contains("data") && j["data"].is_array()) {
+				for (const auto& e : j["data"]) {
+					if (e.contains("id") && e["id"].is_string() && e["id"] == "minecraft:overworld") {
+						ow = e;
+						break;
+					}
+				}
+			}
+			else if (j.is_array()) {
+				for (const auto& e : j) {
+					if (e.contains("id") && e["id"].is_string() && e["id"] == "minecraft:overworld") {
+						ow = e;
+						break;
+					}
+				}
+			}
+			else if (j.is_object()) {
+				if (j.contains("minecraft:overworld"))      ow = j["minecraft:overworld"];
+				else if (j.contains("overworld"))           ow = j["overworld"];
+			}
+
+			if (!ow.is_null()) {
+				if (ow.contains("min_y"))          out.min_y = ow["min_y"].get<std::int32_t>();
+				if (ow.contains("height"))         out.height = ow["height"].get<std::int32_t>();
+				if (ow.contains("logical_height")) out.logical_height = ow["logical_height"].get<std::int32_t>();
+			}
+			else {
+				LOG_WARN(Data, "overworld entry not found in {}", path);
+			}
+		}
+		catch (const std::exception& e) {
+			LOG_WARN(Data, "parse failed: {} ({})", path, e.what());
+		}
+
+		LOG_DEBUG(Data, "overworld: min_y={} height={}", out.min_y, out.height);
 	}
 
 }

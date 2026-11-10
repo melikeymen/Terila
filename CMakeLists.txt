@@ -37,6 +37,10 @@ target_sources(terila PRIVATE
     "src/log/logger.cpp"
     "src/log/logger.hpp"
     "src/protocol/play.hpp"
+    "src/world/chunk.hpp"
+    "src/world/chunk_decoder.hpp"
+    "src/world/chunk_encoder.hpp"
+    "src/world/flat_generator.hpp"
 )
 
 # Dependencies
@@ -76,8 +80,10 @@ target_link_libraries(terila_asio INTERFACE Threads::Threads)
 
 target_link_libraries(terila PRIVATE nlohmann_json::nlohmann_json terila_asio)
 
-# tests
-add_executable(tests
+# ---------------------------------------------------------------------------
+# protocol_tests
+# ---------------------------------------------------------------------------
+add_executable(protocol_tests
     "tests/protocol/varint_test.cpp"
     "tests/protocol/string_test.cpp"
     "tests/protocol/packet_test.cpp"
@@ -89,18 +95,42 @@ add_executable(tests
 )
 
 if(MSVC)
-    target_compile_options(tests PRIVATE /utf-8)
+    target_compile_options(protocol_tests PRIVATE /utf-8)
 endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    target_compile_options(tests PRIVATE -Wno-character-conversion)
+    target_compile_options(protocol_tests PRIVATE -Wno-character-conversion)
 endif()
 
-target_include_directories(tests PRIVATE
+target_include_directories(protocol_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${googletest_SOURCE_DIR}/googletest/include"
 )
-target_link_libraries(tests PRIVATE GTest::gtest_main nlohmann_json::nlohmann_json terila_asio)
+target_link_libraries(protocol_tests PRIVATE GTest::gtest_main nlohmann_json::nlohmann_json terila_asio)
+
+# ---------------------------------------------------------------------------
+# chunk_tests
+# ---------------------------------------------------------------------------
+add_executable(chunk_tests
+    "tests/world/chunk_decoder_test.cpp"
+    "tests/world/chunk_encoder_test.cpp"
+    "src/log/logger.cpp"
+)
+
+if(MSVC)
+    target_compile_options(chunk_tests PRIVATE /utf-8)
+endif()
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(chunk_tests PRIVATE -Wno-character-conversion)
+endif()
+
+target_include_directories(chunk_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${googletest_SOURCE_DIR}/googletest/include"
+)
+target_link_libraries(chunk_tests PRIVATE GTest::gtest_main nlohmann_json::nlohmann_json terila_asio)
 
 enable_testing()
-add_test(NAME protocol_tests COMMAND tests)
+add_test(NAME protocol_tests COMMAND protocol_tests)
+add_test(NAME chunk_tests    COMMAND chunk_tests)

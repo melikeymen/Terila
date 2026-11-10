@@ -3,6 +3,7 @@
 #include "log/logger.hpp"
 #include <vector>
 #include <cstdint>
+#include <cstring>
 #include <optional>
 #include <cstddef>
 
@@ -18,10 +19,15 @@ namespace terila::protocol {
 			LOG_TRACE(Protocol, "read_uint16: insufficient data (length={})", length);
 			return std::nullopt;
 		}
-		auto high = data[0];
-		auto low = data[1];
+		return static_cast<uint16_t>((data[0] << 8) | data[1]);
+	}
 
-		return static_cast<uint16_t>((high << 8) | low);
+	inline void write_int32(std::vector<std::uint8_t>& output, std::int32_t value) {
+		std::uint32_t u = static_cast<std::uint32_t>(value);
+		output.push_back(static_cast<uint8_t>((u >> 24) & 0xFF));
+		output.push_back(static_cast<uint8_t>((u >> 16) & 0xFF));
+		output.push_back(static_cast<uint8_t>((u >> 8) & 0xFF));
+		output.push_back(static_cast<uint8_t>(u & 0xFF));
 	}
 
 	inline void write_int64(std::vector<std::uint8_t>& output, std::int64_t value) {
@@ -37,12 +43,24 @@ namespace terila::protocol {
 			return std::nullopt;
 		}
 		uint64_t value = 0;
-
-		for (int i = 0; i <= 7; i++) {
-			value = (value << 8) | data[i];
-		}
-
+		for (int i = 0; i <= 7; i++) value = (value << 8) | data[i];
 		return static_cast<int64_t>(value);
+	}
+
+	inline void write_float(std::vector<std::uint8_t>& output, float value) {
+		std::uint32_t bits;
+		std::memcpy(&bits, &value, sizeof(bits));
+		output.push_back(static_cast<uint8_t>((bits >> 24) & 0xFF));
+		output.push_back(static_cast<uint8_t>((bits >> 16) & 0xFF));
+		output.push_back(static_cast<uint8_t>((bits >> 8) & 0xFF));
+		output.push_back(static_cast<uint8_t>(bits & 0xFF));
+	}
+
+	inline void write_double(std::vector<std::uint8_t>& output, double value) {
+		std::uint64_t bits;
+		std::memcpy(&bits, &value, sizeof(bits));
+		for (int i = 7; i >= 0; --i)
+			output.push_back(static_cast<uint8_t>((bits >> (i * 8)) & 0xFF));
 	}
 
 }

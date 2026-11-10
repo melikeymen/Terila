@@ -34,6 +34,14 @@ namespace terila::protocol {
                 return -1;
             };
 
+        auto find_any = [&](std::initializer_list<const char*> names) -> std::int32_t {
+            for (auto name : names) {
+                auto v = find("play", "clientbound", name);
+                if (v >= 0) return v;
+            }
+            return -1;
+            };
+
         auto set = [&](std::int32_t& target, std::int32_t value, const char* label) {
             if (value >= 0) {
                 target = value;
@@ -63,11 +71,17 @@ namespace terila::protocol {
         set(ids.config_update_tags, find("configuration", "clientbound", "minecraft:update_tags"), "config_update_tags");
         set(ids.config_finish, find("configuration", "clientbound", "minecraft:finish_configuration"), "config_finish");
 
-        // Play
+        // Play — set_chunk_cache_center is 26.3's real name for what we call "set_center_chunk"
         set(ids.play_login, find("play", "clientbound", "minecraft:login"), "play_login");
         set(ids.play_player_position, find("play", "clientbound", "minecraft:player_position"), "play_player_position");
         set(ids.play_game_event, find("play", "clientbound", "minecraft:game_event"), "play_game_event");
+        set(ids.play_set_center_chunk, find_any({ "minecraft:set_chunk_cache_center",
+                                                  "minecraft:set_center_chunk" }), "play_set_center_chunk");
         set(ids.play_level_chunk, find("play", "clientbound", "minecraft:level_chunk_with_light"), "play_level_chunk");
+
+        LOG_DEBUG(Protocol, "resolved IDs: login=0x{:02X} pos=0x{:02X} event=0x{:02X} center=0x{:02X} chunk=0x{:02X}",
+            ids.play_login, ids.play_player_position, ids.play_game_event,
+            ids.play_set_center_chunk, ids.play_level_chunk);
 
         LOG_INFO(Protocol, "packet ids loaded from {}", path);
         return true;

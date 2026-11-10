@@ -4,12 +4,12 @@
 #include "protocol/varint.hpp"
 #include "protocol/string.hpp"
 #include "protocol/packet.hpp"
+#include "protocol/primitives.hpp"
 #include "protocol/packet_ids.hpp"
 #include <vector>
 #include <cstdint>
 #include <string>
 #include <cstring>
-
 
 namespace terila::protocol {
 
@@ -19,62 +19,43 @@ namespace terila::protocol {
     {
         std::vector<std::uint8_t> payload;
 
-        // playerId — 4-byte int (NOT VarInt)
         payload.push_back(static_cast<std::uint8_t>((entity_id >> 24) & 0xFF));
         payload.push_back(static_cast<std::uint8_t>((entity_id >> 16) & 0xFF));
         payload.push_back(static_cast<std::uint8_t>((entity_id >> 8) & 0xFF));
         payload.push_back(static_cast<std::uint8_t>(entity_id & 0xFF));
 
-        // hardcore
         payload.push_back(hardcore ? 1 : 0);
 
-        // levels — 3 vanilla dimensions (client expects all)
         write_varint(payload, 3);
         write_string(payload, "minecraft:overworld");
         write_string(payload, "minecraft:the_nether");
         write_string(payload, "minecraft:the_end");
 
-        // maxPlayers
         write_varint(payload, 20);
-
-        // chunkRadius
         write_varint(payload, 10);
-
-        // simulationDistance
         write_varint(payload, 10);
-
-        // reducedDebugInfo
         payload.push_back(0);
-
-        // showDeathScreen
         payload.push_back(1);
-
-        // doLimitedCrafting
         payload.push_back(0);
 
-        // commonPlayerSpawnInfo
-        write_varint(payload, 0);              // dimensionType (registry index)
-        write_string(payload, dimension);      // dimension name
-        payload.insert(payload.end(), 8, 0);   // seed (long)
-        payload.push_back(gamemode);           // gameType (byte)
-        payload.push_back(0);                  // previousGameType (byte)
-        payload.push_back(0);                  // isDebug
-        payload.push_back(0);                  // isFlat
-        payload.push_back(0);                  // hasDeathLocation
-        write_varint(payload, 0);              // portalCooldown
-        write_varint(payload, 63);             // seaLevel
-
-        // onlineMode
+        write_varint(payload, 0);
+        write_string(payload, dimension);
+        payload.insert(payload.end(), 8, 0);
+        payload.push_back(gamemode);
         payload.push_back(0);
+        payload.push_back(0);
+        payload.push_back(0);
+        payload.push_back(0);
+        write_varint(payload, 0);
+        write_varint(payload, 63);
 
-        // enforcesSecureChat
+        payload.push_back(0);
         payload.push_back(0);
 
         if (!write_packet(output, packet_ids().play_login, payload)) {
             LOG_WARN(Protocol, "write_login_play: failed to write packet");
             return false;
         }
-
         LOG_DEBUG(Protocol, "write_login_play: entity_id={} dimension={}", entity_id, dimension);
         return true;
     }
@@ -87,21 +68,7 @@ namespace terila::protocol {
     {
         std::vector<std::uint8_t> payload;
 
-        auto write_double = [](std::vector<std::uint8_t>& out, double v) {
-            std::uint64_t bits;
-            std::memcpy(&bits, &v, sizeof(bits));
-            for (int i = 7; i >= 0; --i)
-                out.push_back(static_cast<std::uint8_t>((bits >> (i * 8)) & 0xFF));
-            };
-        auto write_float = [](std::vector<std::uint8_t>& out, float v) {
-            std::uint32_t bits;
-            std::memcpy(&bits, &v, sizeof(bits));
-            for (int i = 3; i >= 0; --i)
-                out.push_back(static_cast<std::uint8_t>((bits >> (i * 8)) & 0xFF));
-            };
-
         write_varint(payload, teleport_id);
-
         write_double(payload, x);
         write_double(payload, y);
         write_double(payload, z);
@@ -110,7 +77,6 @@ namespace terila::protocol {
         write_double(payload, dz);
         write_float(payload, yaw);
         write_float(payload, pitch);
-
         payload.push_back(0);
         payload.push_back(0);
         payload.push_back(0);
@@ -121,6 +87,44 @@ namespace terila::protocol {
             return false;
         }
         LOG_DEBUG(Protocol, "player_position: ({:.2f}, {:.2f}, {:.2f})", x, y, z);
+        return true;
+    }
+
+    inline bool write_set_center_chunk(std::vector<std::uint8_t>& output,
+        std::int32_t cx, std::int32_t cz)
+    {
+        std::vector<std::uint8_t> payload;
+        write_varint(payload, cx);
+        write_varint(payload, cz);
+        if (!write_packet(output, packet_ids().play_set_center_chunk, payload)) {
+            LOG_WARN(Protocol, "write_set_center_chunk: failed");
+            return false;
+        }
+        LOG_DEBUG(Protocol, "set_center_chunk: ({}, {})", cx, cz);
+        return true;
+    }
+
+    inline bool write_game_event(std::vector<std::uint8_t>& output,
+        std::uint8_t event_id, float value)
+    {
+        std::vector<std::uint8_t> payload;
+        payload.push_back(event_id);
+        write_float(payload, value);
+        if (!write_packet(output, packet_ids().play_game_event, payload)) {
+            LOG_WARN(Protocol, "write_game_event: failed");
+            return false;
+        }
+        return true;
+    }
+
+    inline bool write_chunk_data(std::vector<std::uint8_t>& output,
+        const std::vector<std::uint8_t>& encoded_payload)
+    {
+        if (!write_packet(output, packet_ids().play_level_chunk, encoded_payload)) {
+            LOG_WARN(Protocol, "write_chunk_data: failed ({} bytes)", encoded_payload.size());
+            return false;
+        }
+        LOG_DEBUG(Protocol, "chunk_data: {} bytes", encoded_payload.size());
         return true;
     }
 
