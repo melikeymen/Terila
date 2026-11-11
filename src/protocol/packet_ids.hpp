@@ -37,6 +37,14 @@ namespace terila::protocol {
         std::int32_t play_keep_alive_serverbound = -1;
         std::int32_t play_move_player_pos = -1;
         std::int32_t play_move_player_pos_rot = -1;
+
+        // Play — entity tracking
+        std::int32_t play_add_entity = -1;
+        std::int32_t play_remove_entities = -1;
+        std::int32_t play_entity_position_sync = -1;
+        std::int32_t play_move_entity_pos_rot = -1;
+        std::int32_t play_move_entity_pos = -1;
+        std::int32_t play_rotate_head = -1;
     };
 
     inline PacketIds& packet_ids() {

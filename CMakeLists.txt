@@ -37,6 +37,8 @@ target_sources(terila PRIVATE
     "src/log/logger.cpp"
     "src/log/logger.hpp"
     "src/protocol/play.hpp"
+    "src/protocol/entity.hpp"
+    "src/entity/mob.hpp"
     "src/protocol/packet_ids.hpp"
     "src/protocol/packet_ids_loader.hpp"
     "src/protocol/uuid.hpp"
@@ -110,6 +112,7 @@ add_executable(protocol_tests
     "tests/protocol/status_test.cpp"
     "tests/protocol/login_test.cpp"
     "tests/protocol/uuid_test.cpp"
+    "tests/protocol/entity_test.cpp"
     "src/log/logger.cpp"
 )
 

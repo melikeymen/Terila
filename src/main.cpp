@@ -5,11 +5,15 @@
 #include "data/registry_loader.hpp"
 #include "config/server_config.hpp"
 #include "protocol/packet_ids_loader.hpp"
+#include "entity/mob.hpp"
 #include <nlohmann/json.hpp>
 #include <memory>
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
+#include <chrono>
+#include <functional>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -115,12 +119,23 @@ int main() {
     terila::data::load_block_state_ids(data.block_state_ids, in + "/blocks/state_ids.json");
     terila::data::load_biome_ids(data.biome_ids, in + "/worldgen/biomes.json");
     terila::data::load_dimensions(data.overworld, in + "/worldgen/dimensions.json");
+    terila::data::load_entity_type_ids(data.entity_type_ids, in + "/entities/minecraft.json");
 
     if (data.block_state_ids.empty()) { LOG_FATAL(Data, "block_state_ids empty"); return 7; }
     if (data.biome_ids.empty()) { LOG_FATAL(Data, "biome_ids empty");       return 7; }
+    if (data.entity_type_ids.empty()) {
+        LOG_WARN(Data, "entity_type_ids empty, mobs stay disabled");
+    }
 
     LOG_DEBUG(Registry, "datapack registries: {}", data.datapack_registries.size());
     LOG_DEBUG(Registry, "registry payloads: {}", data.nbt_payloads.size());
+
+    terila::entity::MobManager mobs;
+    mobs.set_ground(static_cast<double>(data.overworld.min_y + 5));
+    mobs.spawn("minecraft:cow", data.entity_type_ids, 6.5, 4.5);
+    mobs.spawn("minecraft:pig", data.entity_type_ids, 10.5, -2.5);
+    mobs.spawn("minecraft:sheep", data.entity_type_ids, -4.5, 6.5);
+    mobs.spawn("minecraft:zombie", data.entity_type_ids, -8.5, -6.5);
 
     // Network
     asio::io_context io;
@@ -147,9 +162,11 @@ int main() {
 
     LOG_INFO(Network, "listening on {}:{}", srv.bind_address, srv.port);
 
+    std::vector<std::weak_ptr<terila::network::Connection>> players;
+
     auto do_accept = [&](auto&& self) -> void {
         acceptor.async_accept(
-            [&acceptor, &data, &srv, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
+            [&acceptor, &data, &srv, &players, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
                 if (error) {
                     LOG_ERROR(Network, "accept failed: {} ({})", error.message(), error.value());
                     self(self);
@@ -163,12 +180,38 @@ int main() {
                 auto conn = std::make_shared<terila::network::Connection>(std::move(socket), data,
                     srv.view_distance);
                 conn->start();
+                players.push_back(conn);
                 self(self);
             }
         );
         };
 
     do_accept(do_accept);
+
+    asio::steady_timer tick_timer(io);
+    std::function<void()> schedule_tick = [&]() {
+        tick_timer.expires_after(std::chrono::milliseconds(50));
+        tick_timer.async_wait([&](const asio::error_code& error) {
+            if (error) {
+                return;
+            }
+
+            mobs.tick();
+            for (auto it = players.begin(); it != players.end();) {
+                if (const auto conn = it->lock()) {
+                    conn->tick_entities(mobs.mobs());
+                    ++it;
+                }
+                else {
+                    it = players.erase(it);
+                }
+            }
+
+            schedule_tick();
+        });
+        };
+
+    schedule_tick();
     io.run();
 
     terila::log::shutdown();

@@ -22,6 +22,12 @@ namespace terila::protocol {
 		return static_cast<uint16_t>((data[0] << 8) | data[1]);
 	}
 
+	inline void write_int16(std::vector<std::uint8_t>& output, std::int16_t value) {
+		const auto u = static_cast<std::uint16_t>(value);
+		output.push_back(static_cast<uint8_t>((u >> 8) & 0xFF));
+		output.push_back(static_cast<uint8_t>(u & 0xFF));
+	}
+
 	inline void write_int32(std::vector<std::uint8_t>& output, std::int32_t value) {
 		std::uint32_t u = static_cast<std::uint32_t>(value);
 		output.push_back(static_cast<uint8_t>((u >> 24) & 0xFF));

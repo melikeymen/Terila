@@ -15,6 +15,8 @@
 #include "world/chunk_decoder.hpp"
 #include "world/chunk_encoder.hpp"
 #include "world/flat_generator.hpp"
+#include "protocol/entity.hpp"
+#include "entity/mob.hpp"
 #include <memory>
 #include <array>
 #include <cstdint>
@@ -25,6 +27,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <unordered_set>
 
@@ -57,6 +60,11 @@ namespace terila::network {
             }
         }
 
+        // Called by the server tick for every connected player.
+        void tick_entities(const std::vector<terila::entity::Mob>& mobs) {
+            send_entity_updates(mobs);
+        }
+
     private:
 
         // A peer that never completes a packet would otherwise grow the accumulator forever.
@@ -68,6 +76,13 @@ namespace terila::network {
         struct ChunkPos {
             std::int32_t x = 0;
             std::int32_t z = 0;
+        };
+
+        struct KnownEntity {
+            double x = 0.0;
+            double y = 0.0;
+            double z = 0.0;
+            float yaw = 0.0f;
         };
 
         enum class State {
@@ -361,6 +376,9 @@ namespace terila::network {
                     // From here chunks stream in batches, both at spawn and while walking.
                     center_cx_ = 0;
                     center_cz_ = 0;
+                    player_x_ = 8.5;
+                    player_y_ = spawn_y;
+                    player_z_ = 8.5;
                     queue_chunk_area(0, 0);
                 }
                 break;
@@ -385,8 +403,12 @@ namespace terila::network {
                 if (id == ids.play_move_player_pos || id == ids.play_move_player_pos_rot) {
                     const auto x = terila::protocol::read_double(payload.data(), payload.size(), 0);
                     const auto z = terila::protocol::read_double(payload.data(), payload.size(), 16);
-                    if (x.has_value() && z.has_value()) {
-                        LOG_TRACE(Network, "player moved to ({:.2f}, {:.2f})", *x, *z);
+                    const auto y = terila::protocol::read_double(payload.data(), payload.size(), 8);
+                    if (x.has_value() && y.has_value() && z.has_value()) {
+                        player_x_ = *x;
+                        player_y_ = *y;
+                        player_z_ = *z;
+                        LOG_TRACE(Network, "player moved to ({:.2f}, {:.2f}, {:.2f})", *x, *y, *z);
                         update_player_chunk(*x, *z);
                     }
                     break;
@@ -543,6 +565,111 @@ namespace terila::network {
             queue_chunk_area(cx, cz);
         }
 
+        // Spawns and removes mobs as they enter or leave the view distance and sends
+        // relative movement for the ones already known to the client.
+        void send_entity_updates(const std::vector<terila::entity::Mob>& mobs) {
+            if (state_ != State::Play || closed_) {
+                return;
+            }
+
+            const double range = static_cast<double>(view_distance_) * 16.0;
+            const double range_sq = range * range;
+
+            std::unordered_set<std::int32_t> alive;
+            alive.reserve(mobs.size());
+
+            std::vector<std::uint8_t> out;
+
+            for (const auto& mob : mobs) {
+                alive.insert(mob.id);
+
+                const double dx = mob.x - player_x_;
+                const double dz = mob.z - player_z_;
+                const bool in_range = (dx * dx + dz * dz) <= range_sq;
+
+                const auto known = known_entities_.find(mob.id);
+
+                if (!in_range) {
+                    if (known != known_entities_.end()) {
+                        std::vector<std::uint8_t> remove;
+                        if (terila::protocol::write_remove_entity(remove, mob.id)) {
+                            send(remove);
+                        }
+                        known_entities_.erase(known);
+                    }
+                    continue;
+                }
+
+                if (known == known_entities_.end()) {
+                    if (terila::protocol::write_add_entity(out, mob.id, mob.uuid, mob.type_id,
+                        mob.x, mob.y, mob.z, mob.yaw, 0.0f, mob.head_yaw)) {
+                        if (!logged_first_entity_) {
+                            logged_first_entity_ = true;
+                            std::string hex;
+                            for (const auto byte : out) {
+                                char buf[4];
+                                std::snprintf(buf, sizeof(buf), "%02X ", byte);
+                                hex += buf;
+                            }
+                            LOG_DEBUG(Entity, "add_entity type={} bytes={} [{}]",
+                                mob.type_id, out.size(), hex);
+                        }
+                        send(out);
+                    }
+                    out.clear();
+                    known_entities_[mob.id] = KnownEntity{ mob.x, mob.y, mob.z, mob.yaw };
+                    continue;
+                }
+
+                const auto to_short = [](double delta) {
+                    const double scaled = delta * 4096.0;
+                    if (scaled > 32767.0) return static_cast<std::int16_t>(32767);
+                    if (scaled < -32768.0) return static_cast<std::int16_t>(-32768);
+                    return static_cast<std::int16_t>(std::lround(scaled));
+                    };
+
+                const auto dxs = to_short(mob.x - known->second.x);
+                const auto dys = to_short(mob.y - known->second.y);
+                const auto dzs = to_short(mob.z - known->second.z);
+
+                const bool moved = dxs != 0 || dys != 0 || dzs != 0;
+                const bool turned = mob.yaw != known->second.yaw;
+
+                if (!moved && !turned) {
+                    continue;
+                }
+
+                if (moved) {
+                    if (terila::protocol::write_move_entity_pos_rot(out, mob.id, dxs, dys, dzs,
+                        mob.yaw, 0.0f, true)) {
+                        send(out);
+                    }
+                    out.clear();
+                }
+                else if (turned) {
+                    if (terila::protocol::write_rotate_head(out, mob.id, mob.head_yaw)) {
+                        send(out);
+                    }
+                    out.clear();
+                }
+
+                known->second = KnownEntity{ mob.x, mob.y, mob.z, mob.yaw };
+            }
+
+            for (auto it = known_entities_.begin(); it != known_entities_.end();) {
+                if (alive.find(it->first) != alive.end()) {
+                    ++it;
+                    continue;
+                }
+
+                std::vector<std::uint8_t> remove;
+                if (terila::protocol::write_remove_entity(remove, it->first)) {
+                    send(remove);
+                }
+                it = known_entities_.erase(it);
+            }
+        }
+
         void start_keep_alive() {
             auto self = shared_from_this();
             keep_alive_timer_.expires_after(std::chrono::seconds(15));
@@ -608,6 +735,7 @@ namespace terila::network {
         std::string username_;
         std::string remote_;
         bool joined_ = false;
+        bool logged_first_entity_ = false;
         int view_distance_ = 10;
         std::int32_t center_cx_ = 0;
         std::int32_t center_cz_ = 0;
@@ -615,6 +743,10 @@ namespace terila::network {
         std::vector<std::uint8_t> chunk_template_;
         std::deque<ChunkPos> pending_chunks_;
         std::unordered_set<std::uint64_t> sent_chunks_;
+        std::unordered_map<std::int32_t, KnownEntity> known_entities_;
+        double player_x_ = 8.5;
+        double player_y_ = 0.0;
+        double player_z_ = 8.5;
         const terila::data::RegistryData& data_;
     };
 

@@ -130,6 +130,37 @@ namespace terila::data {
 		LOG_DEBUG(Data, "biome_ids: {} entries", out.size());
 	}
 
+	// entities/minecraft.json format:
+	//   { data: [ { id: "minecraft:allay", protocol_id: N, ... } ] }
+	inline void load_entity_type_ids(std::unordered_map<std::string, std::int32_t>& out, const std::string& path) {
+		std::ifstream f(path);
+		if (!f) {
+			LOG_WARN(Data, "cannot open {}", path);
+			return;
+		}
+
+		try {
+			auto j = nlohmann::json::parse(f);
+
+			if (!j.contains("data") || !j["data"].is_array()) {
+				LOG_WARN(Data, "unexpected format in {} (no 'data' array)", path);
+				return;
+			}
+
+			for (const auto& e : j["data"]) {
+				if (!e.contains("id") || !e["id"].is_string()) continue;
+				if (!e.contains("protocol_id")) continue;
+
+				out[e["id"].get<std::string>()] = e["protocol_id"].get<std::int32_t>();
+			}
+		}
+		catch (const std::exception& e) {
+			LOG_WARN(Data, "parse failed: {} ({})", path, e.what());
+		}
+
+		LOG_DEBUG(Data, "entity_type_ids: {} entries", out.size());
+	}
+
 	// worldgen/dimensions.json format (best-effort):
 	//   - Array of { id: "minecraft:overworld", min_y, height, logical_height }
 	//   - OR object keyed by "minecraft:overworld" / "overworld"

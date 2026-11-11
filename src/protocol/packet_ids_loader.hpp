@@ -85,6 +85,14 @@ namespace terila::protocol {
         set(ids.play_move_player_pos, find("play", "serverbound", "minecraft:move_player_pos"), "play_move_player_pos");
         set(ids.play_move_player_pos_rot, find("play", "serverbound", "minecraft:move_player_pos_rot"), "play_move_player_pos_rot");
 
+        // Entity tracking
+        set(ids.play_add_entity, find("play", "clientbound", "minecraft:add_entity"), "play_add_entity");
+        set(ids.play_remove_entities, find("play", "clientbound", "minecraft:remove_entities"), "play_remove_entities");
+        set(ids.play_entity_position_sync, find("play", "clientbound", "minecraft:entity_position_sync"), "play_entity_position_sync");
+        set(ids.play_move_entity_pos_rot, find("play", "clientbound", "minecraft:move_entity_pos_rot"), "play_move_entity_pos_rot");
+        set(ids.play_move_entity_pos, find("play", "clientbound", "minecraft:move_entity_pos"), "play_move_entity_pos");
+        set(ids.play_rotate_head, find("play", "clientbound", "minecraft:rotate_head"), "play_rotate_head");
+
         LOG_DEBUG(Protocol, "resolved IDs: login=0x{:02X} pos=0x{:02X} event=0x{:02X} center=0x{:02X} chunk=0x{:02X}",
             ids.play_login, ids.play_player_position, ids.play_game_event,
             ids.play_set_center_chunk, ids.play_level_chunk);

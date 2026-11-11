@@ -25,6 +25,7 @@ namespace terila::log {
         Config = 5,
         Play = 6,
         Chunk = 7,
+        Entity = 8,
     };
 
     namespace detail {
@@ -64,6 +65,7 @@ namespace terila::log {
         if (detail::iequals(s, "config"))   return Scope::Config;
         if (detail::iequals(s, "play"))     return Scope::Play;
         if (detail::iequals(s, "chunk"))    return Scope::Chunk;
+        if (detail::iequals(s, "entity"))   return Scope::Entity;
         return std::nullopt;
     }
 
@@ -90,6 +92,7 @@ namespace terila::log {
         case Scope::Config:   return "CONFIG";
         case Scope::Play:     return "PLAY";
         case Scope::Chunk:    return "CHUNK";
+        case Scope::Entity:   return "ENTITY";
         }
         return "UNKNOWN";
     }
