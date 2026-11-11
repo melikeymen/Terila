@@ -284,58 +284,63 @@ namespace terila::network {
                         };
 
                     terila::world::flat::FlatSpec spec;
-                    auto chunk_opt = terila::world::flat::generate(0, 0, spec, resolve_block, resolve_biome);
-                    if (!chunk_opt) {
-                        LOG_ERROR(Network, "cannot generate flat chunk");
-                        return;
-                    }
 
-                    auto wire = terila::world::encode::encode(*chunk_opt);
-                    LOG_DEBUG(Chunk, "flat chunk encoded: {} bytes", wire.size());
-
-                    // Debug: dump first 128 bytes as hex so we can compare with vanilla
-                    {
-                        std::string hex;
-                        hex.reserve(128 * 5);
-                        const size_t n = std::min<size_t>(128, wire.size());
-                        for (size_t i = 0; i < n; ++i) {
-                            char buf[8];
-                            std::snprintf(buf, sizeof(buf), "%02X ", wire[i]);
-                            hex += buf;
+                    // A single chunk is not enough to mesh: send the 3x3 area around spawn.
+                    constexpr int kRadius = 1;
+                    std::vector<std::vector<std::uint8_t>> chunks;
+                    chunks.reserve((2 * kRadius + 1) * (2 * kRadius + 1));
+                    for (int cz = -kRadius; cz <= kRadius; ++cz) {
+                        for (int cx = -kRadius; cx <= kRadius; ++cx) {
+                            auto c = terila::world::flat::generate(cx, cz, spec, resolve_block, resolve_biome);
+                            if (!c) {
+                                LOG_ERROR(Network, "cannot generate chunk ({}, {})", cx, cz);
+                                return;
+                            }
+                            chunks.push_back(terila::world::encode::encode(*c));
                         }
-                        LOG_TRACE(Chunk, "chunk hex[0..{}]: {}", n, hex);
                     }
+                    LOG_DEBUG(Chunk, "{} chunks encoded, {} bytes each", chunks.size(), chunks[4].size());
+
 
                     std::vector<std::uint8_t> out;
 
-                    // 1. login
                     if (!terila::protocol::write_login_play(out, 76, false, 0, "minecraft:overworld")) {
                         LOG_ERROR(Network, "login_play failed"); return;
                     }
                     send(out); out.clear();
 
-                    // 2. set_center_chunk
-                    if (!terila::protocol::write_set_center_chunk(out, 0, 0)) {
-                        LOG_ERROR(Network, "set_center_chunk failed"); return;
+                    // Vanilla sends the teleport before the game event, then the cache
+                    // center, then the chunks wrapped in a batch.
+                    if (!terila::protocol::write_player_position(out, 1,
+                        8.5, -59.0, 8.5, 0.0, 0.0, 0.0, 0.0f, 0.0f)) {
+                        LOG_ERROR(Network, "player_position failed"); return;
                     }
                     send(out); out.clear();
 
-                    // 3. game_event(13) — "waiting for chunks" — MUST be before chunk
                     if (!terila::protocol::write_game_event(out, 13, 0.0f)) {
                         LOG_ERROR(Network, "game_event failed"); return;
                     }
                     send(out); out.clear();
 
-                    // 4. chunk_data
-                    if (!terila::protocol::write_chunk_data(out, wire)) {
-                        LOG_ERROR(Network, "chunk_data failed"); return;
+                    if (!terila::protocol::write_set_center_chunk(out, 0, 0)) {
+                        LOG_ERROR(Network, "set_center_chunk failed"); return;
                     }
                     send(out); out.clear();
 
-                    // 5. player_position
-                    if (!terila::protocol::write_player_position(out, 1,
-                        8.5, -59.0, 8.5, 0.0, 0.0, 0.0, 0.0f, 0.0f)) {
-                        LOG_ERROR(Network, "player_position failed"); return;
+                    if (!terila::protocol::write_chunk_batch_start(out)) {
+                        LOG_ERROR(Network, "chunk_batch_start failed"); return;
+                    }
+                    send(out); out.clear();
+
+                    for (const auto& wire : chunks) {
+                        if (!terila::protocol::write_chunk_data(out, wire)) {
+                            LOG_ERROR(Network, "chunk_data failed"); return;
+                        }
+                        send(out); out.clear();
+                    }
+
+                    if (!terila::protocol::write_chunk_batch_finished(out, static_cast<std::int32_t>(chunks.size()))) {
+                        LOG_ERROR(Network, "chunk_batch_finished failed"); return;
                     }
                     send(out);
 

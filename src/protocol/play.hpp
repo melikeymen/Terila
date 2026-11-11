@@ -117,6 +117,26 @@ namespace terila::protocol {
         return true;
     }
 
+    inline bool write_chunk_batch_start(std::vector<std::uint8_t>& output)
+    {
+        if (!write_packet(output, packet_ids().play_chunk_batch_start, {})) {
+            LOG_WARN(Protocol, "write_chunk_batch_start: failed");
+            return false;
+        }
+        return true;
+    }
+
+    inline bool write_chunk_batch_finished(std::vector<std::uint8_t>& output, std::int32_t batch_size)
+    {
+        std::vector<std::uint8_t> payload;
+        write_varint(payload, batch_size);
+        if (!write_packet(output, packet_ids().play_chunk_batch_finished, payload)) {
+            LOG_WARN(Protocol, "write_chunk_batch_finished: failed");
+            return false;
+        }
+        return true;
+    }
+
     inline bool write_chunk_data(std::vector<std::uint8_t>& output,
         const std::vector<std::uint8_t>& encoded_payload)
     {

@@ -31,6 +31,8 @@ namespace terila::protocol {
         std::int32_t play_game_event = -1;
         std::int32_t play_set_center_chunk = -1;
         std::int32_t play_level_chunk = -1;
+        std::int32_t play_chunk_batch_start = -1;
+        std::int32_t play_chunk_batch_finished = -1;
     };
 
     inline PacketIds& packet_ids() {

@@ -78,6 +78,8 @@ namespace terila::protocol {
         set(ids.play_set_center_chunk, find_any({ "minecraft:set_chunk_cache_center",
                                                   "minecraft:set_center_chunk" }), "play_set_center_chunk");
         set(ids.play_level_chunk, find("play", "clientbound", "minecraft:level_chunk_with_light"), "play_level_chunk");
+        set(ids.play_chunk_batch_start, find("play", "clientbound", "minecraft:chunk_batch_start"), "play_chunk_batch_start");
+        set(ids.play_chunk_batch_finished, find("play", "clientbound", "minecraft:chunk_batch_finished"), "play_chunk_batch_finished");
 
         LOG_DEBUG(Protocol, "resolved IDs: login=0x{:02X} pos=0x{:02X} event=0x{:02X} center=0x{:02X} chunk=0x{:02X}",
             ids.play_login, ids.play_player_position, ids.play_game_event,

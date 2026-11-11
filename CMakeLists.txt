@@ -80,9 +80,6 @@ target_link_libraries(terila_asio INTERFACE Threads::Threads)
 
 target_link_libraries(terila PRIVATE nlohmann_json::nlohmann_json terila_asio)
 
-# ---------------------------------------------------------------------------
-# protocol_tests
-# ---------------------------------------------------------------------------
 add_executable(protocol_tests
     "tests/protocol/varint_test.cpp"
     "tests/protocol/string_test.cpp"
@@ -108,9 +105,6 @@ target_include_directories(protocol_tests PRIVATE
 )
 target_link_libraries(protocol_tests PRIVATE GTest::gtest_main nlohmann_json::nlohmann_json terila_asio)
 
-# ---------------------------------------------------------------------------
-# chunk_tests
-# ---------------------------------------------------------------------------
 add_executable(chunk_tests
     "tests/world/chunk_decoder_test.cpp"
     "tests/world/chunk_encoder_test.cpp"

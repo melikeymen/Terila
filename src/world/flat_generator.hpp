@@ -100,19 +100,15 @@ namespace terila::world::flat {
         }
         bottom.block_count = static_cast<std::uint16_t>(non_air);
 
-        // Sky light: only bottom 2 sections have sky (matches vanilla pattern)
-        // Sections 0-1 (y=-64..-33): sky light present
-        // Sections 2-23: no sky light (all air, ground below)
-        c.light.sky_y_mask = { 3LL };                    // bits 0,1 set
+        // Light mask bit i addresses section i-1: bit 0 is the section below the world.
+        c.light.sky_y_mask = { 6LL };                    // bits 1,2 = sections 0,1
         c.light.sky_updates.assign(2, std::vector<std::uint8_t>(2048, 0xFF));
-
-        // Sections 2-23 are empty sky
-        c.light.empty_sky_y_mask = { ((1LL << 24) - 1) & ~3LL };  // bits 2-23
+        c.light.empty_sky_y_mask = { 0x1FFFFF8LL };      // bits 3..24 = sections 2..23
 
         // No block light anywhere
         c.light.block_y_mask.clear();
         c.light.block_updates.clear();
-        c.light.empty_block_y_mask = { (1LL << 24) - 1 };        // all 24 empty
+        c.light.empty_block_y_mask = { 0x1FFFFFELL };    // bits 1..24, all sections empty
 
         return c;
     }
