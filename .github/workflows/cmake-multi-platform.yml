@@ -42,11 +42,15 @@ jobs:
       run: |
         echo "build-output-dir=${{ github.workspace }}/build" >> "$GITHUB_OUTPUT"
 
-    - name: Install dependencies (Ubuntu)
+    # The runner image already ships ninja and a full toolchain, and this project
+    # configures with the default generator. Installing packages here only adds a
+    # network dependency that fails the job when the runner's DNS hiccups.
+    - name: Show toolchain (Linux)
       if: runner.os == 'Linux'
       run: |
-        sudo apt-get update
-        sudo apt-get install -y ninja-build
+        cmake --version
+        ${{ matrix.cpp_compiler }} --version | head -1
+        (command -v ninja && ninja --version) || echo "ninja not present"
 
     - name: Cache FetchContent
       uses: actions/cache@v4

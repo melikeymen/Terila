@@ -13,6 +13,10 @@ _deps/
 *.VC.db
 *.VC.VC.opendb
 enc_temp_folder/
+*.aps
+*.ncb
+*.sdf
+*.opensdf
 
 # Compiler-generated files
 *.obj
@@ -25,6 +29,14 @@ enc_temp_folder/
 *.dll
 *.so
 *.dylib
+
+# Build-system leftovers
+cmake-build-*/
+install_manifest.txt
+compile_commands.json
+*.ninja
+.ninja_*
+build.ninja
 
 # CMake generated files
 CMakeCache.txt
@@ -54,12 +66,32 @@ x86-release/
 *.tlog
 *.sqlite
 
+# Logs, dumps and coverage
+*.trace
+*.dmp
+crashdump*
+crash-*.txt
+disconnect-*.txt
+logs/
+coverage/
+*.gcda
+*.gcno
+*.gcov
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+.dev.vars
+
 # Editor and OS files
 .DS_Store
 Thumbs.db
 *.swp
 *.swo
 *~
+*.orig
+*.rej
 
 # Temporary files
 *.tmp
@@ -70,6 +102,26 @@ Thumbs.db
 *.code-workspace
 .vscode/
 .idea/
+.history/
+.directory
+.cache/
+.clangd/
+.ccls-cache/
+
+# Agent and assistant folders
+.freebuff/
+.cursor/
+.aider*
+.claude/
+.continue/
+
+# Python tooling
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
 
 # GTest FetchContent cache (re-downloaded automatically)
 googletest-src/
