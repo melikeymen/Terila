@@ -147,7 +147,7 @@ int main() {
                 asio::error_code ep_ec;
                 auto remote_ep = socket.remote_endpoint(ep_ec);
                 if (!ep_ec) {
-                    LOG_INFO(Network, "new connection from {}:{}", remote_ep.address().to_string(), remote_ep.port());
+                    LOG_DEBUG(Network, "new connection from {}:{}", remote_ep.address().to_string(), remote_ep.port());
                 }
                 auto conn = std::make_shared<terila::network::Connection>(std::move(socket), data);
                 conn->start();

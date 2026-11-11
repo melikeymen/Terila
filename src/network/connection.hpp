@@ -33,6 +33,11 @@ namespace terila::network {
         {}
 
         void start() {
+            asio::error_code ec;
+            const auto remote = socket_.remote_endpoint(ec);
+            if (!ec) {
+                remote_ = remote.address().to_string() + ":" + std::to_string(remote.port());
+            }
             do_read();
         }
 
@@ -102,7 +107,12 @@ namespace terila::network {
             }
 
             if (error) {
-                LOG_ERROR(Network, "read failed: {} ({})", error.message(), error.value());
+                if (error == asio::error::connection_reset || error == asio::error::connection_aborted) {
+                    LOG_DEBUG(Network, "client disconnected ({})", error.message());
+                }
+                else {
+                    LOG_WARN(Network, "read failed: {} ({})", error.message(), error.value());
+                }
                 close();
                 return;
             }
@@ -212,7 +222,10 @@ namespace terila::network {
 
                     const auto uuid = terila::protocol::offline_uuid(result->username);
                     std::array<std::uint8_t, 16> session_id{};
-                    LOG_DEBUG(Network, "offline uuid for {}: {}", result->username,
+                    username_ = result->username;
+
+                    // One line per attempt: who is connecting, from where, with which identity.
+                    LOG_INFO(Network, "{}[/{}] logging in (uuid {})", username_, remote_,
                         terila::protocol::uuid_to_string(uuid));
 
                     std::vector<std::uint8_t> out;
@@ -222,7 +235,7 @@ namespace terila::network {
                         return;
                     }
                     send(out);
-                    LOG_INFO(Network, "login success sent: username={}", result->username);
+                    LOG_DEBUG(Network, "login success sent: username={}", result->username);
                 }
                 else if (id == ids.login_acknowledged) {
                     LOG_DEBUG(Network, "state: Login → Configuration");
@@ -368,8 +381,9 @@ namespace terila::network {
                     send(out);
 
                     state_ = State::Play;
+                    joined_ = true;
                     start_keep_alive();
-                    LOG_INFO(Network, "client finished configuration");
+                    LOG_INFO(Network, "{} joined the game", username_);
                 }
                 break;
 
@@ -400,6 +414,14 @@ namespace terila::network {
                 return;
             }
             closed_ = true;
+
+            if (joined_) {
+                LOG_INFO(Network, "{} left the game", username_);
+            }
+            else if (!username_.empty()) {
+                LOG_DEBUG(Network, "{}[/{}] disconnected before joining the game", username_, remote_);
+            }
+
             asio::error_code ignored;
             keep_alive_timer_.cancel(ignored);
             socket_.close(ignored);
@@ -442,7 +464,8 @@ namespace terila::network {
                 asio::buffer(write_queue_.front()),
                 [self](const asio::error_code& error, std::size_t bytes_transferred) {
                     if (error) {
-                        LOG_ERROR(Network, "write failed: {} ({})", error.message(), error.value());
+                        LOG_DEBUG(Network, "write failed: {} ({})", error.message(), error.value());
+                        self->close();
                         return;
                     }
 
@@ -465,6 +488,9 @@ namespace terila::network {
         std::int32_t next_teleport_id_ = 1;
         std::int64_t pending_keep_alive_id_ = 0;
         bool keep_alive_answered_ = true;
+        std::string username_;
+        std::string remote_;
+        bool joined_ = false;
         const terila::data::RegistryData& data_;
     };
 
