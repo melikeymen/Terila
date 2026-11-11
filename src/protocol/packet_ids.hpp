@@ -33,6 +33,8 @@ namespace terila::protocol {
         std::int32_t play_level_chunk = -1;
         std::int32_t play_chunk_batch_start = -1;
         std::int32_t play_chunk_batch_finished = -1;
+        std::int32_t play_keep_alive = -1;
+        std::int32_t play_keep_alive_serverbound = -1;
     };
 
     inline PacketIds& packet_ids() {

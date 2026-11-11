@@ -148,4 +148,15 @@ namespace terila::protocol {
         return true;
     }
 
+    inline bool write_keep_alive(std::vector<std::uint8_t>& output, std::int64_t id)
+    {
+        std::vector<std::uint8_t> payload;
+        write_int64(payload, id);
+        if (!write_packet(output, packet_ids().play_keep_alive, payload)) {
+            LOG_WARN(Protocol, "write_keep_alive: failed (id={})", id);
+            return false;
+        }
+        return true;
+    }
+
 }

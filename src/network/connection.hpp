@@ -3,6 +3,7 @@
 #include <asio.hpp>
 #include "log/logger.hpp"
 #include "protocol/play.hpp"
+#include "protocol/primitives.hpp"
 #include "protocol/login.hpp"
 #include "protocol/packet.hpp"
 #include "protocol/handshake.hpp"
@@ -20,13 +21,14 @@
 #include <deque>
 #include <optional>
 #include <string_view>
+#include <chrono>
 
 namespace terila::network {
 
     class Connection : public std::enable_shared_from_this<Connection> {
     public:
         explicit Connection(asio::ip::tcp::socket socket, const terila::data::RegistryData& data)
-            : socket_(std::move(socket)), data_(data)
+            : socket_(std::move(socket)), keep_alive_timer_(socket_.get_executor()), data_(data)
         {}
 
         void start() {
@@ -34,6 +36,9 @@ namespace terila::network {
         }
 
         void send(const std::vector<std::uint8_t>& data) {
+            if (closed_) {
+                return;
+            }
             write_queue_.push_back(data);
             if (!writing_) {
                 do_write();
@@ -88,11 +93,13 @@ namespace terila::network {
         void handle_read(const asio::error_code& error, std::size_t bytes_transferred) {
             if (error == asio::error::eof) {
                 LOG_DEBUG(Network, "client disconnected (eof)");
+                close();
                 return;
             }
 
             if (error) {
                 LOG_ERROR(Network, "read failed: {} ({})", error.message(), error.value());
+                close();
                 return;
             }
 
@@ -345,15 +352,65 @@ namespace terila::network {
                     send(out);
 
                     state_ = State::Play;
+                    start_keep_alive();
                     LOG_INFO(Network, "client finished configuration");
                 }
                 break;
 
             case State::Play:
-                if (id == 0x0D) break;
+                if (id == ids.play_keep_alive_serverbound) {
+                    auto value = terila::protocol::read_int64(payload.data(), payload.size());
+                    if (!value.has_value()) {
+                        LOG_WARN(Network, "invalid keep_alive reply ({} bytes)", payload.size());
+                        break;
+                    }
+                    if (*value != pending_keep_alive_id_) {
+                        LOG_DEBUG(Network, "keep_alive reply id={} does not match sent id={}",
+                            *value, pending_keep_alive_id_);
+                    }
+                    else {
+                        keep_alive_answered_ = true;
+                        LOG_DEBUG(Network, "keep_alive reply: id={}", *value);
+                    }
+                    break;
+                }
                 LOG_DEBUG(Network, "unhandled play packet id=0x{:02X} ({} bytes)", id, payload.size());
                 break;
             }
+        }
+
+        void close() {
+            if (closed_) {
+                return;
+            }
+            closed_ = true;
+            asio::error_code ignored;
+            keep_alive_timer_.cancel(ignored);
+            socket_.close(ignored);
+        }
+
+        void start_keep_alive() {
+            auto self = shared_from_this();
+            keep_alive_timer_.expires_after(std::chrono::seconds(15));
+            keep_alive_timer_.async_wait([self](const asio::error_code& error) {
+                if (error || self->closed_) {
+                    return;
+                }
+
+                std::vector<std::uint8_t> out;
+                const std::int64_t id = self->next_keep_alive_id_++;
+                if (terila::protocol::write_keep_alive(out, id)) {
+                    if (!self->keep_alive_answered_ && self->pending_keep_alive_id_ != 0) {
+                        LOG_WARN(Network, "previous keep_alive id={} was never answered",
+                            self->pending_keep_alive_id_);
+                    }
+                    self->pending_keep_alive_id_ = id;
+                    self->keep_alive_answered_ = false;
+                    self->send(out);
+                    LOG_DEBUG(Network, "keep_alive sent: id={}", id);
+                }
+                self->start_keep_alive();
+            });
         }
 
         void do_write() {
@@ -386,6 +443,11 @@ namespace terila::network {
         State state_ = State::Handshake;
         std::deque<std::vector<std::uint8_t>> write_queue_;
         bool writing_ = false;
+        bool closed_ = false;
+        asio::steady_timer keep_alive_timer_;
+        std::int64_t next_keep_alive_id_ = 1;
+        std::int64_t pending_keep_alive_id_ = 0;
+        bool keep_alive_answered_ = true;
         const terila::data::RegistryData& data_;
     };
 
