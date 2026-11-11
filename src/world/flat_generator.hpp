@@ -21,6 +21,8 @@ namespace terila::world::flat {
         std::string grass = "minecraft:grass_block";
         std::string biome = "minecraft:plains";
         int         dirt_layers = 3;
+        int         min_y = -64;
+        int         section_count = 24;
     };
 
     inline std::optional<Chunk> generate(
@@ -54,11 +56,20 @@ namespace terila::world::flat {
         const std::int32_t grass_id = *grass_opt;
         const std::int32_t biome_id = *biome_opt;
 
+        if (spec.section_count < 2 || spec.section_count > 32) {
+            LOG_WARN(Chunk, "flat_generator: section_count out of range ({})", spec.section_count);
+            return std::nullopt;
+        }
+        if (spec.section_count != 24) {
+            LOG_WARN(Chunk, "flat_generator: heightmaps assume 384 blocks, got {} sections",
+                spec.section_count);
+        }
+
         Chunk c;
         c.x = cx;
         c.z = cz;
-        c.min_y = -64;
-        c.section_count = 24;
+        c.min_y = spec.min_y;
+        c.section_count = spec.section_count;
 
         for (int type : {1, 4, 5}) {
             Heightmap hm;
@@ -101,14 +112,15 @@ namespace terila::world::flat {
         bottom.block_count = static_cast<std::uint16_t>(non_air);
 
         // Light mask bit i addresses section i-1: bit 0 is the section below the world.
-        c.light.sky_y_mask = { 6LL };                    // bits 1,2 = sections 0,1
+        const int n = spec.section_count;
+        c.light.sky_y_mask = { 6LL };                              // bits 1,2 = sections 0,1
         c.light.sky_updates.assign(2, std::vector<std::uint8_t>(2048, 0xFF));
-        c.light.empty_sky_y_mask = { 0x1FFFFF8LL };      // bits 3..24 = sections 2..23
+        c.light.empty_sky_y_mask = { (1LL << (n + 1)) - 8LL };     // bits 3..n = sections 2..n-1
 
         // No block light anywhere
         c.light.block_y_mask.clear();
         c.light.block_updates.clear();
-        c.light.empty_block_y_mask = { 0x1FFFFFELL };    // bits 1..24, all sections empty
+        c.light.empty_block_y_mask = { (1LL << (n + 1)) - 2LL };   // bits 1..n
 
         return c;
     }

@@ -19,7 +19,7 @@ namespace terila::protocol {
 	inline bool write_packet(std::vector<std::uint8_t>& output, std::int32_t id, const std::vector<std::uint8_t>& payload) {
 
 		if (id < 0) {
-			LOG_TRACE(Protocol, "write_packet: invalid id={}", id);
+			LOG_WARN(Protocol, "write_packet: unresolved packet id={} (missing ids.json entry)", id);
 			return false;
 		}
 

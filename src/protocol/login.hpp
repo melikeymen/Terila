@@ -2,6 +2,7 @@
 
 #include "protocol/varint.hpp"
 #include "protocol/packet.hpp"
+#include "protocol/packet_ids.hpp"
 #include "protocol/string.hpp"
 #include "log/logger.hpp"
 #include <vector>
@@ -38,8 +39,8 @@ namespace terila::protocol {
 			return std::nullopt;
 		}
 
-		if (result->id != 0x00) {
-			LOG_WARN(Protocol, "read_login_start: unexpected packet id=0x{:02X} (expected 0x00)", result->id);
+		if (result->id != packet_ids().login_start) {
+			LOG_WARN(Protocol, "read_login_start: unexpected packet id=0x{:02X} (expected 0x{:02X})", result->id, packet_ids().login_start);
 			return std::nullopt;
 		}
 
@@ -83,7 +84,7 @@ namespace terila::protocol {
 
 		payload.insert(payload.end(), session_id.begin(), session_id.end());
 
-		if (!write_packet(output, 0x02, payload)) {
+		if (!write_packet(output, packet_ids().login_success, payload)) {
 			LOG_WARN(Protocol, "write_login_success: failed to write packet for username={}", username);
 			return false;
 		}

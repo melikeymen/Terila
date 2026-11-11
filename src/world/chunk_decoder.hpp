@@ -72,7 +72,7 @@ namespace terila::world::decode {
             if (pos + bytes_needed > size) return false;
 
             out_states.resize(static_cast<std::size_t>(entry_count));
-            const std::uint64_t mask = (bits >= 32) ? ~0ull : ((1ull << bits) - 1);
+            const std::uint64_t mask = (bits >= 64) ? ~0ull : ((1ull << bits) - 1);
             for (int i = 0; i < entry_count; ++i) {
                 const int li = i / entries_per_long;
                 const int off = (i % entries_per_long) * bits;

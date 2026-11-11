@@ -5,6 +5,7 @@
 #include "protocol/varint.hpp"
 #include "protocol/string.hpp"
 #include "protocol/packet.hpp"
+#include "protocol/packet_ids.hpp"
 #include "protocol/primitives.hpp"
 #include <nlohmann/json.hpp>
 #include <cstdint>
@@ -24,7 +25,7 @@ namespace terila::protocol {
     };
 
     inline void write_status_request(std::vector<std::uint8_t>& output) {
-        write_packet(output, 0x00, {});
+        write_packet(output, packet_ids().status_request, {});
     }
 
     inline bool read_status_request(const std::uint8_t* data, std::size_t length) {
@@ -34,8 +35,8 @@ namespace terila::protocol {
             return false;
         }
 
-        if (result->id != 0x00) {
-            LOG_WARN(Protocol, "read_status_request: unexpected packet id=0x{:02X} (expected 0x00)", result->id);
+        if (result->id != packet_ids().status_request) {
+            LOG_WARN(Protocol, "read_status_request: unexpected packet id=0x{:02X} (expected 0x{:02X})", result->id, packet_ids().status_request);
             return false;
         }
 
@@ -51,7 +52,7 @@ namespace terila::protocol {
         std::vector<std::uint8_t> payload;
 
         write_int64(payload, value);
-        write_packet(output, 0x01, payload);
+        write_packet(output, packet_ids().ping, payload);
 
         LOG_TRACE(Protocol, "write_ping: value={}", value);
     }
@@ -63,8 +64,8 @@ namespace terila::protocol {
             return std::nullopt;
         }
 
-        if (result->id != 0x01) {
-            LOG_WARN(Protocol, "read_ping: unexpected packet id=0x{:02X} (expected 0x01)", result->id);
+        if (result->id != packet_ids().ping) {
+            LOG_WARN(Protocol, "read_ping: unexpected packet id=0x{:02X} (expected 0x{:02X})", result->id, packet_ids().ping);
             return std::nullopt;
         }
 
@@ -82,7 +83,7 @@ namespace terila::protocol {
         std::vector<std::uint8_t> payload;
 
         write_int64(payload, value);
-        write_packet(output, 0x01, payload);
+        write_packet(output, packet_ids().ping, payload);
 
         LOG_TRACE(Protocol, "write_pong: value={}", value);
     }
@@ -94,8 +95,8 @@ namespace terila::protocol {
             return std::nullopt;
         }
 
-        if (result->id != 0x01) {
-            LOG_WARN(Protocol, "read_pong: unexpected packet id=0x{:02X} (expected 0x01)", result->id);
+        if (result->id != packet_ids().ping) {
+            LOG_WARN(Protocol, "read_pong: unexpected packet id=0x{:02X} (expected 0x{:02X})", result->id, packet_ids().ping);
             return std::nullopt;
         }
 
@@ -129,7 +130,7 @@ namespace terila::protocol {
             return false;
         }
 
-        if (!write_packet(output, 0x00, payload)) {
+        if (!write_packet(output, packet_ids().status_response, payload)) {
             LOG_WARN(Protocol, "write_status_response: failed to write packet");
             return false;
         }
@@ -147,8 +148,8 @@ namespace terila::protocol {
             return std::nullopt;
         }
 
-        if (packet->id != 0x00) {
-            LOG_WARN(Protocol, "read_status_response: unexpected packet id=0x{:02X} (expected 0x00)", packet->id);
+        if (packet->id != packet_ids().status_response) {
+            LOG_WARN(Protocol, "read_status_response: unexpected packet id=0x{:02X} (expected 0x{:02X})", packet->id, packet_ids().status_response);
             return std::nullopt;
         }
 

@@ -3,6 +3,7 @@
 #include "protocol/varint.hpp"
 #include "protocol/string.hpp"
 #include "protocol/packet.hpp"
+#include "protocol/packet_ids.hpp"
 #include "log/logger.hpp"
 #include <vector>
 #include <optional>
@@ -29,7 +30,7 @@ namespace terila::protocol {
 
 		LOG_DEBUG(Protocol, "write_handshake: protocol={} address={} port={} next_state={}", protocol, address, port, next_state);
 
-		return write_packet(output, 0x00, payload);
+		return write_packet(output, packet_ids().handshake, payload);
 	}
 
 	inline std::optional<HandshakeResult> read_handshake(const std::uint8_t* data, std::size_t length) {
@@ -40,8 +41,8 @@ namespace terila::protocol {
 			return std::nullopt;
 		}
 
-		if (packet->id != 0x00) {
-			LOG_WARN(Protocol, "read_handshake: unexpected packet id=0x{:02X} (expected 0x00)", packet->id);
+		if (packet->id != packet_ids().handshake) {
+			LOG_WARN(Protocol, "read_handshake: unexpected packet id=0x{:02X} (expected 0x{:02X})", packet->id, packet_ids().handshake);
 			return std::nullopt;
 		}
 

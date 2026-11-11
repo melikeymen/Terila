@@ -47,6 +47,9 @@ namespace terila::network {
 
     private:
 
+        // A peer that never completes a packet would otherwise grow the accumulator forever.
+        static constexpr std::size_t kMaxReadAccum = 4 * 1024 * 1024;
+
         enum class State {
             Handshake,
             Status,
@@ -113,6 +116,12 @@ namespace terila::network {
             read_accum_.insert(read_accum_.end(),
                 read_buffer_.begin(),
                 read_buffer_.begin() + bytes_transferred);
+
+            if (read_accum_.size() > kMaxReadAccum) {
+                LOG_ERROR(Network, "read buffer exceeded {} bytes, closing connection", kMaxReadAccum);
+                close();
+                return;
+            }
 
             process_packets();
 
@@ -291,6 +300,8 @@ namespace terila::network {
                         };
 
                     terila::world::flat::FlatSpec spec;
+                    spec.min_y = data_.overworld.min_y;
+                    spec.section_count = data_.overworld.height / 16;
 
                     // A single chunk is not enough to mesh: send the 3x3 area around spawn.
                     constexpr int kRadius = 1;
@@ -318,8 +329,10 @@ namespace terila::network {
 
                     // Vanilla sends the teleport before the game event, then the cache
                     // center, then the chunks wrapped in a batch.
-                    if (!terila::protocol::write_player_position(out, 1,
-                        8.5, -59.0, 8.5, 0.0, 0.0, 0.0, 0.0f, 0.0f)) {
+                    const double spawn_y =
+                        static_cast<double>(spec.min_y + spec.dirt_layers + 2);
+                    if (!terila::protocol::write_player_position(out, next_teleport_id_++,
+                        8.5, spawn_y, 8.5, 0.0, 0.0, 0.0, 0.0f, 0.0f)) {
                         LOG_ERROR(Network, "player_position failed"); return;
                     }
                     send(out); out.clear();
@@ -446,6 +459,7 @@ namespace terila::network {
         bool closed_ = false;
         asio::steady_timer keep_alive_timer_;
         std::int64_t next_keep_alive_id_ = 1;
+        std::int32_t next_teleport_id_ = 1;
         std::int64_t pending_keep_alive_id_ = 0;
         bool keep_alive_answered_ = true;
         const terila::data::RegistryData& data_;
