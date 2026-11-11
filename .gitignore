@@ -32,6 +32,7 @@ enc_temp_folder/
 
 # Build-system leftovers
 cmake-build-*/
+vcpkg_installed/
 install_manifest.txt
 compile_commands.json
 *.ninja

@@ -39,6 +39,7 @@ target_sources(terila PRIVATE
     "src/protocol/play.hpp"
     "src/protocol/packet_ids.hpp"
     "src/protocol/packet_ids_loader.hpp"
+    "src/protocol/uuid.hpp"
     "src/config/server_config.hpp"
     "src/world/chunk.hpp"
     "src/world/chunk_decoder.hpp"
@@ -81,7 +82,24 @@ target_compile_definitions(terila_asio INTERFACE ASIO_STANDALONE)
 find_package(Threads REQUIRED)
 target_link_libraries(terila_asio INTERFACE Threads::Threads)
 
-target_link_libraries(terila PRIVATE nlohmann_json::nlohmann_json terila_asio)
+# OpenSSL provides MD5 for offline-mode UUIDs. On Windows the vcpkg tree is the
+# usual location, so point FindOpenSSL at it when no root was given explicitly.
+if(WIN32 AND NOT DEFINED OPENSSL_ROOT_DIR)
+    find_program(VCPKG_EXECUTABLE NAMES vcpkg)
+    if(VCPKG_EXECUTABLE)
+        get_filename_component(vcpkg_root "${VCPKG_EXECUTABLE}" DIRECTORY)
+        if(EXISTS "${vcpkg_root}/installed/x64-windows/include/openssl/evp.h")
+            set(OPENSSL_ROOT_DIR "${vcpkg_root}/installed/x64-windows")
+            message(STATUS "OpenSSL root from vcpkg: ${OPENSSL_ROOT_DIR}")
+        endif()
+    endif()
+endif()
+
+find_package(OpenSSL REQUIRED)
+
+target_link_libraries(terila PRIVATE nlohmann_json::nlohmann_json terila_asio OpenSSL::Crypto)
+
+
 
 add_executable(protocol_tests
     "tests/protocol/varint_test.cpp"
@@ -91,6 +109,7 @@ add_executable(protocol_tests
     "tests/protocol/primitives_test.cpp"
     "tests/protocol/status_test.cpp"
     "tests/protocol/login_test.cpp"
+    "tests/protocol/uuid_test.cpp"
     "src/log/logger.cpp"
 )
 
@@ -106,7 +125,19 @@ target_include_directories(protocol_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${googletest_SOURCE_DIR}/googletest/include"
 )
-target_link_libraries(protocol_tests PRIVATE GTest::gtest_main nlohmann_json::nlohmann_json terila_asio)
+target_link_libraries(protocol_tests PRIVATE GTest::gtest_main nlohmann_json::nlohmann_json terila_asio OpenSSL::Crypto)
+
+# Windows needs the OpenSSL runtime next to the executables.
+if(WIN32)
+    file(GLOB OPENSSL_RUNTIME_DLLS "${OPENSSL_ROOT_DIR}/bin/libcrypto-*.dll")
+    if(OPENSSL_RUNTIME_DLLS)
+        foreach(target terila protocol_tests)
+            add_custom_command(TARGET ${target} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${OPENSSL_RUNTIME_DLLS} $<TARGET_FILE_DIR:${target}>)
+        endforeach()
+    endif()
+endif()
 
 add_executable(chunk_tests
     "tests/world/chunk_decoder_test.cpp"

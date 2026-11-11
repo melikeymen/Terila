@@ -4,6 +4,7 @@
 #include "log/logger.hpp"
 #include "protocol/play.hpp"
 #include "protocol/primitives.hpp"
+#include "protocol/uuid.hpp"
 #include "protocol/login.hpp"
 #include "protocol/packet.hpp"
 #include "protocol/handshake.hpp"
@@ -209,8 +210,10 @@ namespace terila::network {
                         return;
                     }
 
-                    std::array<std::uint8_t, 16> uuid{};
+                    const auto uuid = terila::protocol::offline_uuid(result->username);
                     std::array<std::uint8_t, 16> session_id{};
+                    LOG_DEBUG(Network, "offline uuid for {}: {}", result->username,
+                        terila::protocol::uuid_to_string(uuid));
 
                     std::vector<std::uint8_t> out;
 
