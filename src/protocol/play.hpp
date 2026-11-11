@@ -144,7 +144,7 @@ namespace terila::protocol {
             LOG_WARN(Protocol, "write_chunk_data: failed ({} bytes)", encoded_payload.size());
             return false;
         }
-        LOG_DEBUG(Protocol, "chunk_data: {} bytes", encoded_payload.size());
+        LOG_TRACE(Protocol, "chunk_data: {} bytes", encoded_payload.size());
         return true;
     }
 

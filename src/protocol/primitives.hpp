@@ -56,6 +56,18 @@ namespace terila::protocol {
 		output.push_back(static_cast<uint8_t>(bits & 0xFF));
 	}
 
+	inline std::optional<double> read_double(const std::uint8_t* data, std::size_t length, std::size_t offset = 0) {
+		if (data == nullptr || length < offset + 8) {
+			LOG_TRACE(Protocol, "read_double: insufficient data (length={}, offset={})", length, offset);
+			return std::nullopt;
+		}
+		std::uint64_t bits = 0;
+		for (int i = 0; i < 8; ++i) bits = (bits << 8) | data[offset + i];
+		double value = 0.0;
+		std::memcpy(&value, &bits, sizeof(value));
+		return value;
+	}
+
 	inline void write_double(std::vector<std::uint8_t>& output, double value) {
 		std::uint64_t bits;
 		std::memcpy(&bits, &value, sizeof(bits));

@@ -21,9 +21,25 @@ namespace terila::config {
         // AES/CFB8 encryption after the RSA exchange. Independent from online_mode:
         // offline clients can be encrypted too.
         bool          network_encryption = false;
+
+        // Chunk radius streamed around the player, in chunks.
+        int           view_distance = 10;
+
+        // Radius used for ticking; parsed only while the server has no entities.
+        int           simulation_distance = 10;
     };
 
     namespace detail {
+
+        inline int parse_distance(const std::string& value, int fallback, int min_value, int max_value) {
+            try {
+                const int parsed = std::stoi(value);
+                return std::min(std::max(parsed, min_value), max_value);
+            }
+            catch (...) {
+                return fallback;
+            }
+        }
 
         inline bool parse_bool(const std::string& value, bool fallback) {
             std::string lowered;
@@ -82,6 +98,12 @@ namespace terila::config {
             }
             else if (key == "network-encryption") {
                 out.network_encryption = detail::parse_bool(value, out.network_encryption);
+            }
+            else if (key == "view-distance") {
+                out.view_distance = detail::parse_distance(value, out.view_distance, 2, 32);
+            }
+            else if (key == "simulation-distance") {
+                out.simulation_distance = detail::parse_distance(value, out.simulation_distance, 1, 32);
             }
         }
 

@@ -23,13 +23,19 @@
 #include <optional>
 #include <string_view>
 #include <chrono>
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <unordered_set>
 
 namespace terila::network {
 
     class Connection : public std::enable_shared_from_this<Connection> {
     public:
-        explicit Connection(asio::ip::tcp::socket socket, const terila::data::RegistryData& data)
-            : socket_(std::move(socket)), keep_alive_timer_(socket_.get_executor()), data_(data)
+        explicit Connection(asio::ip::tcp::socket socket, const terila::data::RegistryData& data,
+            int view_distance)
+            : socket_(std::move(socket)), keep_alive_timer_(socket_.get_executor()), data_(data),
+              view_distance_(view_distance)
         {}
 
         void start() {
@@ -55,6 +61,14 @@ namespace terila::network {
 
         // A peer that never completes a packet would otherwise grow the accumulator forever.
         static constexpr std::size_t kMaxReadAccum = 4 * 1024 * 1024;
+
+        // Chunks per batch; the next batch waits until the previous one is on the wire.
+        static constexpr int kChunksPerBatch = 32;
+
+        struct ChunkPos {
+            std::int32_t x = 0;
+            std::int32_t z = 0;
+        };
 
         enum class State {
             Handshake,
@@ -304,36 +318,12 @@ namespace terila::network {
                 else if (id == ids.config_finish) {
                     LOG_DEBUG(Network, "state: Configuration → Play");
 
-                    auto resolve_block = [this](std::string_view name) -> std::optional<std::int32_t> {
-                        auto it = data_.block_state_ids.find(std::string(name));
-                        if (it == data_.block_state_ids.end()) return std::nullopt;
-                        return it->second;
-                        };
-                    auto resolve_biome = [this](std::string_view name) -> std::optional<std::int32_t> {
-                        auto it = data_.biome_ids.find(std::string(name));
-                        if (it == data_.biome_ids.end()) return std::nullopt;
-                        return it->second;
-                        };
-
-                    terila::world::flat::FlatSpec spec;
-                    spec.min_y = data_.overworld.min_y;
-                    spec.section_count = data_.overworld.height / 16;
-
-                    // A single chunk is not enough to mesh: send the 3x3 area around spawn.
-                    constexpr int kRadius = 1;
-                    std::vector<std::vector<std::uint8_t>> chunks;
-                    chunks.reserve((2 * kRadius + 1) * (2 * kRadius + 1));
-                    for (int cz = -kRadius; cz <= kRadius; ++cz) {
-                        for (int cx = -kRadius; cx <= kRadius; ++cx) {
-                            auto c = terila::world::flat::generate(cx, cz, spec, resolve_block, resolve_biome);
-                            if (!c) {
-                                LOG_ERROR(Network, "cannot generate chunk ({}, {})", cx, cz);
-                                return;
-                            }
-                            chunks.push_back(terila::world::encode::encode(*c));
-                        }
+                    build_chunk_template();
+                    if (chunk_template_.empty()) {
+                        LOG_ERROR(Network, "chunk template unavailable, closing the connection");
+                        close();
+                        return;
                     }
-                    LOG_DEBUG(Chunk, "{} chunks encoded, {} bytes each", chunks.size(), chunks[4].size());
 
 
                     std::vector<std::uint8_t> out;
@@ -346,7 +336,7 @@ namespace terila::network {
                     // Vanilla sends the teleport before the game event, then the cache
                     // center, then the chunks wrapped in a batch.
                     const double spawn_y =
-                        static_cast<double>(spec.min_y + spec.dirt_layers + 2);
+                        static_cast<double>(spec_.min_y + spec_.dirt_layers + 2);
                     if (!terila::protocol::write_player_position(out, next_teleport_id_++,
                         8.5, spawn_y, 8.5, 0.0, 0.0, 0.0, 0.0f, 0.0f)) {
                         LOG_ERROR(Network, "player_position failed"); return;
@@ -361,29 +351,17 @@ namespace terila::network {
                     if (!terila::protocol::write_set_center_chunk(out, 0, 0)) {
                         LOG_ERROR(Network, "set_center_chunk failed"); return;
                     }
-                    send(out); out.clear();
-
-                    if (!terila::protocol::write_chunk_batch_start(out)) {
-                        LOG_ERROR(Network, "chunk_batch_start failed"); return;
-                    }
-                    send(out); out.clear();
-
-                    for (const auto& wire : chunks) {
-                        if (!terila::protocol::write_chunk_data(out, wire)) {
-                            LOG_ERROR(Network, "chunk_data failed"); return;
-                        }
-                        send(out); out.clear();
-                    }
-
-                    if (!terila::protocol::write_chunk_batch_finished(out, static_cast<std::int32_t>(chunks.size()))) {
-                        LOG_ERROR(Network, "chunk_batch_finished failed"); return;
-                    }
                     send(out);
 
                     state_ = State::Play;
                     joined_ = true;
                     start_keep_alive();
                     LOG_INFO(Network, "{} joined the game", username_);
+
+                    // From here chunks stream in batches, both at spawn and while walking.
+                    center_cx_ = 0;
+                    center_cz_ = 0;
+                    queue_chunk_area(0, 0);
                 }
                 break;
 
@@ -401,6 +379,15 @@ namespace terila::network {
                     else {
                         keep_alive_answered_ = true;
                         LOG_DEBUG(Network, "keep_alive reply: id={}", *value);
+                    }
+                    break;
+                }
+                if (id == ids.play_move_player_pos || id == ids.play_move_player_pos_rot) {
+                    const auto x = terila::protocol::read_double(payload.data(), payload.size(), 0);
+                    const auto z = terila::protocol::read_double(payload.data(), payload.size(), 16);
+                    if (x.has_value() && z.has_value()) {
+                        LOG_TRACE(Network, "player moved to ({:.2f}, {:.2f})", *x, *z);
+                        update_player_chunk(*x, *z);
                     }
                     break;
                 }
@@ -425,6 +412,135 @@ namespace terila::network {
             asio::error_code ignored;
             keep_alive_timer_.cancel(ignored);
             socket_.close(ignored);
+        }
+
+        static std::uint64_t chunk_key(std::int32_t cx, std::int32_t cz) noexcept {
+            return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(cx)) << 32) |
+                static_cast<std::uint32_t>(cz);
+        }
+
+        // Flat chunks are identical except for their coordinates, so one encode is enough.
+        void build_chunk_template() {
+            if (!chunk_template_.empty()) {
+                return;
+            }
+
+            auto resolve_block = [this](std::string_view name) -> std::optional<std::int32_t> {
+                auto it = data_.block_state_ids.find(std::string(name));
+                if (it == data_.block_state_ids.end()) return std::nullopt;
+                return it->second;
+                };
+            auto resolve_biome = [this](std::string_view name) -> std::optional<std::int32_t> {
+                auto it = data_.biome_ids.find(std::string(name));
+                if (it == data_.biome_ids.end()) return std::nullopt;
+                return it->second;
+                };
+
+            spec_ = terila::world::flat::FlatSpec{};
+            spec_.min_y = data_.overworld.min_y;
+            spec_.section_count = data_.overworld.height / 16;
+
+            const auto chunk = terila::world::flat::generate(0, 0, spec_, resolve_block, resolve_biome);
+            if (!chunk) {
+                LOG_ERROR(Chunk, "cannot generate the flat chunk template");
+                return;
+            }
+
+            chunk_template_ = terila::world::encode::encode(*chunk);
+            LOG_DEBUG(Chunk, "chunk template encoded: {} bytes", chunk_template_.size());
+        }
+
+        std::vector<std::uint8_t> chunk_at(std::int32_t cx, std::int32_t cz) const {
+            std::vector<std::uint8_t> out = chunk_template_;
+            for (int i = 0; i < 4; ++i) {
+                out[i] = static_cast<std::uint8_t>((static_cast<std::uint32_t>(cx) >> ((3 - i) * 8)) & 0xFF);
+                out[4 + i] = static_cast<std::uint8_t>((static_cast<std::uint32_t>(cz) >> ((3 - i) * 8)) & 0xFF);
+            }
+            return out;
+        }
+
+        void queue_chunk_area(std::int32_t center_cx, std::int32_t center_cz) {
+            // Rings go outwards, so the ground under the player arrives first.
+            for (int ring = 0; ring <= view_distance_; ++ring) {
+                for (int dz = -ring; dz <= ring; ++dz) {
+                    for (int dx = -ring; dx <= ring; ++dx) {
+                        if (ring > 0 && std::max(std::abs(dx), std::abs(dz)) != ring) continue;
+
+                        const std::int32_t cx = center_cx + dx;
+                        const std::int32_t cz = center_cz + dz;
+                        if (!sent_chunks_.insert(chunk_key(cx, cz)).second) continue;
+                        pending_chunks_.push_back(ChunkPos{ cx, cz });
+                    }
+                }
+            }
+
+            LOG_DEBUG(Chunk, "chunks queued around ({}, {}): {} waiting", center_cx, center_cz,
+                pending_chunks_.size());
+            pump_chunks();
+        }
+
+        // Chunks left far behind are forgotten so they are streamed again on the way back.
+        void forget_far_chunks(std::int32_t center_cx, std::int32_t center_cz) {
+            const int limit = view_distance_ + 2;
+            for (auto it = sent_chunks_.begin(); it != sent_chunks_.end();) {
+                const auto cx = static_cast<std::int32_t>(*it >> 32);
+                const auto cz = static_cast<std::int32_t>(*it & 0xFFFFFFFFu);
+                if (std::abs(cx - center_cx) > limit || std::abs(cz - center_cz) > limit) {
+                    it = sent_chunks_.erase(it);
+                }
+                else {
+                    ++it;
+                }
+            }
+        }
+
+        void pump_chunks() {
+            if (pending_chunks_.empty() || write_queue_.size() > 1) {
+                return;
+            }
+
+            std::vector<std::uint8_t> out;
+            if (!terila::protocol::write_chunk_batch_start(out)) return;
+            send(out);
+            out.clear();
+
+            int count = 0;
+            while (!pending_chunks_.empty() && count < kChunksPerBatch) {
+                const auto pos = pending_chunks_.front();
+                pending_chunks_.pop_front();
+
+                if (!terila::protocol::write_chunk_data(out, chunk_at(pos.x, pos.z))) {
+                    return;
+                }
+                send(out);
+                out.clear();
+                ++count;
+            }
+
+            if (!terila::protocol::write_chunk_batch_finished(out, count)) return;
+            send(out);
+
+            LOG_DEBUG(Chunk, "chunk batch sent: {} chunks, {} waiting", count, pending_chunks_.size());
+        }
+
+        void update_player_chunk(double x, double z) {
+            const auto cx = static_cast<std::int32_t>(std::floor(x / 16.0));
+            const auto cz = static_cast<std::int32_t>(std::floor(z / 16.0));
+            if (cx == center_cx_ && cz == center_cz_) {
+                return;
+            }
+
+            center_cx_ = cx;
+            center_cz_ = cz;
+            LOG_TRACE(Network, "chunk center moved to ({}, {})", cx, cz);
+
+            std::vector<std::uint8_t> out;
+            if (terila::protocol::write_set_center_chunk(out, cx, cz)) {
+                send(out);
+            }
+
+            forget_far_chunks(cx, cz);
+            queue_chunk_area(cx, cz);
         }
 
         void start_keep_alive() {
@@ -472,6 +588,7 @@ namespace terila::network {
                     LOG_TRACE(Network, "wrote {} bytes", bytes_transferred);
                     self->write_queue_.pop_front();
                     self->do_write();
+                    self->pump_chunks();
                 }
             );
         }
@@ -491,6 +608,13 @@ namespace terila::network {
         std::string username_;
         std::string remote_;
         bool joined_ = false;
+        int view_distance_ = 10;
+        std::int32_t center_cx_ = 0;
+        std::int32_t center_cz_ = 0;
+        terila::world::flat::FlatSpec spec_;
+        std::vector<std::uint8_t> chunk_template_;
+        std::deque<ChunkPos> pending_chunks_;
+        std::unordered_set<std::uint64_t> sent_chunks_;
         const terila::data::RegistryData& data_;
     };
 

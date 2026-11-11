@@ -49,8 +49,9 @@ int main() {
     terila::log::init(cfg);
 
     LOG_INFO(Main, "server starting");
-    LOG_DEBUG(Main, "config: bind={} port={} log_level={} online_mode={} network_encryption={}",
-        srv.bind_address, srv.port, srv.log_level, srv.online_mode, srv.network_encryption);
+    LOG_DEBUG(Main, "config: bind={} port={} log_level={} online_mode={} network_encryption={} view_distance={} simulation_distance={}",
+        srv.bind_address, srv.port, srv.log_level, srv.online_mode, srv.network_encryption,
+        srv.view_distance, srv.simulation_distance);
 
     const std::string in = (base / "input").string();
     terila::protocol::load_packet_ids(in + "/packets/ids.json");
@@ -148,7 +149,7 @@ int main() {
 
     auto do_accept = [&](auto&& self) -> void {
         acceptor.async_accept(
-            [&acceptor, &data, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
+            [&acceptor, &data, &srv, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
                 if (error) {
                     LOG_ERROR(Network, "accept failed: {} ({})", error.message(), error.value());
                     self(self);
@@ -159,7 +160,8 @@ int main() {
                 if (!ep_ec) {
                     LOG_DEBUG(Network, "new connection from {}:{}", remote_ep.address().to_string(), remote_ep.port());
                 }
-                auto conn = std::make_shared<terila::network::Connection>(std::move(socket), data);
+                auto conn = std::make_shared<terila::network::Connection>(std::move(socket), data,
+                    srv.view_distance);
                 conn->start();
                 self(self);
             }
