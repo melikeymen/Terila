@@ -14,9 +14,28 @@ namespace terila::config {
         std::uint16_t port = 25565;
         std::string   log_level = "info";
         std::string   log_file = "";
+
+        // Mojang session authentication. false lets cracked (offline) clients join.
+        bool          online_mode = false;
+
+        // AES/CFB8 encryption after the RSA exchange. Independent from online_mode:
+        // offline clients can be encrypted too.
+        bool          network_encryption = false;
     };
 
     namespace detail {
+
+        inline bool parse_bool(const std::string& value, bool fallback) {
+            std::string lowered;
+            lowered.reserve(value.size());
+            for (char c : value) {
+                lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+            }
+
+            if (lowered == "true" || lowered == "1" || lowered == "yes" || lowered == "on") return true;
+            if (lowered == "false" || lowered == "0" || lowered == "no" || lowered == "off") return false;
+            return fallback;
+        }
 
         inline std::string trim(const std::string& s) {
             auto start = s.begin();
@@ -57,6 +76,12 @@ namespace terila::config {
             }
             else if (key == "log-file") {
                 out.log_file = value;
+            }
+            else if (key == "online-mode") {
+                out.online_mode = detail::parse_bool(value, out.online_mode);
+            }
+            else if (key == "network-encryption") {
+                out.network_encryption = detail::parse_bool(value, out.network_encryption);
             }
         }
 

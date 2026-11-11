@@ -34,13 +34,23 @@ int main() {
     terila::config::ServerConfig srv;
     terila::config::load(srv, (base / "server.properties").string());
 
+    if (srv.online_mode) {
+        LOG_WARN(Main, "online-mode=true is not implemented yet, staying in offline mode");
+        srv.online_mode = false;
+    }
+    if (srv.network_encryption) {
+        LOG_WARN(Main, "network-encryption=true is not implemented yet, connections stay unencrypted");
+        srv.network_encryption = false;
+    }
+
     terila::log::Config cfg;
     if (auto lvl = terila::log::parse_level(srv.log_level)) cfg.min_level = *lvl;
     cfg.file_path = srv.log_file;
     terila::log::init(cfg);
 
     LOG_INFO(Main, "server starting");
-    LOG_DEBUG(Main, "config: bind={} port={} log_level={}", srv.bind_address, srv.port, srv.log_level);
+    LOG_DEBUG(Main, "config: bind={} port={} log_level={} online_mode={} network_encryption={}",
+        srv.bind_address, srv.port, srv.log_level, srv.online_mode, srv.network_encryption);
 
     const std::string in = (base / "input").string();
     terila::protocol::load_packet_ids(in + "/packets/ids.json");
