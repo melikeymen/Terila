@@ -30,6 +30,10 @@ namespace terila::config {
 
         // Advertised in the login packet and the status response.
         int           max_players = 20;
+
+        // 0 survival, 1 creative, 2 adventure, 3 spectator. Creative is the default
+        // because block placement needs the creative inventory.
+        int           gamemode = 1;
     };
 
     namespace detail {
@@ -118,6 +122,9 @@ namespace terila::config {
             }
             else if (key == "max-players") {
                 out.max_players = detail::parse_distance(value, out.max_players, 1, 1000);
+            }
+            else if (key == "gamemode") {
+                out.gamemode = detail::parse_distance(value, out.gamemode, 0, 3);
             }
         }
 

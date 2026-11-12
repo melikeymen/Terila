@@ -7,6 +7,7 @@
 #include "config/server_config.hpp"
 #include "protocol/packet_ids_loader.hpp"
 #include "entity/mob.hpp"
+#include "world/block_world.hpp"
 #include <nlohmann/json.hpp>
 #include <memory>
 #include <filesystem>
@@ -17,6 +18,7 @@
 #include <vector>
 #include <string>
 #include <unordered_set>
+#include <unordered_map>
 
 namespace fs = std::filesystem;
 
@@ -128,6 +130,7 @@ int main() {
     terila::data::load_dimensions(data.overworld, in + "/worldgen/dimensions.json");
     terila::data::load_entity_type_ids(data.entity_type_ids, in + "/entities/minecraft.json");
     terila::data::load_entity_categories(data.entity_categories, in + "/entities/minecraft.json");
+    terila::data::load_item_ids(data.item_ids, in + "/items/minecraft.json");
 
     if (data.block_state_ids.empty()) { LOG_FATAL(Data, "block_state_ids empty"); return 7; }
     if (data.biome_ids.empty()) { LOG_FATAL(Data, "biome_ids empty");       return 7; }
@@ -176,6 +179,17 @@ int main() {
     }
     LOG_INFO(Entity, "spawned {} of {} registered mob types", spawned, living_types.size());
 
+    // Items whose id doubles as a placeable block, e.g. minecraft:stone.
+    std::unordered_map<std::int32_t, std::int32_t> item_block_state;
+    for (const auto& entry : data.item_ids) {
+        const auto block = data.block_state_ids.find(entry.first);
+        if (block == data.block_state_ids.end()) continue;
+        item_block_state[entry.second] = block->second;
+    }
+    LOG_DEBUG(Data, "placeable block items: {}", item_block_state.size());
+
+    terila::world::BlockWorld world;
+
     // Network
     asio::io_context io;
     std::error_code ec;
@@ -203,12 +217,21 @@ int main() {
 
     std::vector<std::weak_ptr<terila::network::Connection>> players;
 
+    // One registry for the whole server: connections register themselves when
+    // they join, which is what lets players see each other and the status
+    // response report a real online count.
+    auto player_hub = std::make_shared<terila::network::PlayerHub>();
+    player_hub->set_view_distance(srv.view_distance);
+    if (const auto it = data.entity_type_ids.find("minecraft:player"); it != data.entity_type_ids.end()) {
+        player_hub->set_player_type_id(it->second);
+    }
+
     // Mobs use 1..N, so player entities start well above them.
     std::int32_t next_player_entity_id = 1000;
 
     auto do_accept = [&](auto&& self) -> void {
         acceptor.async_accept(
-            [&acceptor, &data, &mobs, &srv, &players, &next_player_entity_id, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
+            [&acceptor, &data, &mobs, &world, &item_block_state, &srv, &players, &player_hub, &next_player_entity_id, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
                 if (error) {
                     LOG_ERROR(Network, "accept failed: {} ({})", error.message(), error.value());
                     self(self);
@@ -220,8 +243,8 @@ int main() {
                     LOG_DEBUG(Network, "new connection from {}:{}", remote_ep.address().to_string(), remote_ep.port());
                 }
                 auto conn = std::make_shared<terila::network::Connection>(std::move(socket), data, mobs,
-                    srv.view_distance, srv.simulation_distance,
-                    static_cast<int>(srv.max_players), next_player_entity_id++);
+                    world, item_block_state, player_hub, srv.view_distance, srv.simulation_distance,
+                    static_cast<int>(srv.max_players), next_player_entity_id++, srv.gamemode);
                 conn->start();
                 players.push_back(conn);
                 self(self);

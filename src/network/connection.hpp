@@ -16,7 +16,11 @@
 #include "world/chunk_encoder.hpp"
 #include "world/flat_generator.hpp"
 #include "protocol/entity.hpp"
+#include "protocol/block.hpp"
 #include "entity/mob.hpp"
+#include "world/block_world.hpp"
+#include "network/player_hub.hpp"
+#include <cstring>
 #include <memory>
 #include <array>
 #include <cstdint>
@@ -36,12 +40,16 @@ namespace terila::network {
     class Connection : public std::enable_shared_from_this<Connection> {
     public:
         explicit Connection(asio::ip::tcp::socket socket, const terila::data::RegistryData& data,
-            terila::entity::MobManager& mobs, int view_distance, int simulation_distance,
-            int max_players, std::int32_t entity_id)
+            terila::entity::MobManager& mobs, terila::world::BlockWorld& world,
+            const std::unordered_map<std::int32_t, std::int32_t>& item_block_state,
+            std::shared_ptr<PlayerHub> hub,
+            int view_distance, int simulation_distance, int max_players,
+            std::int32_t entity_id, int gamemode)
             : socket_(std::move(socket)), keep_alive_timer_(socket_.get_executor()), data_(data),
-              mobs_(mobs), view_distance_(view_distance),
-              simulation_distance_(simulation_distance), max_players_(max_players),
-              entity_id_(entity_id)
+              mobs_(mobs), world_(world), item_block_state_(item_block_state),
+              hub_(std::move(hub)),
+              view_distance_(view_distance), simulation_distance_(simulation_distance),
+              max_players_(max_players), entity_id_(entity_id), gamemode_(gamemode)
         {}
 
         void start() {
@@ -227,8 +235,8 @@ namespace terila::network {
                     terila::protocol::StatusResponse resp;
                     resp.version_name = "26.3";
                     resp.version_protocol = 777;
-                    resp.players_max = 20;
-                    resp.players_online = 0;
+                    resp.players_max = max_players_;
+                    resp.players_online = static_cast<std::int32_t>(hub_ ? hub_->count() : 0);
                     resp.description = "Terila Server";
                     resp.favicon = "";
 
@@ -267,6 +275,7 @@ namespace terila::network {
                     }
 
                     const auto uuid = terila::protocol::offline_uuid(result->username);
+                    uuid_ = uuid;
                     std::array<std::uint8_t, 16> session_id{};
                     username_ = result->username;
 
@@ -369,7 +378,8 @@ namespace terila::network {
 
                     std::vector<std::uint8_t> out;
 
-                    if (!terila::protocol::write_login_play(out, entity_id_, false, 0,
+                    if (!terila::protocol::write_login_play(out, entity_id_, false,
+                        static_cast<std::uint8_t>(gamemode_),
                         "minecraft:overworld", max_players_, view_distance_, simulation_distance_)) {
                         LOG_ERROR(Network, "login_play failed");
                         close();
@@ -415,6 +425,16 @@ namespace terila::network {
                     player_y_ = spawn_y;
                     player_z_ = 8.5;
                     queue_chunk_area(0, 0);
+                    if (hub_) {
+                        const auto weak_self = weak_from_this();
+                        hub_->join(entity_id_, uuid_, username_, gamemode_,
+                            PlayerHub::Position{ player_x_, player_y_, player_z_, yaw_, pitch_ },
+                            [weak_self](const std::vector<std::uint8_t>& packet) {
+                                if (const auto connection = weak_self.lock()) {
+                                    connection->send(packet);
+                                }
+                            });
+                    }
                 }
                 break;
 
@@ -433,6 +453,72 @@ namespace terila::network {
                         keep_alive_answered_ = true;
                         LOG_DEBUG(Network, "keep_alive reply: id={}", *value);
                     }
+                    break;
+                }
+                if (id == ids.play_set_carried_item) {
+                    if (payload.size() < 2) break;
+                    carried_slot_ = static_cast<std::int32_t>((payload[0] << 8) | payload[1]);
+                    refresh_held_item();
+                    break;
+                }
+                if (id == ids.play_set_creative_mode_slot) {
+                    if (payload.size() < 2) break;
+                    const std::int32_t slot = static_cast<std::int32_t>((payload[0] << 8) | payload[1]);
+
+                    const auto count = terila::protocol::read_varint(payload.data() + 2, payload.size() - 2);
+                    if (!count.has_value()) break;
+                    const auto item = terila::protocol::read_varint(
+                        payload.data() + 2 + count->consumed,
+                        payload.size() - 2 - count->consumed);
+
+                    creative_slots_[slot] = item.has_value() ? item->value : 0;
+                    refresh_held_item();
+                    break;
+                }
+                if (id == ids.play_player_action) {
+                    const auto action = terila::protocol::read_varint(payload.data(), payload.size());
+                    if (!action.has_value() || payload.size() < action->consumed + 8) {
+                        LOG_WARN(Network, "invalid player_action ({} bytes)", payload.size());
+                        break;
+                    }
+
+                    const auto pos = terila::protocol::unpack_block_pos(
+                        payload.data() + action->consumed, payload.size() - action->consumed);
+
+                    // Face is one byte, then the sequence varint.
+                    const std::size_t sequence_offset = action->consumed + 8 + 1;
+                    const auto sequence = terila::protocol::read_varint(
+                        payload.data() + sequence_offset, payload.size() - sequence_offset);
+
+                    // 2 = finished destroying the block; creative clients finish at once.
+                    if (action->value == 2) {
+                        handle_block_break(pos, sequence.has_value() ? sequence->value : 0);
+                    }
+                    break;
+                }
+                if (id == ids.play_use_item_on) {
+                    const auto hand = terila::protocol::read_varint(payload.data(), payload.size());
+                    if (!hand.has_value() || payload.size() < hand->consumed + 8) {
+                        LOG_WARN(Network, "invalid use_item_on ({} bytes)", payload.size());
+                        break;
+                    }
+
+                    const auto pos = terila::protocol::unpack_block_pos(
+                        payload.data() + hand->consumed, payload.size() - hand->consumed);
+
+                    std::size_t offset = hand->consumed + 8;
+                    const auto face = terila::protocol::read_varint(
+                        payload.data() + offset, payload.size() - offset);
+                    if (!face.has_value()) break;
+
+                    // Cursor position (three floats) and two booleans precede the sequence.
+                    offset += face->consumed + 12 + 2;
+                    if (offset > payload.size()) break;
+                    const auto sequence = terila::protocol::read_varint(
+                        payload.data() + offset, payload.size() - offset);
+
+                    handle_block_place(pos, face->value,
+                        sequence.has_value() ? sequence->value : 0);
                     break;
                 }
                 if (id == ids.play_attack) {
@@ -463,6 +549,24 @@ namespace terila::network {
                         player_z_ = *z;
                         LOG_TRACE(Network, "player moved to ({:.2f}, {:.2f}, {:.2f})", *x, *y, *z);
                         update_player_chunk(*x, *z);
+                        if (id == ids.play_move_player_pos_rot && payload.size() >= 32) {
+                            const auto read_angle = [&payload](std::size_t offset) {
+                                const std::uint32_t bits =
+                                    (static_cast<std::uint32_t>(payload[offset + 0]) << 24) |
+                                    (static_cast<std::uint32_t>(payload[offset + 1]) << 16) |
+                                    (static_cast<std::uint32_t>(payload[offset + 2]) << 8) |
+                                    static_cast<std::uint32_t>(payload[offset + 3]);
+                                float value = 0.0f;
+                                std::memcpy(&value, &bits, sizeof(value));
+                                return value;
+                            };
+                            yaw_ = read_angle(24);
+                            pitch_ = read_angle(28);
+                        }
+                        if (hub_) {
+                            hub_->move(entity_id_,
+                                PlayerHub::Position{ player_x_, player_y_, player_z_, yaw_, pitch_ });
+                        }
                     }
                     break;
                 }
@@ -476,6 +580,10 @@ namespace terila::network {
                 return;
             }
             closed_ = true;
+
+            if (hub_ && joined_) {
+                hub_->leave(entity_id_);
+            }
 
             if (joined_) {
                 LOG_INFO(Network, "{} left the game", username_);
@@ -500,20 +608,17 @@ namespace terila::network {
                 return;
             }
 
-            auto resolve_block = [this](std::string_view name) -> std::optional<std::int32_t> {
-                auto it = data_.block_state_ids.find(std::string(name));
-                if (it == data_.block_state_ids.end()) return std::nullopt;
-                return it->second;
-                };
-            auto resolve_biome = [this](std::string_view name) -> std::optional<std::int32_t> {
-                auto it = data_.biome_ids.find(std::string(name));
-                if (it == data_.biome_ids.end()) return std::nullopt;
-                return it->second;
-                };
+            const auto resolve_block = [this](std::string_view name) { return block_state(name); };
+            const auto resolve_biome = [this](std::string_view name) { return biome_state(name); };
 
             spec_ = terila::world::flat::FlatSpec{};
             spec_.min_y = data_.overworld.min_y;
             spec_.section_count = data_.overworld.height / 16;
+
+            air_state_ = block_state(spec_.air).value_or(0);
+            bedrock_state_ = block_state(spec_.bedrock).value_or(0);
+            dirt_state_ = block_state(spec_.dirt).value_or(0);
+            grass_state_ = block_state(spec_.grass).value_or(0);
 
             const auto chunk = terila::world::flat::generate(0, 0, spec_, resolve_block, resolve_biome);
             if (!chunk) {
@@ -525,7 +630,19 @@ namespace terila::network {
             LOG_DEBUG(Chunk, "chunk template encoded: {} bytes", chunk_template_.size());
         }
 
-        std::vector<std::uint8_t> chunk_at(std::int32_t cx, std::int32_t cz) const {
+        // Chunks that hold player edits are rebuilt from the generator with the
+        // overlay applied; everything else keeps the shared template.
+        std::vector<std::uint8_t> chunk_at(std::int32_t cx, std::int32_t cz) {
+            if (world_.chunk_modified(cx, cz)) {
+                const auto resolve_block = [this](std::string_view name) { return block_state(name); };
+                const auto resolve_biome = [this](std::string_view name) { return biome_state(name); };
+                auto chunk = terila::world::flat::generate(cx, cz, spec_, resolve_block, resolve_biome);
+                if (chunk) {
+                    world_.apply(*chunk, air_state_);
+                    return terila::world::encode::encode(*chunk);
+                }
+            }
+
             std::vector<std::uint8_t> out = chunk_template_;
             for (int i = 0; i < 4; ++i) {
                 out[i] = static_cast<std::uint8_t>((static_cast<std::uint32_t>(cx) >> ((3 - i) * 8)) & 0xFF);
@@ -567,6 +684,100 @@ namespace terila::network {
                     ++it;
                 }
             }
+        }
+
+        std::optional<std::int32_t> block_state(std::string_view name) const {
+            const auto it = data_.block_state_ids.find(std::string(name));
+            if (it == data_.block_state_ids.end()) return std::nullopt;
+            return it->second;
+        }
+
+        std::optional<std::int32_t> biome_state(std::string_view name) const {
+            const auto it = data_.biome_ids.find(std::string(name));
+            if (it == data_.biome_ids.end()) return std::nullopt;
+            return it->second;
+        }
+
+        // The generated flat world, used when a position has no override yet.
+        std::int32_t base_state_at(std::int32_t y) const {
+            const std::int32_t local = y - spec_.min_y;
+            if (local == 0) return bedrock_state_;
+            if (local > 0 && local <= spec_.dirt_layers) return dirt_state_;
+            if (local == spec_.dirt_layers + 1) return grass_state_;
+            return air_state_;
+        }
+
+        std::int32_t state_at(const terila::world::BlockPos& pos) const {
+            return world_.get(pos, base_state_at(pos.y));
+        }
+
+        bool inside_world(std::int32_t y) const {
+            return y >= spec_.min_y && y < spec_.min_y + spec_.section_count * 16;
+        }
+
+        void send_block_change(const terila::world::BlockPos& pos, std::int32_t state,
+            std::int32_t sequence) {
+            std::vector<std::uint8_t> out;
+            if (terila::protocol::write_block_update(out, pos.x, pos.y, pos.z, state)) {
+                send(out);
+            }
+            out.clear();
+            if (terila::protocol::write_block_changed_ack(out, sequence)) {
+                send(out);
+            }
+        }
+
+        void handle_block_break(const terila::protocol::BlockPosValue& clicked, std::int32_t sequence) {
+            const terila::world::BlockPos target{ clicked.x, clicked.y, clicked.z };
+            if (!inside_world(target.y)) {
+                return;
+            }
+            if (state_at(target) == air_state_) {
+                return;
+            }
+
+            world_.set(target, air_state_);
+            send_block_change(target, air_state_, sequence);
+            LOG_DEBUG(Network, "{} broke a block at ({}, {}, {})",
+                username_, target.x, target.y, target.z);
+        }
+
+        void handle_block_place(const terila::protocol::BlockPosValue& clicked, std::int32_t face,
+            std::int32_t sequence) {
+            static constexpr std::int32_t kFaceOffset[6][3] = {
+                { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }, { -1, 0, 0 }, { 1, 0, 0 }
+            };
+            if (face < 0 || face > 5) {
+                return;
+            }
+
+            const terila::world::BlockPos target{ clicked.x + kFaceOffset[face][0],
+                                                  clicked.y + kFaceOffset[face][1],
+                                                  clicked.z + kFaceOffset[face][2] };
+            if (!inside_world(target.y)) {
+                return;
+            }
+            if (state_at(target) != air_state_) {
+                return;
+            }
+
+            const auto it = item_block_state_.find(held_item_id_);
+            if (it == item_block_state_.end()) {
+                LOG_DEBUG(Network, "held item {} has no block form", held_item_id_);
+                return;
+            }
+
+            world_.set(target, it->second);
+            send_block_change(target, it->second, sequence);
+            LOG_DEBUG(Network, "{} placed block state {} at ({}, {}, {})",
+                username_, it->second, target.x, target.y, target.z);
+        }
+
+        void refresh_held_item() {
+            const std::int32_t hotbar_slot = 36 + carried_slot_;
+            const auto it = creative_slots_.find(hotbar_slot);
+            held_item_id_ = (it == creative_slots_.end()) ? 0 : it->second;
+            LOG_DEBUG(Network, "held item is now {} (hotbar slot {})", held_item_id_, carried_slot_);
         }
 
         void pump_chunks() {
@@ -837,6 +1048,20 @@ namespace terila::network {
         double player_z_ = 8.5;
         const terila::data::RegistryData& data_;
         terila::entity::MobManager& mobs_;
+        terila::world::BlockWorld& world_;
+        const std::unordered_map<std::int32_t, std::int32_t>& item_block_state_;
+        std::shared_ptr<PlayerHub> hub_;
+        std::array<std::uint8_t, 16> uuid_{};
+        float yaw_ = 0.0f;
+        float pitch_ = 0.0f;
+        int gamemode_ = 1;
+        std::int32_t air_state_ = 0;
+        std::int32_t bedrock_state_ = 0;
+        std::int32_t dirt_state_ = 0;
+        std::int32_t grass_state_ = 0;
+        std::int32_t carried_slot_ = 0;
+        std::int32_t held_item_id_ = 0;
+        std::unordered_map<std::int32_t, std::int32_t> creative_slots_;
     };
 
 } // namespace terila::network

@@ -89,6 +89,10 @@ namespace terila::protocol {
         set(ids.play_move_player_pos, find("play", "serverbound", "minecraft:move_player_pos"), "play_move_player_pos");
         set(ids.play_move_player_pos_rot, find("play", "serverbound", "minecraft:move_player_pos_rot"), "play_move_player_pos_rot");
         set(ids.play_attack, find("play", "serverbound", "minecraft:attack"), "play_attack");
+        set(ids.play_player_action, find("play", "serverbound", "minecraft:player_action"), "play_player_action");
+        set(ids.play_use_item_on, find("play", "serverbound", "minecraft:use_item_on"), "play_use_item_on");
+        set(ids.play_set_creative_mode_slot, find("play", "serverbound", "minecraft:set_creative_mode_slot"), "play_set_creative_mode_slot");
+        set(ids.play_set_carried_item, find("play", "serverbound", "minecraft:set_carried_item"), "play_set_carried_item");
 
         // Entity tracking
         set(ids.play_add_entity, find("play", "clientbound", "minecraft:add_entity"), "play_add_entity");
@@ -99,6 +103,11 @@ namespace terila::protocol {
         set(ids.play_rotate_head, find("play", "clientbound", "minecraft:rotate_head"), "play_rotate_head");
         set(ids.play_entity_event, find("play", "clientbound", "minecraft:entity_event"), "play_entity_event");
         set(ids.play_hurt_animation, find("play", "clientbound", "minecraft:hurt_animation"), "play_hurt_animation");
+        set(ids.play_player_info_update, find("play", "clientbound", "minecraft:player_info_update"), "play_player_info_update");
+        set(ids.play_player_info_remove, find("play", "clientbound", "minecraft:player_info_remove"), "play_player_info_remove");
+        set(ids.play_block_update, find("play", "clientbound", "minecraft:block_update"), "play_block_update");
+        set(ids.play_block_changed_ack, find("play", "clientbound", "minecraft:block_changed_ack"), "play_block_changed_ack");
+        set(ids.play_section_blocks_update, find("play", "clientbound", "minecraft:section_blocks_update"), "play_section_blocks_update");
 
         LOG_DEBUG(Protocol, "resolved IDs: login=0x{:02X} pos=0x{:02X} event=0x{:02X} center=0x{:02X} chunk=0x{:02X}",
             ids.play_login, ids.play_player_position, ids.play_game_event,

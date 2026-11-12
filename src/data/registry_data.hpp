@@ -27,6 +27,7 @@ namespace terila::data {
         std::unordered_map<std::string, std::int32_t> biome_ids;
         std::unordered_map<std::string, std::int32_t> entity_type_ids;
         std::unordered_map<std::string, std::string>  entity_categories;
+        std::unordered_map<std::string, std::int32_t> item_ids;
         DimensionInfo overworld;
 
     };

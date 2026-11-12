@@ -45,6 +45,10 @@ namespace terila::protocol {
         std::int32_t play_move_player_pos = -1;
         std::int32_t play_move_player_pos_rot = -1;
         std::int32_t play_attack = -1;
+        std::int32_t play_player_action = -1;
+        std::int32_t play_use_item_on = -1;
+        std::int32_t play_set_creative_mode_slot = -1;
+        std::int32_t play_set_carried_item = -1;
 
         // Play — entity tracking
         std::int32_t play_add_entity = -1;
@@ -55,6 +59,13 @@ namespace terila::protocol {
         std::int32_t play_rotate_head = -1;
         std::int32_t play_entity_event = -1;
         std::int32_t play_hurt_animation = -1;
+        std::int32_t play_player_info_update = -1;
+        std::int32_t play_player_info_remove = -1;
+
+        // Blocks
+        std::int32_t play_block_update = -1;
+        std::int32_t play_block_changed_ack = -1;
+        std::int32_t play_section_blocks_update = -1;
     };
 
     inline PacketIds& packet_ids() {
