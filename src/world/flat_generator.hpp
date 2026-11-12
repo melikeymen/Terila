@@ -71,10 +71,29 @@ namespace terila::world::flat {
         c.min_y = spec.min_y;
         c.section_count = spec.section_count;
 
+        const int grass_local_y = spec.dirt_layers + 1;
+
+        // Heightmaps hold nine bits per column: the y of the first air block above
+        // the surface, measured from min_y. 256 entries x 9 bits = 36 longs.
+        const std::uint64_t column_height =
+            static_cast<std::uint64_t>(grass_local_y + 1) & 0x1FF;
+        std::vector<std::int64_t> height_longs(36, 0);
+        for (int column = 0; column < 256; ++column) {
+            const int bit = column * 9;
+            const int long_index = bit / 64;
+            const int offset = bit % 64;
+            height_longs[static_cast<std::size_t>(long_index)] |=
+                static_cast<std::int64_t>(column_height << offset);
+            if (offset > 55) {
+                height_longs[static_cast<std::size_t>(long_index) + 1] |=
+                    static_cast<std::int64_t>(column_height >> (64 - offset));
+            }
+        }
+
         for (int type : {1, 4, 5}) {
             Heightmap hm;
             hm.type_id = type;
-            hm.longs.assign(37, 0);
+            hm.longs = height_longs;
             c.heightmaps.push_back(std::move(hm));
         }
 
@@ -96,7 +115,6 @@ namespace terila::world::flat {
         bottom.block_palette = { air_id, bedrock_id, dirt_id, grass_id };
         bottom.block_states.assign(4096, 0);
 
-        const int grass_local_y = spec.dirt_layers + 1;
         int non_air = 0;
         for (int y = 0; y <= grass_local_y && y < 16; ++y) {
             std::int32_t idx = 0;
@@ -114,7 +132,21 @@ namespace terila::world::flat {
         // Light mask bit i addresses section i-1: bit 0 is the section below the world.
         const int n = spec.section_count;
         c.light.sky_y_mask = { 6LL };                              // bits 1,2 = sections 0,1
-        c.light.sky_updates.assign(2, std::vector<std::uint8_t>(2048, 0xFF));
+
+        // Section 0 holds the terrain, so only the blocks at or above the surface
+        // see the sky; filling it with 0xFF would light up the underground.
+        std::vector<std::uint8_t> bottom_sky(2048, 0);
+        for (int y = grass_local_y; y < 16; ++y) {
+            for (int z = 0; z < 16; ++z) {
+                for (int x = 0; x < 16; ++x) {
+                    const int index = (y * 16 + z) * 16 + x;
+                    const auto byte_index = static_cast<std::size_t>(index / 2);
+                    if (index % 2 == 0) bottom_sky[byte_index] |= 0x0F;
+                    else                bottom_sky[byte_index] |= 0xF0;
+                }
+            }
+        }
+        c.light.sky_updates = { bottom_sky, std::vector<std::uint8_t>(2048, 0xFF) };
         c.light.empty_sky_y_mask = { (1LL << (n + 1)) - 8LL };     // bits 3..n = sections 2..n-1
 
         // No block light anywhere

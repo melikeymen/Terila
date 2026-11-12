@@ -53,6 +53,9 @@ namespace terila::entity {
             for (int i = 4; i < 16; ++i) {
                 mob.uuid[i] = static_cast<std::uint8_t>(next_random() & 0xFF);
             }
+            // Shape the random tail like a version 4 UUID.
+            mob.uuid[6] = static_cast<std::uint8_t>((mob.uuid[6] & 0x0F) | 0x40);
+            mob.uuid[8] = static_cast<std::uint8_t>((mob.uuid[8] & 0x3F) | 0x80);
 
             mobs_.push_back(mob);
             LOG_DEBUG(Entity, "spawned {} as entity id={} at ({:.1f}, {:.1f})",
@@ -75,7 +78,11 @@ namespace terila::entity {
 
                 // Only the area around spawn exists yet, so keep the herd nearby.
                 if (std::abs(nx) > 40.0 || std::abs(nz) > 40.0) {
-                    mob.wander_yaw = std::fmod(mob.wander_yaw + 180.0f, 360.0f);
+                    // fmod keeps the sign of its operand, so wrap into [0, 360) by hand.
+                    float turned = mob.wander_yaw + 180.0f;
+                    while (turned >= 360.0f) turned -= 360.0f;
+                    while (turned < 0.0f) turned += 360.0f;
+                    mob.wander_yaw = turned;
                     continue;
                 }
 

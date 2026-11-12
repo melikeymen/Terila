@@ -17,7 +17,7 @@ namespace terila::log {
         std::atomic<std::uint8_t>   g_scope_mask{ 0xFF };
         std::atomic<Level>          g_exit_on_level{ Level::Fatal };
         std::atomic<bool>           g_color{ true };
-        TimestampFormat             g_timestamp{ TimestampFormat::Millis };
+        std::atomic<TimestampFormat> g_timestamp{ TimestampFormat::Millis };
 
         std::mutex                  g_mutex;
         std::ofstream               g_file;
@@ -104,10 +104,14 @@ namespace terila::log {
         g_min_level.store(cfg.min_level);
         g_scope_mask.store(cfg.scope_mask);
         g_exit_on_level.store(cfg.exit_on_level);
-        g_timestamp = cfg.timestamp;
+        g_timestamp.store(cfg.timestamp);
         g_color.store(cfg.color_enabled);
 
         if (cfg.color_enabled) enable_windows_ansi();
+
+        if (g_file.is_open()) {
+            g_file.close();
+        }
 
         if (!cfg.file_path.empty()) {
             g_file.open(cfg.file_path, std::ios::out | std::ios::app);
@@ -161,7 +165,7 @@ namespace terila::log {
     void write(Level lvl, Scope sc, std::string_view msg) {
         if (!is_enabled(lvl, sc)) return;
 
-        std::string ts = format_timestamp(g_timestamp);
+        std::string ts = format_timestamp(g_timestamp.load());
         bool color = g_color.load();
 
         std::string level_part;
@@ -192,7 +196,7 @@ namespace terila::log {
             console_line = line;
         }
 
-        std::lock_guard<std::mutex> lock(g_mutex);
+        std::unique_lock<std::mutex> lock(g_mutex);
 
         std::fwrite(console_line.data(), 1, console_line.size(), stdout);
 
@@ -204,6 +208,8 @@ namespace terila::log {
         if (lvl >= g_exit_on_level.load()) {
             if (g_file.is_open()) g_file.flush();
             std::fflush(stdout);
+            // atexit handlers may log again, so release the mutex before exiting.
+            lock.unlock();
             std::exit(7);
         }
     }

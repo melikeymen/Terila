@@ -12,6 +12,7 @@ namespace terila::protocol {
         std::int32_t status_request = 0x00;
         std::int32_t status_response = 0x00;
         std::int32_t ping = 0x01;
+        std::int32_t status_pong = 0x01;
 
         // Login
         std::int32_t login_start = 0x00;
@@ -24,6 +25,12 @@ namespace terila::protocol {
         std::int32_t config_registry_data = 0x07;
         std::int32_t config_update_tags = 0x0E;
         std::int32_t config_finish = 0x03;
+
+        // Serverbound configuration packets carry their own numbering; matching a
+        // client packet against a clientbound id only works by coincidence.
+        std::int32_t config_client_information_serverbound = 0x00;
+        std::int32_t config_select_known_packs_serverbound = 0x07;
+        std::int32_t config_finish_serverbound = 0x03;
 
         // Play — must be resolved from ids.json at startup
         std::int32_t play_login = -1;

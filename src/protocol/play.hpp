@@ -15,7 +15,8 @@ namespace terila::protocol {
 
     inline bool write_login_play(std::vector<std::uint8_t>& output,
         std::int32_t entity_id, bool hardcore,
-        std::uint8_t gamemode, const std::string& dimension)
+        std::uint8_t gamemode, const std::string& dimension,
+        int max_players, int view_distance, int simulation_distance)
     {
         std::vector<std::uint8_t> payload;
 
@@ -31,9 +32,9 @@ namespace terila::protocol {
         write_string(payload, "minecraft:the_nether");
         write_string(payload, "minecraft:the_end");
 
-        write_varint(payload, 20);
-        write_varint(payload, 10);
-        write_varint(payload, 10);
+        write_varint(payload, max_players);
+        write_varint(payload, view_distance);
+        write_varint(payload, simulation_distance);
         payload.push_back(0);
         payload.push_back(1);
         payload.push_back(0);

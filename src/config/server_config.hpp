@@ -27,6 +27,9 @@ namespace terila::config {
 
         // Radius used for ticking; parsed only while the server has no entities.
         int           simulation_distance = 10;
+
+        // Advertised in the login packet and the status response.
+        int           max_players = 20;
     };
 
     namespace detail {
@@ -83,9 +86,17 @@ namespace terila::config {
             }
             else if (key == "server-port") {
                 try {
-                    out.port = static_cast<std::uint16_t>(std::stoul(value));
+                    const auto parsed = std::stoul(value);
+                    if (parsed == 0 || parsed > 65535) {
+                        LOG_WARN(Config, "server-port out of range ({}), keeping {}", value, out.port);
+                    }
+                    else {
+                        out.port = static_cast<std::uint16_t>(parsed);
+                    }
                 }
-                catch (...) {}
+                catch (...) {
+                    LOG_WARN(Config, "invalid server-port '{}', keeping {}", value, out.port);
+                }
             }
             else if (key == "log-level") {
                 out.log_level = value;
@@ -104,6 +115,9 @@ namespace terila::config {
             }
             else if (key == "simulation-distance") {
                 out.simulation_distance = detail::parse_distance(value, out.simulation_distance, 1, 32);
+            }
+            else if (key == "max-players") {
+                out.max_players = detail::parse_distance(value, out.max_players, 1, 1000);
             }
         }
 

@@ -36,9 +36,10 @@ namespace terila::network {
     class Connection : public std::enable_shared_from_this<Connection> {
     public:
         explicit Connection(asio::ip::tcp::socket socket, const terila::data::RegistryData& data,
-            int view_distance)
+            int view_distance, int simulation_distance, int max_players, std::int32_t entity_id)
             : socket_(std::move(socket)), keep_alive_timer_(socket_.get_executor()), data_(data),
-              view_distance_(view_distance)
+              view_distance_(view_distance), simulation_distance_(simulation_distance),
+              max_players_(max_players), entity_id_(entity_id)
         {}
 
         void start() {
@@ -72,6 +73,9 @@ namespace terila::network {
 
         // Chunks per batch; the next batch waits until the previous one is on the wire.
         static constexpr int kChunksPerBatch = 32;
+
+        // Keep a few packets in flight instead of stalling on every single write.
+        static constexpr std::size_t kMaxWriteQueue = 4;
 
         struct ChunkPos {
             std::int32_t x = 0;
@@ -148,6 +152,7 @@ namespace terila::network {
 
             if (bytes_transferred == 0) {
                 LOG_ERROR(Network, "read 0 bytes without error — TCP invariant violated");
+                close();
                 return;
             }
 
@@ -261,6 +266,7 @@ namespace terila::network {
 
                     if (!terila::protocol::write_login_success(out, result->username, uuid, session_id)) {
                         LOG_ERROR(Network, "write_login_success failed for username={}", result->username);
+                        close();
                         return;
                     }
                     send(out);
@@ -295,7 +301,10 @@ namespace terila::network {
                 break;
 
             case State::Configuration:
-                if (id == ids.config_registry_data) {
+                if (id == ids.config_client_information_serverbound) {
+                    LOG_DEBUG(Network, "client information received ({} bytes)", payload.size());
+                }
+                else if (id == ids.config_select_known_packs_serverbound) {
                     LOG_DEBUG(Registry, "sending configuration data: {} registries", data_.datapack_registries.size());
 
                     int count = 0;
@@ -319,18 +328,23 @@ namespace terila::network {
                     std::vector<std::uint8_t> tags_out;
                     if (!terila::protocol::write_packet(tags_out, ids.config_update_tags, data_.tag_payload)) {
                         LOG_ERROR(Registry, "write_packet failed for tags ({} bytes)", data_.tag_payload.size());
+                        close();
                         return;
                     }
                     send(tags_out);
                     LOG_DEBUG(Registry, "update tags sent ({} bytes)", data_.tag_payload.size());
 
                     std::vector<std::uint8_t> finish_out;
-                    terila::protocol::write_packet(finish_out, ids.config_finish, {});
+                    if (!terila::protocol::write_packet(finish_out, ids.config_finish, {})) {
+                        LOG_ERROR(Network, "finish_configuration failed");
+                        close();
+                        return;
+                    }
                     send(finish_out);
 
                     LOG_DEBUG(Network, "configuration data sent, awaiting client ack");
                 }
-                else if (id == ids.config_finish) {
+                else if (id == ids.config_finish_serverbound) {
                     LOG_DEBUG(Network, "state: Configuration → Play");
 
                     build_chunk_template();
@@ -343,8 +357,11 @@ namespace terila::network {
 
                     std::vector<std::uint8_t> out;
 
-                    if (!terila::protocol::write_login_play(out, 76, false, 0, "minecraft:overworld")) {
-                        LOG_ERROR(Network, "login_play failed"); return;
+                    if (!terila::protocol::write_login_play(out, entity_id_, false, 0,
+                        "minecraft:overworld", max_players_, view_distance_, simulation_distance_)) {
+                        LOG_ERROR(Network, "login_play failed");
+                        close();
+                        return;
                     }
                     send(out); out.clear();
 
@@ -354,17 +371,23 @@ namespace terila::network {
                         static_cast<double>(spec_.min_y + spec_.dirt_layers + 2);
                     if (!terila::protocol::write_player_position(out, next_teleport_id_++,
                         8.5, spawn_y, 8.5, 0.0, 0.0, 0.0, 0.0f, 0.0f)) {
-                        LOG_ERROR(Network, "player_position failed"); return;
+                        LOG_ERROR(Network, "player_position failed");
+                        close();
+                        return;
                     }
                     send(out); out.clear();
 
                     if (!terila::protocol::write_game_event(out, 13, 0.0f)) {
-                        LOG_ERROR(Network, "game_event failed"); return;
+                        LOG_ERROR(Network, "game_event failed");
+                        close();
+                        return;
                     }
                     send(out); out.clear();
 
                     if (!terila::protocol::write_set_center_chunk(out, 0, 0)) {
-                        LOG_ERROR(Network, "set_center_chunk failed"); return;
+                        LOG_ERROR(Network, "set_center_chunk failed");
+                        close();
+                        return;
                     }
                     send(out);
 
@@ -402,8 +425,8 @@ namespace terila::network {
                 }
                 if (id == ids.play_move_player_pos || id == ids.play_move_player_pos_rot) {
                     const auto x = terila::protocol::read_double(payload.data(), payload.size(), 0);
-                    const auto z = terila::protocol::read_double(payload.data(), payload.size(), 16);
                     const auto y = terila::protocol::read_double(payload.data(), payload.size(), 8);
+                    const auto z = terila::protocol::read_double(payload.data(), payload.size(), 16);
                     if (x.has_value() && y.has_value() && z.has_value()) {
                         player_x_ = *x;
                         player_y_ = *y;
@@ -517,7 +540,7 @@ namespace terila::network {
         }
 
         void pump_chunks() {
-            if (pending_chunks_.empty() || write_queue_.size() > 1) {
+            if (pending_chunks_.empty() || write_queue_.size() >= kMaxWriteQueue) {
                 return;
             }
 
@@ -682,8 +705,11 @@ namespace terila::network {
                 const std::int64_t id = self->next_keep_alive_id_++;
                 if (terila::protocol::write_keep_alive(out, id)) {
                     if (!self->keep_alive_answered_ && self->pending_keep_alive_id_ != 0) {
-                        LOG_WARN(Network, "previous keep_alive id={} was never answered",
+                        // Vanilla drops a client that misses a whole ping interval.
+                        LOG_WARN(Network, "keep_alive id={} was never answered, closing the connection",
                             self->pending_keep_alive_id_);
+                        self->close();
+                        return;
                     }
                     self->pending_keep_alive_id_ = id;
                     self->keep_alive_answered_ = false;
@@ -737,6 +763,9 @@ namespace terila::network {
         bool joined_ = false;
         bool logged_first_entity_ = false;
         int view_distance_ = 10;
+        int simulation_distance_ = 10;
+        int max_players_ = 20;
+        std::int32_t entity_id_ = 76;
         std::int32_t center_cx_ = 0;
         std::int32_t center_cz_ = 0;
         terila::world::flat::FlatSpec spec_;

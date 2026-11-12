@@ -44,7 +44,7 @@ TEST(ChunkEncoderTest, EmptyChunkProducesValidBytes) {
     }
     Heightmap hm;
     hm.type_id = 1;
-    hm.longs.assign(37, 0);
+    hm.longs.assign(36, 0);
     c.heightmaps.push_back(hm);
 
     auto wire = encode::encode(c);

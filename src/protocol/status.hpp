@@ -83,7 +83,7 @@ namespace terila::protocol {
         std::vector<std::uint8_t> payload;
 
         write_int64(payload, value);
-        write_packet(output, packet_ids().ping, payload);
+        write_packet(output, packet_ids().status_pong, payload);
 
         LOG_TRACE(Protocol, "write_pong: value={}", value);
     }

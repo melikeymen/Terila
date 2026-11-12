@@ -24,8 +24,10 @@ namespace terila::protocol {
 			return false;
 		}
 		for (char c : name) {
-			unsigned char uc = static_cast<unsigned char>(c);
-			if (!(std::isalnum(uc) || c == '_')) {
+			// Explicit ranges: std::isalnum would depend on the process locale.
+			const bool alpha = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+			const bool digit = (c >= '0' && c <= '9');
+			if (!(alpha || digit || c == '_')) {
 				return false;
 			}
 		}

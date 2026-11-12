@@ -1,4 +1,5 @@
 ﻿#include <asio.hpp>
+#include <csignal>
 #include "log/logger.hpp"
 #include "network/connection.hpp"
 #include "data/registry_data.hpp"
@@ -31,7 +32,8 @@ static fs::path find_input_dir() {
 int main() {
     auto base = find_input_dir();
     if (base.empty()) {
-        std::fprintf(stderr, "input/ not found. cwd=%s\n", fs::current_path().string().c_str());
+        const std::string cwd = fs::current_path().string();
+        std::fprintf(stderr, "input/ not found. cwd=%s\n", cwd.c_str());
         return 7;
     }
 
@@ -58,7 +60,10 @@ int main() {
         srv.view_distance, srv.simulation_distance);
 
     const std::string in = (base / "input").string();
-    terila::protocol::load_packet_ids(in + "/packets/ids.json");
+    if (!terila::protocol::load_packet_ids(in + "/packets/ids.json")) {
+        LOG_FATAL(Protocol, "cannot load packet ids from {}/packets/ids.json", in);
+        return 7;
+    }
 
     terila::data::RegistryData data;
 
@@ -132,10 +137,15 @@ int main() {
 
     terila::entity::MobManager mobs;
     mobs.set_ground(static_cast<double>(data.overworld.min_y + 5));
-    mobs.spawn("minecraft:cow", data.entity_type_ids, 6.5, 4.5);
-    mobs.spawn("minecraft:pig", data.entity_type_ids, 10.5, -2.5);
-    mobs.spawn("minecraft:sheep", data.entity_type_ids, -4.5, 6.5);
-    mobs.spawn("minecraft:zombie", data.entity_type_ids, -8.5, -6.5);
+    struct SpawnPoint { const char* type; double x; double z; };
+    for (const auto& spawn : { SpawnPoint{ "minecraft:cow", 6.5, 4.5 },
+                               SpawnPoint{ "minecraft:pig", 10.5, -2.5 },
+                               SpawnPoint{ "minecraft:sheep", -4.5, 6.5 },
+                               SpawnPoint{ "minecraft:zombie", -8.5, -6.5 } }) {
+        if (!mobs.spawn(spawn.type, data.entity_type_ids, spawn.x, spawn.z)) {
+            LOG_WARN(Entity, "could not spawn {} at ({:.1f}, {:.1f})", spawn.type, spawn.x, spawn.z);
+        }
+    }
 
     // Network
     asio::io_context io;
@@ -164,9 +174,12 @@ int main() {
 
     std::vector<std::weak_ptr<terila::network::Connection>> players;
 
+    // Mobs use 1..N, so player entities start well above them.
+    std::int32_t next_player_entity_id = 1000;
+
     auto do_accept = [&](auto&& self) -> void {
         acceptor.async_accept(
-            [&acceptor, &data, &srv, &players, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
+            [&acceptor, &data, &srv, &players, &next_player_entity_id, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
                 if (error) {
                     LOG_ERROR(Network, "accept failed: {} ({})", error.message(), error.value());
                     self(self);
@@ -178,7 +191,8 @@ int main() {
                     LOG_DEBUG(Network, "new connection from {}:{}", remote_ep.address().to_string(), remote_ep.port());
                 }
                 auto conn = std::make_shared<terila::network::Connection>(std::move(socket), data,
-                    srv.view_distance);
+                    srv.view_distance, srv.simulation_distance,
+                    static_cast<int>(srv.max_players), next_player_entity_id++);
                 conn->start();
                 players.push_back(conn);
                 self(self);
@@ -210,6 +224,17 @@ int main() {
             schedule_tick();
         });
         };
+
+    // Without a handler, Ctrl+C kills the process before the log and the
+    // connections get a chance to shut down.
+    asio::signal_set signals(io, SIGINT, SIGTERM);
+    signals.async_wait([&](const asio::error_code& error, int) {
+        if (error) {
+            return;
+        }
+        LOG_INFO(Network, "shutdown requested, stopping");
+        io.stop();
+    });
 
     schedule_tick();
     io.run();

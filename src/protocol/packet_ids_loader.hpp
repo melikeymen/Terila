@@ -58,6 +58,7 @@ namespace terila::protocol {
         set(ids.status_request, find("status", "serverbound", "minecraft:status_request"), "status_request");
         set(ids.status_response, find("status", "clientbound", "minecraft:status_response"), "status_response");
         set(ids.ping, find("status", "serverbound", "minecraft:ping_request"), "ping");
+        set(ids.status_pong, find("status", "clientbound", "minecraft:pong_response"), "status_pong");
 
         // Login
         set(ids.login_start, find("login", "serverbound", "minecraft:hello"), "login_start");
@@ -70,6 +71,9 @@ namespace terila::protocol {
         set(ids.config_registry_data, find("configuration", "clientbound", "minecraft:registry_data"), "config_registry_data");
         set(ids.config_update_tags, find("configuration", "clientbound", "minecraft:update_tags"), "config_update_tags");
         set(ids.config_finish, find("configuration", "clientbound", "minecraft:finish_configuration"), "config_finish");
+        set(ids.config_client_information_serverbound, find("configuration", "serverbound", "minecraft:client_information"), "config_client_information_serverbound");
+        set(ids.config_select_known_packs_serverbound, find("configuration", "serverbound", "minecraft:select_known_packs"), "config_select_known_packs_serverbound");
+        set(ids.config_finish_serverbound, find("configuration", "serverbound", "minecraft:finish_configuration"), "config_finish_serverbound");
 
         // Play — set_chunk_cache_center is 26.3's real name for what we call "set_center_chunk"
         set(ids.play_login, find("play", "clientbound", "minecraft:login"), "play_login");

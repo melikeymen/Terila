@@ -91,7 +91,12 @@ TEST(ChunkDecoderTest, HeightmapsPreserved) {
     ASSERT_TRUE(decoded.has_value());
     ASSERT_EQ(decoded->heightmaps.size(), 3u);
     EXPECT_EQ(decoded->heightmaps[0].type_id, 1);
-    EXPECT_EQ(decoded->heightmaps[0].longs.size(), 37u);
+    // 256 columns x 9 bits = 2304 bits = 36 longs.
+    EXPECT_EQ(decoded->heightmaps[0].longs.size(), 36u);
+    // Every column stores the first air block above the grass, relative to min_y.
+    const std::uint64_t first_column =
+        static_cast<std::uint64_t>(decoded->heightmaps[0].longs[0]) & 0x1FFu;
+    EXPECT_EQ(first_column, 5u);
     EXPECT_EQ(decoded->heightmaps[1].type_id, 4);
     EXPECT_EQ(decoded->heightmaps[2].type_id, 5);
 }
