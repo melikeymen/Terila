@@ -116,6 +116,36 @@ namespace terila::protocol {
         return true;
     }
 
+    // Entity event carries a plain int32 entity id. Event ids: 2 = hurt, 3 = death.
+    inline bool write_entity_event(std::vector<std::uint8_t>& output,
+        std::int32_t entity_id, std::uint8_t event_id)
+    {
+        std::vector<std::uint8_t> payload;
+        write_int32(payload, entity_id);
+        payload.push_back(event_id);
+
+        if (!write_packet(output, packet_ids().play_entity_event, payload)) {
+            LOG_WARN(Protocol, "write_entity_event: failed (id={})", entity_id);
+            return false;
+        }
+        return true;
+    }
+
+    // Unlike entity event, hurt animation addresses the entity with a varint.
+    inline bool write_hurt_animation(std::vector<std::uint8_t>& output,
+        std::int32_t entity_id, float yaw)
+    {
+        std::vector<std::uint8_t> payload;
+        write_varint(payload, entity_id);
+        write_float(payload, yaw);
+
+        if (!write_packet(output, packet_ids().play_hurt_animation, payload)) {
+            LOG_WARN(Protocol, "write_hurt_animation: failed (id={})", entity_id);
+            return false;
+        }
+        return true;
+    }
+
     inline bool write_rotate_head(std::vector<std::uint8_t>& output,
         std::int32_t entity_id, float head_yaw)
     {

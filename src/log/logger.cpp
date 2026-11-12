@@ -14,7 +14,7 @@ namespace terila::log {
     namespace {
 
         std::atomic<Level>          g_min_level{ Level::Info };
-        std::atomic<std::uint8_t>   g_scope_mask{ 0xFF };
+        std::atomic<std::uint32_t>  g_scope_mask{ 0xFFFFFFFFu };
         std::atomic<Level>          g_exit_on_level{ Level::Fatal };
         std::atomic<bool>           g_color{ true };
         std::atomic<TimestampFormat> g_timestamp{ TimestampFormat::Millis };
@@ -138,7 +138,7 @@ namespace terila::log {
 
     void set_scope(Scope sc, bool enabled) {
         auto mask = g_scope_mask.load();
-        auto bit = static_cast<std::uint8_t>(1u << static_cast<std::uint8_t>(sc));
+        const auto bit = 1u << static_cast<std::uint32_t>(sc);
         mask = enabled ? (mask | bit) : (mask & ~bit);
         g_scope_mask.store(mask);
     }
@@ -159,7 +159,7 @@ namespace terila::log {
     bool is_enabled(Level lvl, Scope sc) noexcept {
         if (lvl < g_min_level.load(std::memory_order_relaxed)) return false;
         auto mask = g_scope_mask.load(std::memory_order_relaxed);
-        return (mask & (1u << static_cast<std::uint8_t>(sc))) != 0;
+        return (mask & (1u << static_cast<std::uint32_t>(sc))) != 0;
     }
 
     void write(Level lvl, Scope sc, std::string_view msg) {
@@ -199,6 +199,8 @@ namespace terila::log {
         std::unique_lock<std::mutex> lock(g_mutex);
 
         std::fwrite(console_line.data(), 1, console_line.size(), stdout);
+        // Flush every line so nothing is lost when the process is killed.
+        std::fflush(stdout);
 
         if (g_file.is_open()) {
             g_file.write(line.data(), static_cast<std::streamsize>(line.size()));

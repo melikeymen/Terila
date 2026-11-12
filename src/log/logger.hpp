@@ -27,7 +27,7 @@ namespace terila::log {
 
     struct Config {
         Level           min_level = Level::Info;
-        std::uint8_t    scope_mask = 0xFF;
+        std::uint32_t   scope_mask = 0xFFFFFFFFu;
         TimestampFormat timestamp = TimestampFormat::Millis;
         bool            color_enabled = true;
         std::string     file_path = "";

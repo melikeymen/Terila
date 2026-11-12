@@ -125,3 +125,35 @@ TEST(EntityTest, MoveEntityPosRotUsesLinearVecDelta) {
 
     EXPECT_EQ(out, expected);
 }
+
+// Entity event: int32 entity id (not a varint) followed by the event byte.
+TEST(EntityTest, EntityEventUsesIntEntityId) {
+    terila::protocol::packet_ids().play_entity_event = 0x22;
+
+    std::vector<std::uint8_t> out;
+    ASSERT_TRUE(terila::protocol::write_entity_event(out, 0x01020304, 2));
+
+    const std::vector<std::uint8_t> expected = {
+        0x06, 0x22,             // length, packet id
+        0x01, 0x02, 0x03, 0x04, // entity id
+        0x02                    // event: hurt
+    };
+
+    EXPECT_EQ(out, expected);
+}
+
+// Hurt animation: varint entity id (unlike entity event) followed by a float yaw.
+TEST(EntityTest, HurtAnimationCarriesFloatYaw) {
+    terila::protocol::packet_ids().play_hurt_animation = 0x2B;
+
+    std::vector<std::uint8_t> out;
+    ASSERT_TRUE(terila::protocol::write_hurt_animation(out, 7, 90.0f));
+
+    const std::vector<std::uint8_t> expected = {
+        0x06, 0x2B,             // length, packet id
+        0x07,                   // entity id
+        0x42, 0xB4, 0x00, 0x00  // yaw 90.0f
+    };
+
+    EXPECT_EQ(out, expected);
+}

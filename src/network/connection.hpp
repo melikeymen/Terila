@@ -36,10 +36,12 @@ namespace terila::network {
     class Connection : public std::enable_shared_from_this<Connection> {
     public:
         explicit Connection(asio::ip::tcp::socket socket, const terila::data::RegistryData& data,
-            int view_distance, int simulation_distance, int max_players, std::int32_t entity_id)
+            terila::entity::MobManager& mobs, int view_distance, int simulation_distance,
+            int max_players, std::int32_t entity_id)
             : socket_(std::move(socket)), keep_alive_timer_(socket_.get_executor()), data_(data),
-              view_distance_(view_distance), simulation_distance_(simulation_distance),
-              max_players_(max_players), entity_id_(entity_id)
+              mobs_(mobs), view_distance_(view_distance),
+              simulation_distance_(simulation_distance), max_players_(max_players),
+              entity_id_(entity_id)
         {}
 
         void start() {
@@ -62,8 +64,14 @@ namespace terila::network {
         }
 
         // Called by the server tick for every connected player.
-        void tick_entities(const std::vector<terila::entity::Mob>& mobs) {
-            send_entity_updates(mobs);
+        void tick_entities() {
+            send_entity_updates(mobs_.mobs());
+        }
+
+        bool joined() const { return joined_; }
+
+        terila::entity::PlayerPos player_position() const {
+            return terila::entity::PlayerPos{ player_x_, player_y_, player_z_ };
         }
 
     private:
@@ -77,6 +85,8 @@ namespace terila::network {
         // Keep a few packets in flight instead of stalling on every single write.
         static constexpr std::size_t kMaxWriteQueue = 4;
 
+        static constexpr std::int32_t kPlayerAttackDamage = 4;
+
         struct ChunkPos {
             std::int32_t x = 0;
             std::int32_t z = 0;
@@ -87,6 +97,8 @@ namespace terila::network {
             double y = 0.0;
             double z = 0.0;
             float yaw = 0.0f;
+            std::uint32_t hurt_serial = 0;
+            bool death_sent = false;
         };
 
         enum class State {
@@ -423,6 +435,24 @@ namespace terila::network {
                     }
                     break;
                 }
+                if (id == ids.play_attack) {
+                    const auto target = terila::protocol::read_varint(payload.data(), payload.size());
+                    if (!target.has_value()) {
+                        LOG_WARN(Network, "invalid attack packet ({} bytes)", payload.size());
+                        break;
+                    }
+
+                    const auto* mob = mobs_.find(target->value);
+                    if (mob == nullptr) {
+                        LOG_DEBUG(Network, "attack on unknown entity id={}", target->value);
+                        break;
+                    }
+
+                    const float away = terila::entity::yaw_between(
+                        player_x_, player_z_, mob->x, mob->z);
+                    mobs_.damage(target->value, kPlayerAttackDamage, away);
+                    break;
+                }
                 if (id == ids.play_move_player_pos || id == ids.play_move_player_pos_rot) {
                     const auto x = terila::protocol::read_double(payload.data(), payload.size(), 0);
                     const auto y = terila::protocol::read_double(payload.data(), payload.size(), 8);
@@ -644,6 +674,32 @@ namespace terila::network {
                     continue;
                 }
 
+                // Hurt feedback is per viewer: one animation per hit serial.
+                if (mob.hurt_serial != known->second.hurt_serial) {
+                    known->second.hurt_serial = mob.hurt_serial;
+                    const float yaw = terila::entity::yaw_between(
+                        player_x_, player_z_, mob.x, mob.z);
+                    if (terila::protocol::write_hurt_animation(out, mob.id, yaw)) {
+                        send(out);
+                    }
+                    out.clear();
+                    if (terila::protocol::write_entity_event(out, mob.id, 2)) {
+                        send(out);
+                    }
+                    out.clear();
+                }
+
+                if (mob.dead) {
+                    if (!known->second.death_sent) {
+                        known->second.death_sent = true;
+                        if (terila::protocol::write_entity_event(out, mob.id, 3)) {
+                            send(out);
+                        }
+                        out.clear();
+                    }
+                    continue;
+                }
+
                 const auto to_short = [](double delta) {
                     const double scaled = delta * 4096.0;
                     if (scaled > 32767.0) return static_cast<std::int16_t>(32767);
@@ -676,7 +732,10 @@ namespace terila::network {
                     out.clear();
                 }
 
-                known->second = KnownEntity{ mob.x, mob.y, mob.z, mob.yaw };
+                known->second.x = mob.x;
+                known->second.y = mob.y;
+                known->second.z = mob.z;
+                known->second.yaw = mob.yaw;
             }
 
             for (auto it = known_entities_.begin(); it != known_entities_.end();) {
@@ -777,6 +836,7 @@ namespace terila::network {
         double player_y_ = 0.0;
         double player_z_ = 8.5;
         const terila::data::RegistryData& data_;
+        terila::entity::MobManager& mobs_;
     };
 
 } // namespace terila::network

@@ -15,6 +15,8 @@
 #include <chrono>
 #include <functional>
 #include <vector>
+#include <string>
+#include <unordered_set>
 
 namespace fs = std::filesystem;
 
@@ -125,6 +127,7 @@ int main() {
     terila::data::load_biome_ids(data.biome_ids, in + "/worldgen/biomes.json");
     terila::data::load_dimensions(data.overworld, in + "/worldgen/dimensions.json");
     terila::data::load_entity_type_ids(data.entity_type_ids, in + "/entities/minecraft.json");
+    terila::data::load_entity_categories(data.entity_categories, in + "/entities/minecraft.json");
 
     if (data.block_state_ids.empty()) { LOG_FATAL(Data, "block_state_ids empty"); return 7; }
     if (data.biome_ids.empty()) { LOG_FATAL(Data, "biome_ids empty");       return 7; }
@@ -137,15 +140,41 @@ int main() {
 
     terila::entity::MobManager mobs;
     mobs.set_ground(static_cast<double>(data.overworld.min_y + 5));
-    struct SpawnPoint { const char* type; double x; double z; };
-    for (const auto& spawn : { SpawnPoint{ "minecraft:cow", 6.5, 4.5 },
-                               SpawnPoint{ "minecraft:pig", 10.5, -2.5 },
-                               SpawnPoint{ "minecraft:sheep", -4.5, 6.5 },
-                               SpawnPoint{ "minecraft:zombie", -8.5, -6.5 } }) {
-        if (!mobs.spawn(spawn.type, data.entity_type_ids, spawn.x, spawn.z)) {
-            LOG_WARN(Entity, "could not spawn {} at ({:.1f}, {:.1f})", spawn.type, spawn.x, spawn.z);
+    // Every living entity type in the registry gets an instance, so the whole mob
+    // catalogue is exercised instead of a hardcoded handful.
+    static const std::unordered_set<std::string> kLivingCategories = {
+        "creature", "monster", "ambient", "axolotls",
+        "water_creature", "water_ambient", "underground_water_creature"
+    };
+
+    std::vector<std::string> living_types;
+    for (const auto& entry : data.entity_type_ids) {
+        const auto category = data.entity_categories.find(entry.first);
+        if (category == data.entity_categories.end()) continue;
+        if (kLivingCategories.find(category->second) == kLivingCategories.end()) continue;
+        living_types.push_back(entry.first);
+    }
+    std::sort(living_types.begin(), living_types.end());
+
+    std::size_t spawned = 0;
+    for (std::size_t i = 0; i < living_types.size(); ++i) {
+        const std::string& name = living_types[i];
+        const auto category = data.entity_categories.at(name);
+        const bool hostile = (category == "monster");
+
+        const int column = static_cast<int>(i % 12);
+        const int row = static_cast<int>(i / 12);
+        const double x = 8.5 + (static_cast<double>(column) - 5.5) * 3.0;
+        const double z = 8.5 + static_cast<double>(row) * 3.0;
+
+        if (mobs.spawn(name, data.entity_type_ids, x, z, hostile, hostile ? 20 : 10)) {
+            ++spawned;
+        }
+        else {
+            LOG_WARN(Entity, "could not spawn {} at ({:.1f}, {:.1f})", name, x, z);
         }
     }
+    LOG_INFO(Entity, "spawned {} of {} registered mob types", spawned, living_types.size());
 
     // Network
     asio::io_context io;
@@ -179,7 +208,7 @@ int main() {
 
     auto do_accept = [&](auto&& self) -> void {
         acceptor.async_accept(
-            [&acceptor, &data, &srv, &players, &next_player_entity_id, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
+            [&acceptor, &data, &mobs, &srv, &players, &next_player_entity_id, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
                 if (error) {
                     LOG_ERROR(Network, "accept failed: {} ({})", error.message(), error.value());
                     self(self);
@@ -190,7 +219,7 @@ int main() {
                 if (!ep_ec) {
                     LOG_DEBUG(Network, "new connection from {}:{}", remote_ep.address().to_string(), remote_ep.port());
                 }
-                auto conn = std::make_shared<terila::network::Connection>(std::move(socket), data,
+                auto conn = std::make_shared<terila::network::Connection>(std::move(socket), data, mobs,
                     srv.view_distance, srv.simulation_distance,
                     static_cast<int>(srv.max_players), next_player_entity_id++);
                 conn->start();
@@ -210,10 +239,21 @@ int main() {
                 return;
             }
 
-            mobs.tick();
+            std::vector<terila::entity::PlayerPos> player_positions;
+            player_positions.reserve(players.size());
+            for (const auto& player : players) {
+                if (const auto conn = player.lock()) {
+                    if (conn->joined()) {
+                        player_positions.push_back(conn->player_position());
+                    }
+                }
+            }
+
+            mobs.tick(player_positions);
+
             for (auto it = players.begin(); it != players.end();) {
                 if (const auto conn = it->lock()) {
-                    conn->tick_entities(mobs.mobs());
+                    conn->tick_entities();
                     ++it;
                 }
                 else {
