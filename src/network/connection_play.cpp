@@ -1,4 +1,4 @@
-#include "network/connection.hpp"
+﻿#include "network/connection.hpp"
 
 #include "protocol/block.hpp"
 #include "protocol/entity.hpp"
@@ -75,6 +75,17 @@ namespace terila::network {
             }
             return;
         }
+        if (id == ids.play_container_click) {
+            handle_container_click(payload);
+            return;
+        }
+        if (id == ids.play_container_close_serverbound) {
+            const auto window = terila::protocol::read_varint(payload.data(), payload.size());
+            if (window.has_value()) {
+                handle_container_close(window->value);
+            }
+            return;
+        }
         if (id == ids.play_change_game_mode) {
             const auto requested = terila::protocol::read_varint(payload.data(), payload.size());
             if (!requested.has_value()) {
@@ -85,6 +96,7 @@ namespace terila::network {
             return;
         }
         if (id == ids.play_pick_item_from_block) {
+            LOG_DEBUG(Network, "pick_block packet received ({} bytes)", payload.size());
             const auto pos = terila::protocol::unpack_block_pos(payload.data(), payload.size());
             handle_pick_block(pos);
             return;

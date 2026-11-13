@@ -1,4 +1,4 @@
-#include "network/connection.hpp"
+﻿#include "network/connection.hpp"
 
 #include "protocol/block.hpp"
 #include "protocol/item.hpp"
@@ -51,6 +51,9 @@ namespace terila::network {
         if (!can_break_blocks()) {
             return;
         }
+        if (menu_open_) {
+            close_menu();
+        }
 
         const terila::world::BlockPos target{ clicked.x, clicked.y, clicked.z };
         if (!inside_world(target.y)) {
@@ -74,6 +77,13 @@ namespace terila::network {
         static constexpr std::int32_t kFaceOffset[6][3] = {
             { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }, { -1, 0, 0 }, { 1, 0, 0 }
         };
+        // A crafting table or furnace opens its window instead of being placed against.
+        const terila::world::BlockPos clicked_pos{ clicked.x, clicked.y, clicked.z };
+        if (const int menu = menu_kind_for_state(state_at(clicked_pos)); menu != kMenuNone) {
+            open_menu(menu, menu == kMenuCrafting ? "Crafting" : "Furnace");
+            return;
+        }
+
         if (!can_place_blocks() || face < 0 || face > 5) {
             return;
         }
@@ -99,11 +109,23 @@ namespace terila::network {
             return;
         }
 
-        world_.set(target, it->second);
+        std::int32_t placed = it->second;
+        if (furnace_item_id_ != 0 && held_item_id_ == furnace_item_id_) {
+            // A furnace faces whoever placed it: the front points back along their view.
+            const int dir = ((static_cast<int>(std::floor(yaw_ / 90.0f + 0.5f)) % 4) + 4) % 4;
+            static constexpr int kOppositeFacing[4] = { 0, 3, 1, 2 };
+            const std::int32_t variant = furnace_states_[static_cast<std::size_t>(
+                kOppositeFacing[dir] * 2)];
+            if (variant >= 0) {
+                placed = variant;
+            }
+        }
+
+        world_.set(target, placed);
         persist_block_change(target);
-        send_block_change(target, it->second, sequence);
+        send_block_change(target, placed, sequence);
         LOG_DEBUG(Network, "{} placed block state {} at ({}, {}, {})",
-            username_, it->second, target.x, target.y, target.z);
+            username_, placed, target.x, target.y, target.z);
     }
 
     double Connection::drop_ground_y() const {
@@ -139,18 +161,25 @@ namespace terila::network {
 
     void Connection::handle_pick_block(const terila::protocol::BlockPosValue& clicked) {
         const terila::world::BlockPos target{ clicked.x, clicked.y, clicked.z };
+        LOG_DEBUG(Network, "pick_block at ({}, {}, {})", target.x, target.y, target.z);
+
         if (!inside_world(target.y)) {
+            LOG_DEBUG(Network, "pick_block: y={} outside world", target.y);
             return;
         }
-        const auto it = block_state_item_.find(state_at(target));
+
+        const std::int32_t state = state_at(target);
+        LOG_DEBUG(Network, "pick_block: state={} held={}", state, held_item_id_);
+
+        const auto it = block_state_item_.find(state);
         if (it == block_state_item_.end()) {
-            LOG_DEBUG(Network, "{} picked a block without an item form at ({}, {}, {})",
-                username_, target.x, target.y, target.z);
+            LOG_DEBUG(Network, "pick_block: no item for state {} (map size={})",
+                state, block_state_item_.size());
             return;
         }
+
         give_hotbar_item(it->second);
     }
-
     void Connection::refresh_held_item() {
         const std::int32_t hotbar_slot = 36 + carried_slot_;
         const auto it = creative_slots_.find(hotbar_slot);

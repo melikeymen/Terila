@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "world/chunk.hpp"
 
@@ -158,6 +158,24 @@ namespace terila::world {
                 const int x = entry.pos.x & 15;
                 const int index = (y * 16 + z) * 16 + x;
                 section_set(chunk.sections[section_index], index, entry.state, air_state);
+            }
+        }
+
+        void load_from_chunk(const Chunk& chunk, std::int32_t air_state,
+            std::int32_t(*base_state_fn)(std::int32_t)) {
+            auto& entries = chunks_[chunk_key(chunk.x, chunk.z)];
+            entries.clear();
+            for (int sy = 0; sy < chunk.section_count; ++sy) {
+                const auto& sec = chunk.sections[sy];
+                for (int i = 0; i < 4096; ++i) {
+                    const std::int32_t state = section_state(sec, i);
+                    const std::int32_t y = chunk.min_y + sy * 16 + (i / 256);
+                    const std::int32_t z = chunk.z * 16 + ((i / 16) % 16);
+                    const std::int32_t x = chunk.x * 16 + (i % 16);
+                    if (state != base_state_fn(y)) {
+                        entries.push_back(Entry{ BlockPos{ x, y, z }, state });
+                    }
+                }
             }
         }
 

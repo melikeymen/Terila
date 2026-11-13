@@ -97,6 +97,50 @@ namespace terila::data {
 		LOG_DEBUG(Data, "block_state_ids: {} entries", out.size());
 	}
 
+	// Every variant of every block, with the property values that name it. Needed where a
+	// state is chosen by its properties instead of the block's default one, such as a
+	// furnace facing the player who placed it.
+	inline void load_block_states(std::unordered_map<std::string, std::vector<BlockStateInfo>>& out, const std::string& path) {
+		std::ifstream f(path);
+		if (!f) {
+			LOG_WARN(Data, "cannot open {}", path);
+			return;
+		}
+
+		try {
+			auto j = nlohmann::json::parse(f);
+			if (!j.contains("data") || !j["data"].is_array()) {
+				LOG_WARN(Data, "unexpected format in {} (no 'data' array)", path);
+				return;
+			}
+
+			for (const auto& e : j["data"]) {
+				if (!e.contains("id") || !e["id"].is_string() || !e.contains("states")) continue;
+				if (!e["states"].is_array()) continue;
+
+				auto& variants = out[e["id"].get<std::string>()];
+				for (const auto& s : e["states"]) {
+					if (!s.contains("id")) continue;
+					BlockStateInfo info;
+					info.id = s["id"].get<std::int32_t>();
+					if (s.contains("properties") && s["properties"].is_object()) {
+						for (auto it = s["properties"].begin(); it != s["properties"].end(); ++it) {
+							if (it.value().is_string()) {
+								info.properties[it.key()] = it.value().get<std::string>();
+							}
+						}
+					}
+					variants.push_back(std::move(info));
+				}
+			}
+		}
+		catch (const std::exception& e) {
+			LOG_WARN(Data, "parse failed: {} ({})", path, e.what());
+		}
+
+		LOG_DEBUG(Data, "block_states: {} blocks", out.size());
+	}
+
 	// worldgen/biomes.json format:
 	//   { data: [ { id: "minecraft:badlands", protocol_id: N, data: {...} } ] }
 	inline void load_biome_ids(std::unordered_map<std::string, std::int32_t>& out, const std::string& path) {

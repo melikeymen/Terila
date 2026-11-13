@@ -51,6 +51,8 @@ namespace terila::protocol {
         std::int32_t play_set_carried_item = -1;
         std::int32_t play_pick_item_from_block = -1;
         std::int32_t play_change_game_mode = -1;
+        std::int32_t play_container_click = -1;
+        std::int32_t play_container_close_serverbound = -1;
 
         // Play — entity tracking
         std::int32_t play_add_entity = -1;
@@ -67,6 +69,9 @@ namespace terila::protocol {
         // Inventory and dropped items
         std::int32_t play_container_set_slot = -1;
         std::int32_t play_player_abilities = -1;
+        std::int32_t play_open_screen = -1;
+        std::int32_t play_container_set_content = -1;
+        std::int32_t play_container_set_data = -1;
         std::int32_t play_set_held_slot = -1;
         std::int32_t play_set_entity_data = -1;
         std::int32_t play_take_item_entity = -1;

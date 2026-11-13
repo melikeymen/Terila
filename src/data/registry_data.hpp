@@ -13,6 +13,12 @@ namespace terila::data {
         std::int32_t logical_height = 384;
     };
 
+    // One variant of a block, as listed by blocks/state_ids.json.
+    struct BlockStateInfo {
+        std::int32_t id = -1;
+        std::unordered_map<std::string, std::string> properties;
+    };
+
     struct RegistryData {
 
         std::unordered_map<std::string, std::vector<std::uint8_t>> nbt_payloads;
@@ -24,6 +30,7 @@ namespace terila::data {
         std::vector<std::uint8_t> command_tree_payload;
 
         std::unordered_map<std::string, std::int32_t> block_state_ids;
+        std::unordered_map<std::string, std::vector<BlockStateInfo>> block_states;
         std::unordered_map<std::string, std::int32_t> biome_ids;
         std::unordered_map<std::string, std::int32_t> entity_type_ids;
         std::unordered_map<std::string, std::string>  entity_categories;

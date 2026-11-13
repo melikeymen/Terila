@@ -1,7 +1,8 @@
-#pragma once
+﻿#pragma once
 
 #include <asio.hpp>
 
+#include "data/recipe_book.hpp"
 #include "data/registry_data.hpp"
 #include "entity/item_drop.hpp"
 #include "entity/mob.hpp"
@@ -38,12 +39,18 @@ namespace terila::network {
             terila::entity::ItemDropManager* drops,
             const std::unordered_map<std::int32_t, std::int32_t>& block_state_item,
             std::int32_t item_entity_type,
+            const terila::data::RecipeBook* recipes,
+            const std::unordered_map<std::int32_t, std::int32_t>& menu_blocks,
+            const std::array<std::int32_t, 8>& furnace_states,
+            std::int32_t furnace_item_id,
             int view_distance, int simulation_distance, int max_players,
             std::int32_t entity_id, int gamemode)
             : socket_(std::move(socket)), keep_alive_timer_(socket_.get_executor()), data_(data),
               mobs_(mobs), world_(world), item_block_state_(item_block_state),
               hub_(std::move(hub)), store_(store), drops_(drops),
               block_state_item_(block_state_item), item_entity_type_(item_entity_type),
+              recipes_(recipes), menu_blocks_(menu_blocks), furnace_states_(furnace_states),
+              furnace_item_id_(furnace_item_id),
               view_distance_(view_distance), simulation_distance_(simulation_distance),
               max_players_(max_players), entity_id_(entity_id), gamemode_(gamemode)
         {}
@@ -146,6 +153,7 @@ namespace terila::network {
 
         // Served from TRF when the region holds the chunk, generated and persisted otherwise.
         std::vector<std::uint8_t> chunk_at(std::int32_t cx, std::int32_t cz);
+        void apply_loaded_chunk(const terila::world::Chunk& chunk);
         void persist_chunk(std::int32_t cx, std::int32_t cz,
             const std::vector<std::uint8_t>& encoded, bool edited);
         void persist_block_change(const terila::world::BlockPos& target);
@@ -184,6 +192,34 @@ namespace terila::network {
         bool add_to_inventory(std::int32_t item_id, std::int32_t count);
         void send_inventory_slot(std::int32_t slot);
         void set_inventory_slot(std::int32_t slot, std::int32_t item_id, std::int32_t count);
+
+        // --- connection_menu.cpp: crafting table and furnace windows --------------
+        struct MenuSlot {
+            std::int32_t item_id = 0;
+            std::int32_t count = 0;
+        };
+
+        enum MenuKind { kMenuNone = 0, kMenuCrafting = 1, kMenuFurnace = 2 };
+
+        void open_menu(int kind, std::string_view title);
+        void close_menu();
+        void send_menu_content();
+        void send_menu_slot(std::int32_t slot);
+        void handle_container_click(const std::vector<std::uint8_t>& payload);
+        void handle_container_close(std::int32_t window_id);
+        void recompute_crafting_result();
+        void tick_menu();
+        void clone_slot(std::int32_t slot);
+        void drag_click(std::int32_t button, std::int32_t slot, bool outside);
+        bool place_one_from_cursor(std::int32_t slot);
+        void quick_move(std::int32_t slot);
+        std::int32_t menu_player_room(std::int32_t item_id) const;
+        std::int32_t add_to_menu_player(std::int32_t item_id, std::int32_t count);
+        void send_furnace_data(std::int32_t data_id, std::int32_t value);
+        int menu_kind_for_state(std::int32_t state) const;
+        std::int32_t menu_player_offset() const {
+            return menu_kind_ == kMenuCrafting ? 10 : 3;
+        }
 
         // --- connection_entities.cpp -----------------------------------------------
         // Spawns and removes mobs as they enter or leave the view distance and sends
@@ -231,6 +267,27 @@ namespace terila::network {
         std::int32_t item_entity_type_ = 0;
         std::unordered_map<std::int32_t, KnownDrop> known_drops_;
         std::array<InvSlot, kInventorySlots> inventory_{};
+        bool menu_open_ = false;
+        MenuKind menu_kind_ = kMenuNone;
+        std::int32_t menu_id_ = 0;
+        std::int32_t menu_state_id_ = 0;
+        std::vector<MenuSlot> menu_slots_;
+        MenuSlot cursor_{};
+        bool dragging_ = false;
+        int drag_mode_ = 0;
+        std::vector<std::int32_t> drag_slots_;
+        int furnace_burn_ = 0;
+        int furnace_burn_total_ = 0;
+        int furnace_cook_ = 0;
+        std::int32_t last_burn_ = -1;
+        std::int32_t last_burn_total_ = -1;
+        std::int32_t last_cook_ = -1;
+        std::int32_t last_cook_total_ = -1;
+        const terila::data::RecipeBook* recipes_ = nullptr;
+        const std::unordered_map<std::int32_t, std::int32_t>& menu_blocks_;
+        // Furnace variants indexed [facing * 2 + lit]: 0 north, 1 south, 2 west, 3 east.
+        const std::array<std::int32_t, 8>& furnace_states_;
+        std::int32_t furnace_item_id_ = 0;
         std::array<std::uint8_t, 16> uuid_{};
         float yaw_ = 0.0f;
         float pitch_ = 0.0f;

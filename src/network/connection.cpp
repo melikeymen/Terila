@@ -32,6 +32,7 @@ namespace terila::network {
     void Connection::tick_entities() {
         send_entity_updates(mobs_.mobs());
         send_drop_updates();
+        tick_menu();
     }
 
     const char* Connection::state_name(State s) noexcept {
@@ -128,6 +129,10 @@ namespace terila::network {
             return;
         }
         closed_ = true;
+
+        if (menu_open_) {
+            close_menu();
+        }
 
         if (hub_ && joined_) {
             hub_->leave(entity_id_);

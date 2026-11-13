@@ -5,6 +5,7 @@
 #endif
 #include "log/logger.hpp"
 #include "network/connection.hpp"
+#include "data/recipe_book.hpp"
 #include "data/registry_data.hpp"
 #include "data/registry_loader.hpp"
 #include "config/server_config.hpp"
@@ -17,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <functional>
 #include <vector>
@@ -149,6 +151,7 @@ int main() {
     terila::data::load_command_tree(data.command_tree_payload, in + "/commands/tree.nbt");
 
     terila::data::load_block_state_ids(data.block_state_ids, in + "/blocks/state_ids.json");
+    terila::data::load_block_states(data.block_states, in + "/blocks/state_ids.json");
     terila::data::load_biome_ids(data.biome_ids, in + "/worldgen/biomes.json");
     terila::data::load_dimensions(data.overworld, in + "/worldgen/dimensions.json");
     terila::data::load_entity_type_ids(data.entity_type_ids, in + "/entities/minecraft.json");
@@ -222,6 +225,52 @@ int main() {
 
     terila::entity::ItemDropManager drops;
 
+    terila::data::RecipeBook recipes;
+    if (!recipes.load(in + "/recipes/minecraft.json", in + "/tags/items.json",
+            data.item_ids, data.block_state_ids)) {
+        LOG_WARN(Data, "recipes are unavailable, crafting tables and furnaces stay closed");
+    }
+
+    // Blocks that open a window when used: 1 = crafting table, 2 = furnace. Every furnace
+    // variant opens the menu, not only the default state.
+    std::unordered_map<std::int32_t, std::int32_t> menu_blocks;
+    for (const auto& entry : data.block_state_ids) {
+        if (entry.first.rfind("minecraft:crafting_table", 0) == 0) {
+            menu_blocks[entry.second] = 1;
+        }
+    }
+    for (const auto& entry : data.block_states) {
+        if (entry.first.rfind("minecraft:furnace", 0) != 0) continue;
+        for (const auto& variant : entry.second) {
+            menu_blocks[variant.id] = 2;
+        }
+    }
+
+    // Furnace variants indexed [facing * 2 + lit]: 0 north, 1 south, 2 west, 3 east.
+    std::array<std::int32_t, 8> furnace_states{};
+    furnace_states.fill(-1);
+    if (const auto furnace = data.block_states.find("minecraft:furnace");
+        furnace != data.block_states.end()) {
+        static const std::unordered_map<std::string, int> kFacing{
+            { "north", 0 }, { "south", 1 }, { "west", 2 }, { "east", 3 }
+        };
+        for (const auto& variant : furnace->second) {
+            const auto facing = variant.properties.find("facing");
+            const auto lit = variant.properties.find("lit");
+            if (facing == variant.properties.end() || lit == variant.properties.end()) continue;
+            const auto index = kFacing.find(facing->second);
+            if (index == kFacing.end()) continue;
+            furnace_states[static_cast<std::size_t>(index->second * 2 +
+                (lit->second == "true" ? 1 : 0))] = variant.id;
+        }
+    }
+    const auto furnace_item = data.item_ids.find("minecraft:furnace");
+    const std::int32_t furnace_item_id =
+        furnace_item == data.item_ids.end() ? 0 : furnace_item->second;
+    LOG_DEBUG(Data, "blocks with a window: {}, furnace variants: {}", menu_blocks.size(),
+        std::count_if(furnace_states.begin(), furnace_states.end(),
+            [](std::int32_t state) { return state >= 0; }));
+
     terila::world::BlockWorld world;
 
     // TRF region files live beside the executable: <exe dir>/world/dimensions/...
@@ -279,7 +328,7 @@ int main() {
 
     auto do_accept = [&](auto&& self) -> void {
         acceptor.async_accept(
-            [&acceptor, &data, &mobs, &world, &item_block_state, &block_state_item, &drops, &item_entity_type, &srv, &players, &player_hub, &chunk_store, &next_player_entity_id, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
+            [&acceptor, &data, &mobs, &world, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, &srv, &players, &player_hub, &chunk_store, &next_player_entity_id, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
                 if (error) {
                     LOG_ERROR(Network, "accept failed: {} ({})", error.message(), error.value());
                     self(self);
@@ -292,7 +341,8 @@ int main() {
                 }
                 auto conn = std::make_shared<terila::network::Connection>(std::move(socket), data, mobs,
                     world, item_block_state, player_hub, &chunk_store, &drops, block_state_item,
-                    item_entity_type, srv.view_distance,
+                    item_entity_type, &recipes, menu_blocks, furnace_states, furnace_item_id,
+                    srv.view_distance,
                     srv.simulation_distance, static_cast<int>(srv.max_players),
                     next_player_entity_id++, srv.gamemode);
                 conn->start();

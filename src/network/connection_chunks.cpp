@@ -1,7 +1,8 @@
-#include "network/connection.hpp"
+﻿#include "network/connection.hpp"
 
 #include "protocol/play.hpp"
 #include "world/chunk_encoder.hpp"
+#include "world/chunk_decoder.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -40,6 +41,21 @@ namespace terila::network {
         LOG_DEBUG(Chunk, "chunk template encoded: {} bytes", chunk_template_.size());
     }
 
+    void Connection::apply_loaded_chunk(const terila::world::Chunk& chunk) {
+        for (int sy = 0; sy < chunk.section_count; ++sy) {
+            const auto& sec = chunk.sections[static_cast<std::size_t>(sy)];
+            for (int i = 0; i < 4096; ++i) {
+                const std::int32_t state = terila::world::section_state(sec, i);
+                const std::int32_t y = chunk.min_y + sy * 16 + (i / 256);
+                const std::int32_t z = chunk.z * 16 + ((i / 16) % 16);
+                const std::int32_t x = chunk.x * 16 + (i % 16);
+                if (state != base_state_at(y)) {
+                    world_.set(terila::world::BlockPos{ x, y, z }, state);
+                }
+            }
+        }
+    }
+
     // A chunk is served from the region file when TRF holds one. Otherwise the flat
     // generator produces it and the encoded payload is persisted, so the world
     // outlives the process instead of being regenerated on every join.
@@ -70,8 +86,14 @@ namespace terila::network {
                     terila::world::trf::to_string(loaded.error().code), loaded.error().detail);
             }
             else if (loaded->present) {
-                const auto* begin = reinterpret_cast<const std::uint8_t*>(stored.data());
-                return std::vector<std::uint8_t>(begin, begin + stored.size());
+                const auto decoded = terila::world::decode::decode(
+                    reinterpret_cast<const std::uint8_t*>(stored.data()),
+                    stored.size(), spec_.section_count);
+                if (decoded) {
+                    apply_loaded_chunk(*decoded);
+                    return terila::world::encode::encode(*decoded);
+                }
+                LOG_WARN(Chunk, "trf decode ({}, {}) failed, regenerating", cx, cz);
             }
         }
 
@@ -196,7 +218,7 @@ namespace terila::network {
         center_cz_ = cz;
         LOG_TRACE(Network, "chunk center moved to ({}, {})", cx, cz);
 
-        std::vector<std::uint8_t> out;
+        std::vector<std::uint8_t> out;  
         if (terila::protocol::write_set_center_chunk(out, cx, cz)) {
             send(out);
         }
