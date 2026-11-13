@@ -119,6 +119,13 @@ namespace terila::network {
         void handle_configuration(std::int32_t id, const std::vector<std::uint8_t>& payload);
         void handle_play(std::int32_t id, const std::vector<std::uint8_t>& payload);
 
+        // --- gamemodes (0 survival, 1 creative, 2 adventure, 3 spectator) -----------
+        void handle_change_gamemode(std::int32_t requested);
+        void send_gamemode_state();
+        bool can_break_blocks() const { return gamemode_ == 0 || gamemode_ == 1; }
+        bool can_place_blocks() const { return gamemode_ == 0 || gamemode_ == 1; }
+        bool instant_break() const { return gamemode_ == 1; }
+
         // --- connection_chunks.cpp -------------------------------------------------
         static std::uint64_t chunk_key(std::int32_t cx, std::int32_t cz) noexcept;
 

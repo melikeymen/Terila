@@ -166,41 +166,32 @@ int main() {
 
     terila::entity::MobManager mobs;
     mobs.set_ground(static_cast<double>(data.overworld.min_y + 5));
-    // Every living entity type in the registry gets an instance, so the whole mob
-    // catalogue is exercised instead of a hardcoded handful.
-    static const std::unordered_set<std::string> kLivingCategories = {
-        "creature", "monster", "ambient", "axolotls",
-        "water_creature", "water_ambient", "underground_water_creature"
+    // The flat world is plains, so only the plains animals live in it. Spawning the whole
+    // living catalogue used to put polar bears and axolotls on the grass.
+    static const std::vector<std::string> kPlainsMobs = {
+        "minecraft:cow", "minecraft:sheep", "minecraft:pig", "minecraft:chicken",
+        "minecraft:rabbit", "minecraft:horse", "minecraft:donkey", "minecraft:bee"
     };
 
-    std::vector<std::string> living_types;
-    for (const auto& entry : data.entity_type_ids) {
-        const auto category = data.entity_categories.find(entry.first);
-        if (category == data.entity_categories.end()) continue;
-        if (kLivingCategories.find(category->second) == kLivingCategories.end()) continue;
-        living_types.push_back(entry.first);
-    }
-    std::sort(living_types.begin(), living_types.end());
-
     std::size_t spawned = 0;
-    for (std::size_t i = 0; i < living_types.size(); ++i) {
-        const std::string& name = living_types[i];
-        const auto category = data.entity_categories.at(name);
-        const bool hostile = (category == "monster");
+    for (std::size_t i = 0; i < kPlainsMobs.size(); ++i) {
+        const std::string& name = kPlainsMobs[i];
+        for (int copy = 0; copy < 2; ++copy) {
+            const int index = static_cast<int>(i) * 2 + copy;
+            const int column = index % 8;
+            const int row = index / 8;
+            const double x = 8.5 + (static_cast<double>(column) - 3.5) * 3.0;
+            const double z = 14.5 + static_cast<double>(row) * 3.0;
 
-        const int column = static_cast<int>(i % 12);
-        const int row = static_cast<int>(i / 12);
-        const double x = 8.5 + (static_cast<double>(column) - 5.5) * 3.0;
-        const double z = 8.5 + static_cast<double>(row) * 3.0;
-
-        if (mobs.spawn(name, data.entity_type_ids, x, z, hostile, hostile ? 20 : 10)) {
-            ++spawned;
-        }
-        else {
-            LOG_WARN(Entity, "could not spawn {} at ({:.1f}, {:.1f})", name, x, z);
+            if (mobs.spawn(name, data.entity_type_ids, x, z, false, 10)) {
+                ++spawned;
+            }
+            else {
+                LOG_WARN(Entity, "could not spawn {} at ({:.1f}, {:.1f})", name, x, z);
+            }
         }
     }
-    LOG_INFO(Entity, "spawned {} of {} registered mob types", spawned, living_types.size());
+    LOG_INFO(Entity, "spawned {} plains animals", spawned);
 
     // Items whose id doubles as a placeable block, e.g. minecraft:stone.
     std::unordered_map<std::int32_t, std::int32_t> item_block_state;

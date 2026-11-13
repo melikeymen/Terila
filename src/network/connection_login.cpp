@@ -162,6 +162,10 @@ namespace terila::network {
             }
             send(out);
 
+            // Permissions, the starting gamemode and matching abilities (flight for
+            // creative and spectator) before the first chunk arrives.
+            send_gamemode_state();
+
             state_ = State::Play;
             joined_ = true;
             start_keep_alive();

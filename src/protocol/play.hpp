@@ -118,6 +118,22 @@ namespace terila::protocol {
         return true;
     }
 
+    // Bit 0 invulnerable, 1 flying, 2 may fly, 3 instabuild. The two floats are the
+    // flying speed and the field of view modifier.
+    inline bool write_player_abilities(std::vector<std::uint8_t>& output, std::uint8_t flags,
+        float flying_speed = 0.05f, float fov_modifier = 0.1f)
+    {
+        std::vector<std::uint8_t> payload;
+        payload.push_back(flags);
+        write_float(payload, flying_speed);
+        write_float(payload, fov_modifier);
+        if (!write_packet(output, packet_ids().play_player_abilities, payload)) {
+            LOG_WARN(Protocol, "write_player_abilities: failed");
+            return false;
+        }
+        return true;
+    }
+
     inline bool write_chunk_batch_start(std::vector<std::uint8_t>& output)
     {
         if (!write_packet(output, packet_ids().play_chunk_batch_start, {})) {

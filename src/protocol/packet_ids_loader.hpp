@@ -94,9 +94,11 @@ namespace terila::protocol {
         set(ids.play_set_creative_mode_slot, find("play", "serverbound", "minecraft:set_creative_mode_slot"), "play_set_creative_mode_slot");
         set(ids.play_set_carried_item, find("play", "serverbound", "minecraft:set_carried_item"), "play_set_carried_item");
         set(ids.play_pick_item_from_block, find("play", "serverbound", "minecraft:pick_item_from_block"), "play_pick_item_from_block");
+        set(ids.play_change_game_mode, find("play", "serverbound", "minecraft:change_game_mode"), "play_change_game_mode");
 
         // Inventory and dropped items
         set(ids.play_container_set_slot, find("play", "clientbound", "minecraft:container_set_slot"), "play_container_set_slot");
+        set(ids.play_player_abilities, find("play", "clientbound", "minecraft:player_abilities"), "play_player_abilities");
         set(ids.play_set_held_slot, find("play", "clientbound", "minecraft:set_held_slot"), "play_set_held_slot");
         set(ids.play_set_entity_data, find("play", "clientbound", "minecraft:set_entity_data"), "play_set_entity_data");
         set(ids.play_take_item_entity, find("play", "clientbound", "minecraft:take_item_entity"), "play_take_item_entity");

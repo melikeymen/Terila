@@ -1,12 +1,60 @@
 #include "network/connection.hpp"
 
 #include "protocol/block.hpp"
+#include "protocol/entity.hpp"
 #include "protocol/packet_ids.hpp"
 #include "protocol/play.hpp"
 
 #include <cstring>
 
 namespace terila::network {
+
+    // F3+F4 asks the server for a gamemode; the answer is the game event that carries
+    // the new mode plus fresh abilities, so creative flight and spectator flying match.
+    void Connection::handle_change_gamemode(std::int32_t requested) {
+        if (requested < 0 || requested > 3) {
+            LOG_WARN(Network, "{} asked for invalid gamemode {}", username_, requested);
+            return;
+        }
+        if (requested == gamemode_) {
+            return;
+        }
+
+        gamemode_ = requested;
+        LOG_INFO(Network, "{} switched to gamemode {}", username_, gamemode_);
+        send_gamemode_state();
+        if (hub_) {
+            hub_->move(entity_id_,
+                PlayerHub::Position{ player_x_, player_y_, player_z_, yaw_, pitch_ });
+        }
+    }
+
+    void Connection::send_gamemode_state() {
+        std::vector<std::uint8_t> out;
+
+        // Entity event 28 raises this player's permission level on the client, which is
+        // what makes the F3+F4 switcher usable outside singleplayer.
+        if (terila::protocol::write_entity_event(out, entity_id_, 28)) {
+            send(out);
+        }
+        out.clear();
+
+        if (terila::protocol::write_game_event(out, 3, static_cast<float>(gamemode_))) {
+            send(out);
+        }
+        out.clear();
+
+        std::uint8_t flags = 0;
+        if (gamemode_ == 1) {
+            flags = 0x0D;   // invulnerable | may fly | instabuild
+        }
+        else if (gamemode_ == 3) {
+            flags = 0x07;   // invulnerable | flying | may fly
+        }
+        if (terila::protocol::write_player_abilities(out, flags)) {
+            send(out);
+        }
+    }
 
     void Connection::handle_play(std::int32_t id, const std::vector<std::uint8_t>& payload) {
         const auto& ids = terila::protocol::packet_ids();
@@ -25,6 +73,15 @@ namespace terila::network {
                 keep_alive_answered_ = true;
                 LOG_DEBUG(Network, "keep_alive reply: id={}", *value);
             }
+            return;
+        }
+        if (id == ids.play_change_game_mode) {
+            const auto requested = terila::protocol::read_varint(payload.data(), payload.size());
+            if (!requested.has_value()) {
+                LOG_WARN(Network, "invalid change_game_mode ({} bytes)", payload.size());
+                return;
+            }
+            handle_change_gamemode(requested->value);
             return;
         }
         if (id == ids.play_pick_item_from_block) {
@@ -70,7 +127,7 @@ namespace terila::network {
             // 2 = finished destroying. A creative client only sends 0 (start destroy)
             // because it breaks the block instantly, so that counts as a break too —
             // otherwise the server keeps the block and re-sends it later.
-            const bool finished = action->value == 2 || (action->value == 0 && gamemode_ == 1);
+            const bool finished = action->value == 2 || (action->value == 0 && instant_break());
             if (finished) {
                 handle_block_break(pos, sequence.has_value() ? sequence->value : 0);
             }

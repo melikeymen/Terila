@@ -48,6 +48,10 @@ namespace terila::network {
 
     void Connection::handle_block_break(const terila::protocol::BlockPosValue& clicked,
         std::int32_t sequence) {
+        if (!can_break_blocks()) {
+            return;
+        }
+
         const terila::world::BlockPos target{ clicked.x, clicked.y, clicked.z };
         if (!inside_world(target.y)) {
             return;
@@ -70,7 +74,7 @@ namespace terila::network {
         static constexpr std::int32_t kFaceOffset[6][3] = {
             { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }, { -1, 0, 0 }, { 1, 0, 0 }
         };
-        if (face < 0 || face > 5) {
+        if (!can_place_blocks() || face < 0 || face > 5) {
             return;
         }
 
