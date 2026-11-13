@@ -16,6 +16,8 @@ namespace terila::config {
         std::string   log_file = "";
 
         // Mojang session authentication. false lets cracked (offline) clients join.
+        std::string   level_seed = "terila";
+
         bool          online_mode = false;
 
         // AES/CFB8 encryption after the RSA exchange. Independent from online_mode:
@@ -34,6 +36,26 @@ namespace terila::config {
         // 0 survival, 1 creative, 2 adventure, 3 spectator. Creative is the default
         // because block placement needs the creative inventory.
         int           gamemode = 1;
+
+        // Numeric seeds are kept as they are, anything else is hashed (FNV-1a) so the
+        // same text always produces the same world.
+        std::uint32_t seed_value() const {
+            try {
+                if (!level_seed.empty()) {
+                    const auto parsed = std::stoll(level_seed);
+                    return static_cast<std::uint32_t>(static_cast<std::uint64_t>(parsed));
+                }
+            }
+            catch (...) {
+            }
+
+            std::uint32_t hash = 2166136261u;
+            for (unsigned char c : level_seed) {
+                hash ^= c;
+                hash *= 16777619u;
+            }
+            return hash;
+        }
     };
 
     namespace detail {
@@ -107,6 +129,9 @@ namespace terila::config {
             }
             else if (key == "log-file") {
                 out.log_file = value;
+            }
+            else if (key == "level-seed") {
+                out.level_seed = value;
             }
             else if (key == "online-mode") {
                 out.online_mode = detail::parse_bool(value, out.online_mode);

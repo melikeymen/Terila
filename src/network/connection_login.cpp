@@ -118,9 +118,9 @@ namespace terila::network {
         else if (id == ids.config_finish_serverbound) {
             LOG_DEBUG(Network, "state: Configuration → Play");
 
-            build_chunk_template();
-            if (chunk_template_.empty()) {
-                LOG_ERROR(Network, "chunk template unavailable, closing the connection");
+            init_terrain();
+            if (!terrain_.ready()) {
+                LOG_ERROR(Network, "terrain generator unavailable, closing the connection");
                 close();
                 return;
             }
@@ -139,7 +139,7 @@ namespace terila::network {
             // Vanilla sends the teleport before the game event, then the cache
             // center, then the chunks wrapped in a batch.
             const double spawn_y =
-                static_cast<double>(spec_.min_y + spec_.dirt_layers + 2);
+                static_cast<double>(terrain_.surface_height(8, 8) + 1);
             if (!terila::protocol::write_player_position(out, next_teleport_id_++,
                 8.5, spawn_y, 8.5, 0.0, 0.0, 0.0, 0.0f, 0.0f)) {
                 LOG_ERROR(Network, "player_position failed");

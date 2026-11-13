@@ -18,20 +18,12 @@ namespace terila::network {
         return it->second;
     }
 
-    std::int32_t Connection::base_state_at(std::int32_t y) const {
-        const std::int32_t local = y - spec_.min_y;
-        if (local == 0) return bedrock_state_;
-        if (local > 0 && local <= spec_.dirt_layers) return dirt_state_;
-        if (local == spec_.dirt_layers + 1) return grass_state_;
-        return air_state_;
-    }
-
     std::int32_t Connection::state_at(const terila::world::BlockPos& pos) const {
-        return world_.get(pos, base_state_at(pos.y));
+        return world_.get(pos, terrain_.state_at(pos.x, pos.y, pos.z));
     }
 
     bool Connection::inside_world(std::int32_t y) const {
-        return y >= spec_.min_y && y < spec_.min_y + spec_.section_count * 16;
+        return y >= terrain_.min_y() && y < terrain_.min_y() + terrain_.section_count() * 16;
     }
 
     void Connection::send_block_change(const terila::world::BlockPos& pos, std::int32_t state,
@@ -129,7 +121,7 @@ namespace terila::network {
     }
 
     double Connection::drop_ground_y() const {
-        return static_cast<double>(spec_.min_y + spec_.dirt_layers + 2);
+        return static_cast<double>(terrain_.surface_height(8, 8) + 2);
     }
 
     // Every broken block turns into a drop so the world feels physical; blocks without

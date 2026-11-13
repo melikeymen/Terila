@@ -14,31 +14,24 @@ namespace terila::network {
             static_cast<std::uint32_t>(cz);
     }
 
-    void Connection::build_chunk_template() {
-        if (!chunk_template_.empty()) {
+    void Connection::init_terrain() {
+        if (terrain_.ready()) {
             return;
         }
 
         const auto resolve_block = [this](std::string_view name) { return block_state(name); };
         const auto resolve_biome = [this](std::string_view name) { return biome_state(name); };
 
-        spec_ = terila::world::flat::FlatSpec{};
-        spec_.min_y = data_.overworld.min_y;
-        spec_.section_count = data_.overworld.height / 16;
-
-        air_state_ = block_state(spec_.air).value_or(0);
-        bedrock_state_ = block_state(spec_.bedrock).value_or(0);
-        dirt_state_ = block_state(spec_.dirt).value_or(0);
-        grass_state_ = block_state(spec_.grass).value_or(0);
-
-        const auto chunk = terila::world::flat::generate(0, 0, spec_, resolve_block, resolve_biome);
-        if (!chunk) {
-            LOG_ERROR(Chunk, "cannot generate the flat chunk template");
+        if (!terrain_.init(data_.overworld.min_y, data_.overworld.height / 16,
+                world_seed_, resolve_block, resolve_biome)) {
+            LOG_ERROR(Chunk, "cannot initialise the terrain generator");
             return;
         }
 
-        chunk_template_ = terila::world::encode::encode(*chunk);
-        LOG_DEBUG(Chunk, "chunk template encoded: {} bytes", chunk_template_.size());
+        air_state_ = block_state("minecraft:air").value_or(0);
+        LOG_INFO(Chunk, "terrain ready: {} sections from y={}, sea level {}, seed {}",
+            terrain_.section_count(), terrain_.min_y(), terrain_.sea_level(),
+            terrain_.seed());
     }
 
     void Connection::apply_loaded_chunk(const terila::world::Chunk& chunk) {
@@ -49,7 +42,7 @@ namespace terila::network {
                 const std::int32_t y = chunk.min_y + sy * 16 + (i / 256);
                 const std::int32_t z = chunk.z * 16 + ((i / 16) % 16);
                 const std::int32_t x = chunk.x * 16 + (i % 16);
-                if (state != base_state_at(y)) {
+                if (state != terrain_.state_at(x, y, z)) {
                     world_.set(terila::world::BlockPos{ x, y, z }, state);
                 }
             }
@@ -64,18 +57,16 @@ namespace terila::network {
     // the server runs, so re-streaming a chunk can never resurrect an older disk copy and
     // drop blocks the player has placed since.
     std::vector<std::uint8_t> Connection::chunk_at(std::int32_t cx, std::int32_t cz) {
+        init_terrain();
+
         if (world_.chunk_modified(cx, cz)) {
-            const auto resolve_block = [this](std::string_view name) { return block_state(name); };
-            const auto resolve_biome = [this](std::string_view name) { return biome_state(name); };
-            auto chunk = terila::world::flat::generate(cx, cz, spec_, resolve_block, resolve_biome);
-            if (chunk) {
-                world_.apply(*chunk, air_state_);
-                auto out = terila::world::encode::encode(*chunk);
-                LOG_DEBUG(Chunk, "chunk ({}, {}) served from {} in-memory edits", cx, cz,
-                    world_.modified_count(cx, cz));
-                persist_chunk(cx, cz, out, true);
-                return out;
-            }
+            auto chunk = terrain_.generate(cx, cz);
+            world_.apply(chunk, air_state_);
+            auto out = terila::world::encode::encode(chunk);
+            LOG_DEBUG(Chunk, "chunk ({}, {}) served from {} in-memory edits", cx, cz,
+                world_.modified_count(cx, cz));
+            persist_chunk(cx, cz, out, true);
+            return out;
         }
 
         if (store_ != nullptr) {
@@ -88,7 +79,7 @@ namespace terila::network {
             else if (loaded->present) {
                 const auto decoded = terila::world::decode::decode(
                     reinterpret_cast<const std::uint8_t*>(stored.data()),
-                    stored.size(), spec_.section_count);
+                    stored.size(), terrain_.section_count());
                 if (decoded) {
                     apply_loaded_chunk(*decoded);
                     return terila::world::encode::encode(*decoded);
@@ -97,12 +88,8 @@ namespace terila::network {
             }
         }
 
-        auto out = chunk_template_;
-        for (int i = 0; i < 4; ++i) {
-            out[i] = static_cast<std::uint8_t>((static_cast<std::uint32_t>(cx) >> ((3 - i) * 8)) & 0xFF);
-            out[4 + i] = static_cast<std::uint8_t>((static_cast<std::uint32_t>(cz) >> ((3 - i) * 8)) & 0xFF);
-        }
-
+        auto chunk = terrain_.generate(cx, cz);
+        auto out = terila::world::encode::encode(chunk);
         persist_chunk(cx, cz, out, false);
         return out;
     }
@@ -130,17 +117,12 @@ namespace terila::network {
 
         const std::int32_t cx = target.x >> 4;
         const std::int32_t cz = target.z >> 4;
-        const auto resolve_block = [this](std::string_view name) { return block_state(name); };
-        const auto resolve_biome = [this](std::string_view name) { return biome_state(name); };
-        auto chunk = terila::world::flat::generate(cx, cz, spec_, resolve_block, resolve_biome);
-        if (!chunk) {
-            return;
-        }
-
-        world_.apply(*chunk, air_state_);
+        init_terrain();
+        auto chunk = terrain_.generate(cx, cz);
+        world_.apply(chunk, air_state_);
         LOG_DEBUG(Chunk, "persisting chunk ({}, {}) with {} edits total", cx, cz,
             world_.modified_count(cx, cz));
-        persist_chunk(cx, cz, terila::world::encode::encode(*chunk), true);
+        persist_chunk(cx, cz, terila::world::encode::encode(chunk), true);
     }
 
     void Connection::queue_chunk_area(std::int32_t center_cx, std::int32_t center_cz) {

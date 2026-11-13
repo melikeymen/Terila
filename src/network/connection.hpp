@@ -10,7 +10,7 @@
 #include "network/player_hub.hpp"
 #include "protocol/block.hpp"
 #include "world/block_world.hpp"
-#include "world/flat_generator.hpp"
+#include "world/terrain_generator.hpp"
 #include "world/trf/trf_store.hpp"
 
 #include <array>
@@ -43,6 +43,7 @@ namespace terila::network {
             const std::unordered_map<std::int32_t, std::int32_t>& menu_blocks,
             const std::array<std::int32_t, 8>& furnace_states,
             std::int32_t furnace_item_id,
+            std::uint32_t world_seed,
             int view_distance, int simulation_distance, int max_players,
             std::int32_t entity_id, int gamemode)
             : socket_(std::move(socket)), keep_alive_timer_(socket_.get_executor()), data_(data),
@@ -50,7 +51,7 @@ namespace terila::network {
               hub_(std::move(hub)), store_(store), drops_(drops),
               block_state_item_(block_state_item), item_entity_type_(item_entity_type),
               recipes_(recipes), menu_blocks_(menu_blocks), furnace_states_(furnace_states),
-              furnace_item_id_(furnace_item_id),
+              furnace_item_id_(furnace_item_id), world_seed_(world_seed),
               view_distance_(view_distance), simulation_distance_(simulation_distance),
               max_players_(max_players), entity_id_(entity_id), gamemode_(gamemode)
         {}
@@ -148,8 +149,8 @@ namespace terila::network {
         // --- connection_chunks.cpp -------------------------------------------------
         static std::uint64_t chunk_key(std::int32_t cx, std::int32_t cz) noexcept;
 
-        // Flat chunks are identical except for their coordinates, so one encode is enough.
-        void build_chunk_template();
+        // Resolves the block and biome ids the terrain generator needs.
+        void init_terrain();
 
         // Served from TRF when the region holds the chunk, generated and persisted otherwise.
         std::vector<std::uint8_t> chunk_at(std::int32_t cx, std::int32_t cz);
@@ -167,7 +168,6 @@ namespace terila::network {
         std::optional<std::int32_t> biome_state(std::string_view name) const;
 
         // The generated flat world, used when a position has no override yet.
-        std::int32_t base_state_at(std::int32_t y) const;
         std::int32_t state_at(const terila::world::BlockPos& pos) const;
         bool inside_world(std::int32_t y) const;
         void send_block_change(const terila::world::BlockPos& pos, std::int32_t state,
@@ -248,8 +248,7 @@ namespace terila::network {
         std::int32_t entity_id_ = 76;
         std::int32_t center_cx_ = 0;
         std::int32_t center_cz_ = 0;
-        terila::world::flat::FlatSpec spec_;
-        std::vector<std::uint8_t> chunk_template_;
+        terila::world::terrain::Generator terrain_;
         std::deque<ChunkPos> pending_chunks_;
         std::unordered_set<std::uint64_t> sent_chunks_;
         std::unordered_map<std::int32_t, KnownEntity> known_entities_;
@@ -288,14 +287,12 @@ namespace terila::network {
         // Furnace variants indexed [facing * 2 + lit]: 0 north, 1 south, 2 west, 3 east.
         const std::array<std::int32_t, 8>& furnace_states_;
         std::int32_t furnace_item_id_ = 0;
+        std::uint32_t world_seed_ = 0;
         std::array<std::uint8_t, 16> uuid_{};
         float yaw_ = 0.0f;
         float pitch_ = 0.0f;
         int gamemode_ = 1;
         std::int32_t air_state_ = 0;
-        std::int32_t bedrock_state_ = 0;
-        std::int32_t dirt_state_ = 0;
-        std::int32_t grass_state_ = 0;
         std::int32_t carried_slot_ = 0;
         std::int32_t held_item_id_ = 0;
         std::unordered_map<std::int32_t, std::int32_t> creative_slots_;

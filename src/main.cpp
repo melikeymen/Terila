@@ -12,9 +12,11 @@
 #include "protocol/packet_ids_loader.hpp"
 #include "entity/mob.hpp"
 #include "world/block_world.hpp"
+#include "world/terrain_generator.hpp"
 #include "world/trf/trf_store.hpp"
 #include <nlohmann/json.hpp>
 #include <memory>
+#include <optional>
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
@@ -167,10 +169,32 @@ int main() {
     LOG_DEBUG(Registry, "datapack registries: {}", data.datapack_registries.size());
     LOG_DEBUG(Registry, "registry payloads: {}", data.nbt_payloads.size());
 
+    // One terrain generator decides where the ground is, so mobs stand on the surface
+    // instead of the old flat layer.
+    terila::world::terrain::Generator world_terrain;
+    const auto resolve_block_id = [&data](std::string_view name) -> std::optional<std::int32_t> {
+        const auto it = data.block_state_ids.find(std::string(name));
+        return it == data.block_state_ids.end() ? std::nullopt
+            : std::optional<std::int32_t>(it->second);
+    };
+    const auto resolve_biome_id = [&data](std::string_view name) -> std::optional<std::int32_t> {
+        const auto it = data.biome_ids.find(std::string(name));
+        return it == data.biome_ids.end() ? std::nullopt
+            : std::optional<std::int32_t>(it->second);
+    };
+    if (!world_terrain.init(data.overworld.min_y, data.overworld.height / 16,
+            srv.seed_value(), resolve_block_id, resolve_biome_id)) {
+        LOG_FATAL(Data, "terrain generator failed to initialise");
+        return 7;
+    }
+
+    const int spawn_surface = world_terrain.surface_height(8, 8);
+    LOG_INFO(Data, "terrain ready: seed '{}' ({}), spawn stands on y={}, sea level {}",
+        srv.level_seed, world_terrain.seed(), spawn_surface, world_terrain.sea_level());
+
     terila::entity::MobManager mobs;
-    mobs.set_ground(static_cast<double>(data.overworld.min_y + 5));
-    // The flat world is plains, so only the plains animals live in it. Spawning the whole
-    // living catalogue used to put polar bears and axolotls on the grass.
+    mobs.set_ground(static_cast<double>(spawn_surface + 1));
+    // The spawn area is temperate, so only the overworld's plains animals live there.
     static const std::vector<std::string> kPlainsMobs = {
         "minecraft:cow", "minecraft:sheep", "minecraft:pig", "minecraft:chicken",
         "minecraft:rabbit", "minecraft:horse", "minecraft:donkey", "minecraft:bee"
@@ -342,7 +366,7 @@ int main() {
                 auto conn = std::make_shared<terila::network::Connection>(std::move(socket), data, mobs,
                     world, item_block_state, player_hub, &chunk_store, &drops, block_state_item,
                     item_entity_type, &recipes, menu_blocks, furnace_states, furnace_item_id,
-                    srv.view_distance,
+                    srv.seed_value(), srv.view_distance,
                     srv.simulation_distance, static_cast<int>(srv.max_players),
                     next_player_entity_id++, srv.gamemode);
                 conn->start();

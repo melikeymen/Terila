@@ -81,6 +81,7 @@ target_sources(terila PRIVATE
     "src/world/chunk_decoder.hpp"
     "src/world/chunk_encoder.hpp"
     "src/world/flat_generator.hpp"
+    "src/world/terrain_generator.hpp"
 )
 
 # Dependencies
@@ -180,12 +181,19 @@ endif()
 
 add_executable(chunk_tests
     "tests/world/chunk_decoder_test.cpp"
+    "tests/world/terrain_generator_test.cpp"
     "tests/world/chunk_encoder_test.cpp"
     "src/log/logger.cpp"
 )
 
 if(MSVC)
     target_compile_options(chunk_tests PRIVATE /utf-8)
+endif()
+
+if(WIN32)
+    # Tools and tests share headers with the server, which relies on these.
+    target_compile_definitions(chunk_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_compile_definitions(protocol_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
