@@ -29,6 +29,8 @@ target_sources(terila PRIVATE
     "src/protocol/handshake.hpp"
     "src/protocol/primitives.hpp"
     "src/protocol/status.hpp"
+    "src/entity/item_drop.hpp"
+    "src/protocol/item.hpp"
     "src/network/connection.hpp"
     "src/network/connection.cpp"
     "src/network/connection_handshake.cpp"

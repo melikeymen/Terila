@@ -16,6 +16,7 @@ namespace terila::entity {
         double x = 0.0;
         double y = 0.0;
         double z = 0.0;
+        std::int32_t id = 0;   // entity id, so drops know who collected them
     };
 
     struct Mob {

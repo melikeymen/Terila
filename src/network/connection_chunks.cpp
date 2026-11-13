@@ -43,7 +43,25 @@ namespace terila::network {
     // A chunk is served from the region file when TRF holds one. Otherwise the flat
     // generator produces it and the encoded payload is persisted, so the world
     // outlives the process instead of being regenerated on every join.
+    //
+    // Edits made in this session win over the region file: the overlay is the truth while
+    // the server runs, so re-streaming a chunk can never resurrect an older disk copy and
+    // drop blocks the player has placed since.
     std::vector<std::uint8_t> Connection::chunk_at(std::int32_t cx, std::int32_t cz) {
+        if (world_.chunk_modified(cx, cz)) {
+            const auto resolve_block = [this](std::string_view name) { return block_state(name); };
+            const auto resolve_biome = [this](std::string_view name) { return biome_state(name); };
+            auto chunk = terila::world::flat::generate(cx, cz, spec_, resolve_block, resolve_biome);
+            if (chunk) {
+                world_.apply(*chunk, air_state_);
+                auto out = terila::world::encode::encode(*chunk);
+                LOG_DEBUG(Chunk, "chunk ({}, {}) served from {} in-memory edits", cx, cz,
+                    world_.modified_count(cx, cz));
+                persist_chunk(cx, cz, out, true);
+                return out;
+            }
+        }
+
         if (store_ != nullptr) {
             std::vector<std::byte> stored;
             const auto loaded = store_->load_chunk(cx, cz, stored);
@@ -57,27 +75,13 @@ namespace terila::network {
             }
         }
 
-        const bool edited = world_.chunk_modified(cx, cz);
-        std::vector<std::uint8_t> out;
-        if (edited) {
-            const auto resolve_block = [this](std::string_view name) { return block_state(name); };
-            const auto resolve_biome = [this](std::string_view name) { return biome_state(name); };
-            auto chunk = terila::world::flat::generate(cx, cz, spec_, resolve_block, resolve_biome);
-            if (chunk) {
-                world_.apply(*chunk, air_state_);
-                out = terila::world::encode::encode(*chunk);
-            }
+        auto out = chunk_template_;
+        for (int i = 0; i < 4; ++i) {
+            out[i] = static_cast<std::uint8_t>((static_cast<std::uint32_t>(cx) >> ((3 - i) * 8)) & 0xFF);
+            out[4 + i] = static_cast<std::uint8_t>((static_cast<std::uint32_t>(cz) >> ((3 - i) * 8)) & 0xFF);
         }
 
-        if (out.empty()) {
-            out = chunk_template_;
-            for (int i = 0; i < 4; ++i) {
-                out[i] = static_cast<std::uint8_t>((static_cast<std::uint32_t>(cx) >> ((3 - i) * 8)) & 0xFF);
-                out[4 + i] = static_cast<std::uint8_t>((static_cast<std::uint32_t>(cz) >> ((3 - i) * 8)) & 0xFF);
-            }
-        }
-
-        persist_chunk(cx, cz, out, edited);
+        persist_chunk(cx, cz, out, false);
         return out;
     }
 
@@ -112,6 +116,8 @@ namespace terila::network {
         }
 
         world_.apply(*chunk, air_state_);
+        LOG_DEBUG(Chunk, "persisting chunk ({}, {}) with {} edits total", cx, cz,
+            world_.modified_count(cx, cz));
         persist_chunk(cx, cz, terila::world::encode::encode(*chunk), true);
     }
 

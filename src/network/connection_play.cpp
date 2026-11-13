@@ -27,6 +27,11 @@ namespace terila::network {
             }
             return;
         }
+        if (id == ids.play_pick_item_from_block) {
+            const auto pos = terila::protocol::unpack_block_pos(payload.data(), payload.size());
+            handle_pick_block(pos);
+            return;
+        }
         if (id == ids.play_set_carried_item) {
             if (payload.size() < 2) return;
             carried_slot_ = static_cast<std::int32_t>((payload[0] << 8) | payload[1]);
@@ -62,8 +67,11 @@ namespace terila::network {
             const auto sequence = terila::protocol::read_varint(
                 payload.data() + sequence_offset, payload.size() - sequence_offset);
 
-            // 2 = finished destroying the block; creative clients finish at once.
-            if (action->value == 2) {
+            // 2 = finished destroying. A creative client only sends 0 (start destroy)
+            // because it breaks the block instantly, so that counts as a break too —
+            // otherwise the server keeps the block and re-sends it later.
+            const bool finished = action->value == 2 || (action->value == 0 && gamemode_ == 1);
+            if (finished) {
                 handle_block_break(pos, sequence.has_value() ? sequence->value : 0);
             }
             return;

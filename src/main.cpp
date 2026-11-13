@@ -211,6 +211,26 @@ int main() {
     }
     LOG_DEBUG(Data, "placeable block items: {}", item_block_state.size());
 
+    // The reverse of the table above: which item a block state turns into when it is
+    // broken or picked with the middle mouse button.
+    std::unordered_map<std::int32_t, std::int32_t> block_state_item;
+    for (const auto& entry : item_block_state) {
+        if (block_state_item.find(entry.second) == block_state_item.end()) {
+            block_state_item[entry.second] = entry.first;
+        }
+    }
+
+    std::int32_t item_entity_type = 0;
+    if (const auto it = data.entity_type_ids.find("minecraft:item");
+        it != data.entity_type_ids.end()) {
+        item_entity_type = it->second;
+    }
+    else {
+        LOG_WARN(Entity, "minecraft:item is missing, block drops stay disabled");
+    }
+
+    terila::entity::ItemDropManager drops;
+
     terila::world::BlockWorld world;
 
     // TRF region files live beside the executable: <exe dir>/world/dimensions/...
@@ -268,7 +288,7 @@ int main() {
 
     auto do_accept = [&](auto&& self) -> void {
         acceptor.async_accept(
-            [&acceptor, &data, &mobs, &world, &item_block_state, &srv, &players, &player_hub, &chunk_store, &next_player_entity_id, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
+            [&acceptor, &data, &mobs, &world, &item_block_state, &block_state_item, &drops, &item_entity_type, &srv, &players, &player_hub, &chunk_store, &next_player_entity_id, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
                 if (error) {
                     LOG_ERROR(Network, "accept failed: {} ({})", error.message(), error.value());
                     self(self);
@@ -280,7 +300,8 @@ int main() {
                     LOG_DEBUG(Network, "new connection from {}:{}", remote_ep.address().to_string(), remote_ep.port());
                 }
                 auto conn = std::make_shared<terila::network::Connection>(std::move(socket), data, mobs,
-                    world, item_block_state, player_hub, &chunk_store, srv.view_distance,
+                    world, item_block_state, player_hub, &chunk_store, &drops, block_state_item,
+                    item_entity_type, srv.view_distance,
                     srv.simulation_distance, static_cast<int>(srv.max_players),
                     next_player_entity_id++, srv.gamemode);
                 conn->start();
@@ -311,6 +332,7 @@ int main() {
             }
 
             mobs.tick(player_positions);
+            drops.tick(player_positions);
 
             for (auto it = players.begin(); it != players.end();) {
                 if (const auto conn = it->lock()) {

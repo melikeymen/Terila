@@ -3,6 +3,7 @@
 #include <asio.hpp>
 
 #include "data/registry_data.hpp"
+#include "entity/item_drop.hpp"
 #include "entity/mob.hpp"
 #include "log/logger.hpp"
 #include "network/player_hub.hpp"
@@ -34,11 +35,15 @@ namespace terila::network {
             const std::unordered_map<std::int32_t, std::int32_t>& item_block_state,
             std::shared_ptr<PlayerHub> hub,
             terila::world::trf::ChunkStore* store,
+            terila::entity::ItemDropManager* drops,
+            const std::unordered_map<std::int32_t, std::int32_t>& block_state_item,
+            std::int32_t item_entity_type,
             int view_distance, int simulation_distance, int max_players,
             std::int32_t entity_id, int gamemode)
             : socket_(std::move(socket)), keep_alive_timer_(socket_.get_executor()), data_(data),
               mobs_(mobs), world_(world), item_block_state_(item_block_state),
-              hub_(std::move(hub)), store_(store),
+              hub_(std::move(hub)), store_(store), drops_(drops),
+              block_state_item_(block_state_item), item_entity_type_(item_entity_type),
               view_distance_(view_distance), simulation_distance_(simulation_distance),
               max_players_(max_players), entity_id_(entity_id), gamemode_(gamemode)
         {}
@@ -53,7 +58,7 @@ namespace terila::network {
         bool joined() const { return joined_; }
 
         terila::entity::PlayerPos player_position() const {
-            return terila::entity::PlayerPos{ player_x_, player_y_, player_z_ };
+            return terila::entity::PlayerPos{ player_x_, player_y_, player_z_, entity_id_ };
         }
 
     private:
@@ -80,6 +85,12 @@ namespace terila::network {
             float yaw = 0.0f;
             std::uint32_t hurt_serial = 0;
             bool death_sent = false;
+        };
+
+        struct KnownDrop {
+            double x = 0.0;
+            double y = 0.0;
+            double z = 0.0;
         };
 
         enum class State {
@@ -140,6 +151,14 @@ namespace terila::network {
             std::int32_t face, std::int32_t sequence);
         void refresh_held_item();
 
+        // --- dropped items ---------------------------------------------------------
+        // Surface a broken block falls onto: the block above the grass layer.
+        double drop_ground_y() const;
+        void spawn_block_drop(const terila::world::BlockPos& pos, std::int32_t state);
+        void handle_pick_block(const terila::protocol::BlockPosValue& clicked);
+        void give_hotbar_item(std::int32_t item_id);
+        void send_drop_updates();
+
         // --- connection_entities.cpp -----------------------------------------------
         // Spawns and removes mobs as they enter or leave the view distance and sends
         // relative movement for the ones already known to the client.
@@ -181,6 +200,10 @@ namespace terila::network {
         const std::unordered_map<std::int32_t, std::int32_t>& item_block_state_;
         std::shared_ptr<PlayerHub> hub_;
         terila::world::trf::ChunkStore* store_ = nullptr;
+        terila::entity::ItemDropManager* drops_ = nullptr;
+        const std::unordered_map<std::int32_t, std::int32_t>& block_state_item_;
+        std::int32_t item_entity_type_ = 0;
+        std::unordered_map<std::int32_t, KnownDrop> known_drops_;
         std::array<std::uint8_t, 16> uuid_{};
         float yaw_ = 0.0f;
         float pitch_ = 0.0f;

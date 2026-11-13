@@ -1,12 +1,24 @@
 #include "network/connection.hpp"
 
 #include "protocol/entity.hpp"
+#include "protocol/item.hpp"
 #include "protocol/play.hpp"
 
 #include <cmath>
 #include <cstdio>
 
 namespace terila::network {
+
+    namespace {
+
+        std::int16_t delta_to_short(double delta) {
+            const double scaled = delta * 4096.0;
+            if (scaled > 32767.0) return static_cast<std::int16_t>(32767);
+            if (scaled < -32768.0) return static_cast<std::int16_t>(-32768);
+            return static_cast<std::int16_t>(std::lround(scaled));
+        }
+
+    }
 
     void Connection::send_entity_updates(const std::vector<terila::entity::Mob>& mobs) {
         if (state_ != State::Play || closed_) {
@@ -137,6 +149,93 @@ namespace terila::network {
                 send(remove);
             }
             it = known_entities_.erase(it);
+        }
+    }
+
+    // Drops are streamed like mobs: spawn with the stack metadata, then relative moves
+    // until the drop is collected, despawns or leaves the view distance.
+    void Connection::send_drop_updates() {
+        if (drops_ == nullptr || state_ != State::Play || closed_) {
+            return;
+        }
+
+        const double range = static_cast<double>(view_distance_) * 16.0;
+        const double range_sq = range * range;
+
+        std::unordered_set<std::int32_t> alive;
+        std::vector<std::uint8_t> out;
+
+        for (const auto& drop : drops_->drops()) {
+            alive.insert(drop.id);
+
+            const double dx = drop.x - player_x_;
+            const double dz = drop.z - player_z_;
+            if (dx * dx + dz * dz > range_sq) {
+                if (const auto known = known_drops_.find(drop.id); known != known_drops_.end()) {
+                    std::vector<std::uint8_t> remove;
+                    if (terila::protocol::write_remove_entity(remove, drop.id)) {
+                        send(remove);
+                    }
+                    known_drops_.erase(known);
+                }
+                continue;
+            }
+
+            const auto known = known_drops_.find(drop.id);
+            if (known == known_drops_.end()) {
+                if (terila::protocol::write_add_entity(out, drop.id, drop.uuid, item_entity_type_,
+                        drop.x, drop.y, drop.z, 0.0f, 0.0f, 0.0f)) {
+                    send(out);
+                }
+                out.clear();
+                if (terila::protocol::write_item_entity_data(out, drop.id, drop.item_id,
+                        drop.count)) {
+                    send(out);
+                }
+                out.clear();
+                known_drops_[drop.id] = KnownDrop{ drop.x, drop.y, drop.z };
+            }
+            else {
+                const auto dxs = delta_to_short(drop.x - known->second.x);
+                const auto dys = delta_to_short(drop.y - known->second.y);
+                const auto dzs = delta_to_short(drop.z - known->second.z);
+                if (dxs != 0 || dys != 0 || dzs != 0) {
+                    if (terila::protocol::write_move_entity_pos(out, drop.id, dxs, dys, dzs, false)) {
+                        send(out);
+                    }
+                    out.clear();
+                    known->second.x = drop.x;
+                    known->second.y = drop.y;
+                    known->second.z = drop.z;
+                }
+            }
+
+            if (drop.collected_by != 0) {
+                if (drop.collected_by > 0 &&
+                    terila::protocol::write_take_item_entity(out, drop.id, drop.collected_by,
+                        drop.count)) {
+                    send(out);
+                    out.clear();
+                }
+                std::vector<std::uint8_t> remove;
+                if (terila::protocol::write_remove_entity(remove, drop.id)) {
+                    send(remove);
+                }
+                known_drops_.erase(drop.id);
+            }
+        }
+
+        for (auto it = known_drops_.begin(); it != known_drops_.end();) {
+            if (alive.find(it->first) != alive.end()) {
+                ++it;
+                continue;
+            }
+
+            std::vector<std::uint8_t> remove;
+            if (terila::protocol::write_remove_entity(remove, it->first)) {
+                send(remove);
+            }
+            it = known_drops_.erase(it);
         }
     }
 

@@ -131,6 +131,11 @@ namespace terila::world {
             return it != chunks_.end() && !it->second.empty();
         }
 
+        std::size_t modified_count(std::int32_t cx, std::int32_t cz) const {
+            const auto it = chunks_.find(chunk_key(cx, cz));
+            return it == chunks_.end() ? 0 : it->second.size();
+        }
+
         void apply(Chunk& chunk, std::int32_t air_state) const {
             const auto it = chunks_.find(chunk_key(chunk.x, chunk.z));
             if (it == chunks_.end()) {

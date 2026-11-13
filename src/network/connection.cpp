@@ -31,6 +31,7 @@ namespace terila::network {
 
     void Connection::tick_entities() {
         send_entity_updates(mobs_.mobs());
+        send_drop_updates();
     }
 
     const char* Connection::state_name(State s) noexcept {
