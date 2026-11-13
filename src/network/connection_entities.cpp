@@ -211,6 +211,9 @@ namespace terila::network {
             }
 
             if (drop.collected_by != 0) {
+                if (drop.collected_by == entity_id_) {
+                    add_to_inventory(drop.item_id, drop.count);
+                }
                 if (drop.collected_by > 0 &&
                     terila::protocol::write_take_item_entity(out, drop.id, drop.collected_by,
                         drop.count)) {

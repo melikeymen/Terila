@@ -93,6 +93,18 @@ namespace terila::network {
             double z = 0.0;
         };
 
+        struct InvSlot {
+            std::int32_t item_id = 0;
+            std::int32_t count = 0;
+        };
+
+        // Slots 9..44 of the player window: 0..26 main inventory, 27..35 the hotbar.
+        static constexpr std::int32_t kFirstInventorySlot = 9;
+        static constexpr std::int32_t kInventorySlots = 36;
+        // Inventory index where the hotbar starts (protocol slot 36).
+        static constexpr std::int32_t kMainInventorySlots = 27;
+        static constexpr std::int32_t kMaxStackSize = 64;
+
         enum class State {
             Handshake,
             Status,
@@ -166,6 +178,13 @@ namespace terila::network {
         void give_hotbar_item(std::int32_t item_id);
         void send_drop_updates();
 
+        // --- connection_inventory.cpp ----------------------------------------------
+        // Puts collected drops into the player inventory, merging into existing stacks
+        // first and telling the client about every slot it changes.
+        bool add_to_inventory(std::int32_t item_id, std::int32_t count);
+        void send_inventory_slot(std::int32_t slot);
+        void set_inventory_slot(std::int32_t slot, std::int32_t item_id, std::int32_t count);
+
         // --- connection_entities.cpp -----------------------------------------------
         // Spawns and removes mobs as they enter or leave the view distance and sends
         // relative movement for the ones already known to the client.
@@ -211,6 +230,7 @@ namespace terila::network {
         const std::unordered_map<std::int32_t, std::int32_t>& block_state_item_;
         std::int32_t item_entity_type_ = 0;
         std::unordered_map<std::int32_t, KnownDrop> known_drops_;
+        std::array<InvSlot, kInventorySlots> inventory_{};
         std::array<std::uint8_t, 16> uuid_{};
         float yaw_ = 0.0f;
         float pitch_ = 0.0f;

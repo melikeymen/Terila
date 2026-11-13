@@ -106,6 +106,8 @@ namespace terila::network {
                 payload.size() - 2 - count->consumed);
 
             creative_slots_[slot] = item.has_value() ? item->value : 0;
+            set_inventory_slot(slot, item.has_value() ? item->value : 0,
+                item.has_value() ? count->value : 0);
             refresh_held_item();
             return;
         }

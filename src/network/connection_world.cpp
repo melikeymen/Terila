@@ -126,15 +126,10 @@ namespace terila::network {
 
     void Connection::give_hotbar_item(std::int32_t item_id) {
         const std::int32_t slot = 36 + carried_slot_;
-        creative_slots_[slot] = item_id;
-        held_item_id_ = item_id;
+        set_inventory_slot(slot, item_id, 1);
+        send_inventory_slot(slot);
 
         std::vector<std::uint8_t> out;
-        if (terila::protocol::write_container_set_slot(out, 0, 0,
-                static_cast<std::int16_t>(slot), item_id, 1)) {
-            send(out);
-        }
-        out.clear();
         if (terila::protocol::write_set_held_slot(out, carried_slot_)) {
             send(out);
         }

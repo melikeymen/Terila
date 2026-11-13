@@ -38,6 +38,7 @@ target_sources(terila PRIVATE
     "src/network/connection_play.cpp"
     "src/network/connection_chunks.cpp"
     "src/network/connection_world.cpp"
+    "src/network/connection_inventory.cpp"
     "src/network/connection_entities.cpp"
     "src/network/player_hub.hpp"
     "src/protocol/login.hpp"
