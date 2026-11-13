@@ -13,6 +13,14 @@
 #define TERILA_TRF_CRC32C_X86 0
 #endif
 
+// GCC and Clang only accept the CRC32 intrinsics inside a function compiled for
+// the feature, even when the call is guarded by a runtime CPU check.
+#if TERILA_TRF_CRC32C_X86 && !defined(_MSC_VER)
+#define TERILA_TRF_SSE42 __attribute__((target("sse4.2")))
+#else
+#define TERILA_TRF_SSE42
+#endif
+
 #if defined(__ARM_FEATURE_CRC32)
 #define TERILA_TRF_CRC32C_ARM 1
 #include <arm_acle.h>
@@ -69,16 +77,13 @@ namespace terila::world::trf {
         return ~crc;
     }
 
-    std::uint32_t crc32c(std::span<const std::byte> data, std::uint32_t seed) noexcept {
-        if (!hardware_available) {
-            return crc32c_software(data, seed);
-        }
-
+#if TERILA_TRF_CRC32C_X86
+    TERILA_TRF_SSE42 std::uint32_t crc32c_x86(std::span<const std::byte> data,
+        std::uint32_t seed) noexcept {
         std::uint32_t crc = ~seed;
         const std::byte* p = data.data();
         std::size_t remaining = data.size();
 
-#if TERILA_TRF_CRC32C_X86
 #if defined(_M_X64) || defined(__x86_64__)
         while (remaining >= 8) {
             std::uint64_t word = 0;
@@ -102,7 +107,21 @@ namespace terila::world::trf {
             --remaining;
         }
         return ~crc;
+    }
+#endif
+
+    std::uint32_t crc32c(std::span<const std::byte> data, std::uint32_t seed) noexcept {
+        if (!hardware_available) {
+            return crc32c_software(data, seed);
+        }
+
+#if TERILA_TRF_CRC32C_X86
+        return crc32c_x86(data, seed);
 #elif TERILA_TRF_CRC32C_ARM
+        std::uint32_t crc = ~seed;
+        const std::byte* p = data.data();
+        std::size_t remaining = data.size();
+
         while (remaining >= 8) {
             std::uint64_t word = 0;
             std::memcpy(&word, p, 8);
