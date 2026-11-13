@@ -1,5 +1,8 @@
 ﻿#include <asio.hpp>
 #include <csignal>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include "log/logger.hpp"
 #include "network/connection.hpp"
 #include "data/registry_data.hpp"
@@ -8,6 +11,7 @@
 #include "protocol/packet_ids_loader.hpp"
 #include "entity/mob.hpp"
 #include "world/block_world.hpp"
+#include "world/trf/trf_store.hpp"
 #include <nlohmann/json.hpp>
 #include <memory>
 #include <filesystem>
@@ -21,6 +25,25 @@
 #include <unordered_map>
 
 namespace fs = std::filesystem;
+
+// The world directory lives next to the executable, so a build or a debug run never
+// writes into the read-only input tree.
+static fs::path executable_directory() {
+#ifdef _WIN32
+    wchar_t buffer[MAX_PATH] = {};
+    const DWORD length = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
+    if (length > 0 && length < MAX_PATH) {
+        return fs::path(buffer).parent_path();
+    }
+#else
+    std::error_code link_ec;
+    const auto exe = fs::read_symlink("/proc/self/exe", link_ec);
+    if (!link_ec) {
+        return exe.parent_path();
+    }
+#endif
+    return fs::current_path();
+}
 
 static fs::path find_input_dir() {
     auto base = fs::current_path();
@@ -190,6 +213,20 @@ int main() {
 
     terila::world::BlockWorld world;
 
+    // TRF region files live beside the executable: <exe dir>/world/dimensions/...
+    const fs::path world_root = executable_directory() / "world";
+    auto world_identity = terila::world::trf::load_or_create_world(world_root);
+    if (!world_identity) {
+        LOG_FATAL(Main, "cannot prepare the world directory '{}': {}", world_root.string(),
+            world_identity.error().detail);
+        return 7;
+    }
+
+    const auto region_dir = terila::world::trf::default_region_directory(world_root);
+    terila::world::trf::ChunkStore chunk_store(region_dir, *world_identity);
+    LOG_INFO(Main, "world directory: {}", world_root.string());
+    LOG_DEBUG(Main, "region directory: {}", region_dir.string());
+
     // Network
     asio::io_context io;
     std::error_code ec;
@@ -231,7 +268,7 @@ int main() {
 
     auto do_accept = [&](auto&& self) -> void {
         acceptor.async_accept(
-            [&acceptor, &data, &mobs, &world, &item_block_state, &srv, &players, &player_hub, &next_player_entity_id, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
+            [&acceptor, &data, &mobs, &world, &item_block_state, &srv, &players, &player_hub, &chunk_store, &next_player_entity_id, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
                 if (error) {
                     LOG_ERROR(Network, "accept failed: {} ({})", error.message(), error.value());
                     self(self);
@@ -243,8 +280,9 @@ int main() {
                     LOG_DEBUG(Network, "new connection from {}:{}", remote_ep.address().to_string(), remote_ep.port());
                 }
                 auto conn = std::make_shared<terila::network::Connection>(std::move(socket), data, mobs,
-                    world, item_block_state, player_hub, srv.view_distance, srv.simulation_distance,
-                    static_cast<int>(srv.max_players), next_player_entity_id++, srv.gamemode);
+                    world, item_block_state, player_hub, &chunk_store, srv.view_distance,
+                    srv.simulation_distance, static_cast<int>(srv.max_players),
+                    next_player_entity_id++, srv.gamemode);
                 conn->start();
                 players.push_back(conn);
                 self(self);
@@ -301,6 +339,10 @@ int main() {
 
     schedule_tick();
     io.run();
+
+    if (auto flushed = chunk_store.flush(); !flushed) {
+        LOG_WARN(Main, "flushing region metadata failed: {}", flushed.error().detail);
+    }
 
     terila::log::shutdown();
     return 0;

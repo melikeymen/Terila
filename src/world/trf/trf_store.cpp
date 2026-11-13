@@ -1,0 +1,227 @@
+#include "world/trf/trf_store.hpp"
+
+#include "world/trf/trf_crc32c.hpp"
+#include "world/trf/trf_header.hpp"
+#include "world/trf/trf_sha256.hpp"
+
+#include <cstring>
+#include <fstream>
+#include <string>
+
+namespace terila::world::trf {
+
+    namespace {
+
+        constexpr std::size_t max_open_regions = 64;
+
+        std::array<std::byte, 16> derive_uuid(std::string_view text) {
+            const auto digest = sha256(std::span<const std::byte>(
+                reinterpret_cast<const std::byte*>(text.data()), text.size()));
+
+            std::array<std::byte, 16> uuid{};
+            std::memcpy(uuid.data(), digest.data(), uuid.size());
+            // RFC 4122 variant and version bits, so the value is a well-formed V4-shaped id.
+            uuid[6] = static_cast<std::byte>((static_cast<std::uint8_t>(uuid[6]) & 0x0F) | 0x40);
+            uuid[8] = static_cast<std::byte>((static_cast<std::uint8_t>(uuid[8]) & 0x3F) | 0x80);
+            return uuid;
+        }
+
+        std::expected<WorldIdentity, TrfError> write_descriptor(const std::filesystem::path& path,
+            const WorldIdentity& identity) {
+
+            Header header;
+            header.flags = header_flags::descriptor;
+            header.seed = static_cast<std::int64_t>(identity.seed);
+            header.world_uuid = identity.world_uuid;
+            header.generator_id = identity.generator_id;
+            header.generator_version = identity.generator_version;
+            header.created_ms = now_ms();
+            header.modified_ms = header.created_ms;
+            header.data_end = static_cast<std::uint32_t>(data_start);
+
+            std::array<std::byte, header_size> bytes{};
+            header.encode(bytes);
+
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            if (!out) {
+                return std::unexpected(make_error(TrfErrorCode::Io,
+                    "cannot create world descriptor: " + path.string()));
+            }
+            out.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+            if (!out) {
+                return std::unexpected(make_error(TrfErrorCode::Io,
+                    "cannot write world descriptor: " + path.string()));
+            }
+            return identity;
+        }
+
+        std::expected<WorldIdentity, TrfError> read_descriptor(const std::filesystem::path& path) {
+            std::array<std::byte, header_size> bytes{};
+            std::ifstream in(path, std::ios::binary);
+            if (!in) {
+                return std::unexpected(make_error(TrfErrorCode::Io,
+                    "cannot read world descriptor: " + path.string()));
+            }
+            in.read(reinterpret_cast<char*>(bytes.data()), bytes.size());
+            if (in.gcount() != static_cast<std::streamsize>(bytes.size())) {
+                return std::unexpected(make_error(TrfErrorCode::CorruptHeader,
+                    "world descriptor is truncated"));
+            }
+
+            if (std::memcmp(bytes.data(), magic_bytes.data(), magic_bytes.size()) != 0) {
+                return std::unexpected(make_error(TrfErrorCode::CorruptHeader,
+                    "world descriptor has bad magic"));
+            }
+            if (crc32c(std::span<const std::byte>(bytes).first(header_crc_coverage)) !=
+                load_u32(bytes.data() + header_crc_offset)) {
+                return std::unexpected(make_error(TrfErrorCode::CorruptHeader,
+                    "world descriptor CRC mismatch"));
+            }
+            if ((load_u32(bytes.data() + 0x010) & header_flags::descriptor) == 0) {
+                return std::unexpected(make_error(TrfErrorCode::CorruptHeader,
+                    "world descriptor is missing the descriptor flag"));
+            }
+            if (load_u16(bytes.data() + 0x008) != format_major) {
+                return std::unexpected(make_error(TrfErrorCode::UnsupportedFormat,
+                    "world descriptor uses an unsupported format major"));
+            }
+
+            WorldIdentity identity;
+            identity.seed = static_cast<std::uint64_t>(load_i64(bytes.data() + 0x048));
+            std::memcpy(identity.world_uuid.data(), bytes.data() + 0x050, identity.world_uuid.size());
+            identity.generator_version = load_u16(bytes.data() + 0x062);
+            identity.generator_id = load_u32(bytes.data() + 0x064);
+            return identity;
+        }
+
+    }
+
+    std::expected<WorldIdentity, TrfError> load_or_create_world(const std::filesystem::path& world_root) {
+        std::error_code ec;
+        std::filesystem::create_directories(world_root, ec);
+        if (ec) {
+            return std::unexpected(make_error(TrfErrorCode::Io,
+                "cannot create world directory: " + world_root.string()));
+        }
+
+        const auto path = world_root / "world.trfmeta";
+        if (std::filesystem::exists(path, ec)) {
+            return read_descriptor(path);
+        }
+
+        WorldIdentity identity;
+        identity.seed = 0;
+        identity.generator_id = static_cast<std::uint32_t>(crc32c(std::span<const std::byte>(
+            reinterpret_cast<const std::byte*>("terila.flat.v1"), 14)));
+        identity.generator_version = 1;
+        identity.world_uuid = derive_uuid("terila.world.v1");
+        return write_descriptor(path, identity);
+    }
+
+    std::filesystem::path default_region_directory(const std::filesystem::path& world_root,
+        const std::string& dimension) {
+        return world_root / "dimensions" / "minecraft" / dimension / "region";
+    }
+
+    std::uint8_t chunk_flags(bool edited, bool wire_ready, bool light_full) {
+        std::uint8_t flags = 0;
+        if (edited) {
+            flags = static_cast<std::uint8_t>(flags | slot_flags::edited);
+        }
+        if (wire_ready) {
+            flags = static_cast<std::uint8_t>(flags | slot_flags::wire_ready);
+        }
+        if (light_full) {
+            flags = static_cast<std::uint8_t>(flags | slot_flags::light_full);
+        }
+        return flags;
+    }
+
+    ChunkStore::ChunkStore(std::filesystem::path region_directory, WorldIdentity identity)
+        : directory_(std::move(region_directory)), identity_(identity) {
+        std::error_code ec;
+        std::filesystem::create_directories(directory_, ec);
+    }
+
+    std::filesystem::path ChunkStore::region_path(std::int32_t rx, std::int32_t rz) const {
+        return directory_ / ("r." + std::to_string(rx) + "." + std::to_string(rz) + ".trf");
+    }
+
+    std::expected<TrfRegion*, TrfError> ChunkStore::region_for(std::int32_t cx, std::int32_t cz) {
+        const std::int32_t rx = region_coordinate(cx);
+        const std::int32_t rz = region_coordinate(cz);
+        const std::uint64_t key = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(rx)) << 32) |
+            static_cast<std::uint32_t>(rz);
+
+        const auto found = regions_.find(key);
+        if (found != regions_.end()) {
+            return found->second.get();
+        }
+
+        if (regions_.size() >= max_open_regions) {
+            // Release the file handles; every region keeps its data on disk, and the next
+            // access reopens it (§18 region cache budget).
+            for (auto& entry : regions_) {
+                entry.second->close();
+            }
+            regions_.clear();
+        }
+
+        RegionOptions options;
+        options.create_if_missing = true;
+        options.region_x = rx;
+        options.region_z = rz;
+        options.seed = identity_.seed;
+        options.world_uuid = identity_.world_uuid;
+        options.generator_id = identity_.generator_id;
+        options.generator_version = identity_.generator_version;
+        options.default_compression = compression::stored;
+
+        auto region = TrfRegion::open(region_path(rx, rz), options);
+        if (!region) {
+            return std::unexpected(region.error());
+        }
+
+        auto& slot = regions_[key];
+        slot = std::move(*region);
+        return slot.get();
+    }
+
+    std::expected<LoadResult, TrfError> ChunkStore::load_chunk(std::int32_t cx, std::int32_t cz,
+        std::vector<std::byte>& out) {
+
+        auto region = region_for(cx, cz);
+        if (!region) {
+            return std::unexpected(region.error());
+        }
+        return (*region)->load_chunk(cx, cz, out);
+    }
+
+    std::expected<void, TrfError> ChunkStore::save_chunk(std::int32_t cx, std::int32_t cz,
+        std::span<const std::byte> payload, std::uint8_t flags) {
+
+        auto region = region_for(cx, cz);
+        if (!region) {
+            return std::unexpected(region.error());
+        }
+        return (*region)->save_chunk(cx, cz, payload, flags);
+    }
+
+    std::expected<bool, TrfError> ChunkStore::delete_chunk(std::int32_t cx, std::int32_t cz) {
+        auto region = region_for(cx, cz);
+        if (!region) {
+            return std::unexpected(region.error());
+        }
+        return (*region)->delete_chunk(cx, cz);
+    }
+
+    std::expected<void, TrfError> ChunkStore::flush() {
+        for (auto& entry : regions_) {
+            if (auto flushed = entry.second->flush(); !flushed) {
+                return std::unexpected(flushed.error());
+            }
+        }
+        return {};
+    }
+
+}
