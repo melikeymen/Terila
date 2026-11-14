@@ -12,7 +12,7 @@
 #include "protocol/packet_ids_loader.hpp"
 #include "entity/mob.hpp"
 #include "world/block_world.hpp"
-#include "world/terrain_generator.hpp"
+#include "world/world_generator.hpp"
 #include "world/trf/trf_store.hpp"
 #include <nlohmann/json.hpp>
 #include <memory>
@@ -86,9 +86,18 @@ int main() {
     terila::log::init(cfg);
 
     LOG_INFO(Main, "server starting");
-    LOG_DEBUG(Main, "config: bind={} port={} log_level={} online_mode={} network_encryption={} view_distance={} simulation_distance={}",
+    LOG_DEBUG(Main, "config: bind={} port={} log_level={} online_mode={} network_encryption={} view_distance={} simulation_distance={} level_type={}",
         srv.bind_address, srv.port, srv.log_level, srv.online_mode, srv.network_encryption,
-        srv.view_distance, srv.simulation_distance);
+        srv.view_distance, srv.simulation_distance, srv.level_type);
+
+    // level-type picks which generator the server streams.
+    terila::world::WorldType world_type = terila::world::WorldType::Terrain;
+    if (const auto parsed = terila::world::parse_world_type(srv.level_type)) {
+        world_type = *parsed;
+    }
+    else {
+        LOG_WARN(Main, "unknown level-type '{}', using normal", srv.level_type);
+    }
 
     const std::string in = (base / "input").string();
     if (!terila::protocol::load_packet_ids(in + "/packets/ids.json")) {
@@ -159,6 +168,8 @@ int main() {
     terila::data::load_entity_type_ids(data.entity_type_ids, in + "/entities/minecraft.json");
     terila::data::load_entity_categories(data.entity_categories, in + "/entities/minecraft.json");
     terila::data::load_item_ids(data.item_ids, in + "/items/minecraft.json");
+    terila::data::load_data_component_ids(data.component_ids,
+        in + "/registries/dump/minecraft/data_component_type.json");
 
     if (data.block_state_ids.empty()) { LOG_FATAL(Data, "block_state_ids empty"); return 7; }
     if (data.biome_ids.empty()) { LOG_FATAL(Data, "biome_ids empty");       return 7; }
@@ -171,7 +182,7 @@ int main() {
 
     // One terrain generator decides where the ground is, so mobs stand on the surface
     // instead of the old flat layer.
-    terila::world::terrain::Generator world_terrain;
+    terila::world::WorldGenerator world_terrain;
     const auto resolve_block_id = [&data](std::string_view name) -> std::optional<std::int32_t> {
         const auto it = data.block_state_ids.find(std::string(name));
         return it == data.block_state_ids.end() ? std::nullopt
@@ -182,15 +193,17 @@ int main() {
         return it == data.biome_ids.end() ? std::nullopt
             : std::optional<std::int32_t>(it->second);
     };
-    if (!world_terrain.init(data.overworld.min_y, data.overworld.height / 16,
+    if (!world_terrain.init(world_type, data.overworld.min_y, data.overworld.height / 16,
             srv.seed_value(), resolve_block_id, resolve_biome_id)) {
-        LOG_FATAL(Data, "terrain generator failed to initialise");
+        LOG_FATAL(Data, "{} world generator failed to initialise",
+            terila::world::world_type_name(world_type));
         return 7;
     }
 
     const int spawn_surface = world_terrain.surface_height(8, 8);
-    LOG_INFO(Data, "terrain ready: seed '{}' ({}), spawn stands on y={}, sea level {}",
-        srv.level_seed, world_terrain.seed(), spawn_surface, world_terrain.sea_level());
+    LOG_INFO(Data, "{} world ready: seed '{}' ({}), spawn stands on y={}, sea level {}",
+        terila::world::world_type_name(world_type), srv.level_seed, world_terrain.seed(),
+        spawn_surface, world_terrain.sea_level());
 
     terila::entity::MobManager mobs;
     mobs.set_ground(static_cast<double>(spawn_surface + 1));
@@ -297,8 +310,12 @@ int main() {
 
     terila::world::BlockWorld world;
 
-    // TRF region files live beside the executable: <exe dir>/world/dimensions/...
-    const fs::path world_root = executable_directory() / "world";
+    // TRF region files live beside the executable. The generator and seed are part of
+    // the folder so a flat world never streams chunks a terrain run saved, and changing
+    // level-seed starts a fresh world instead of mixing two seed's chunks.
+    const fs::path world_root = executable_directory() / "world" /
+        (std::string(terila::world::world_type_name(world_type)) + "-" +
+            std::to_string(srv.seed_value()));
     auto world_identity = terila::world::trf::load_or_create_world(world_root);
     if (!world_identity) {
         LOG_FATAL(Main, "cannot prepare the world directory '{}': {}", world_root.string(),
@@ -352,7 +369,7 @@ int main() {
 
     auto do_accept = [&](auto&& self) -> void {
         acceptor.async_accept(
-            [&acceptor, &data, &mobs, &world, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, &srv, &players, &player_hub, &chunk_store, &next_player_entity_id, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
+            [&acceptor, &data, &mobs, &world, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, world_type, &srv, &players, &player_hub, &chunk_store, &next_player_entity_id, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
                 if (error) {
                     LOG_ERROR(Network, "accept failed: {} ({})", error.message(), error.value());
                     self(self);
@@ -366,7 +383,7 @@ int main() {
                 auto conn = std::make_shared<terila::network::Connection>(std::move(socket), data, mobs,
                     world, item_block_state, player_hub, &chunk_store, &drops, block_state_item,
                     item_entity_type, &recipes, menu_blocks, furnace_states, furnace_item_id,
-                    srv.seed_value(), srv.view_distance,
+                    srv.seed_value(), world_type, srv.view_distance,
                     srv.simulation_distance, static_cast<int>(srv.max_players),
                     next_player_entity_id++, srv.gamemode);
                 conn->start();
@@ -402,6 +419,7 @@ int main() {
             for (auto it = players.begin(); it != players.end();) {
                 if (const auto conn = it->lock()) {
                     conn->tick_entities();
+                    conn->flush_pending_saves(24);
                     ++it;
                 }
                 else {

@@ -18,6 +18,10 @@ namespace terila::config {
         // Mojang session authentication. false lets cracked (offline) clients join.
         std::string   level_seed = "terila";
 
+        // World generator: "normal" streams the noise terrain, "flat" the superflat
+        // layer cake. Unknown values fall back to normal with a warning.
+        std::string   level_type = "normal";
+
         bool          online_mode = false;
 
         // AES/CFB8 encryption after the RSA exchange. Independent from online_mode:
@@ -132,6 +136,9 @@ namespace terila::config {
             }
             else if (key == "level-seed") {
                 out.level_seed = value;
+            }
+            else if (key == "level-type") {
+                out.level_type = value;
             }
             else if (key == "online-mode") {
                 out.online_mode = detail::parse_bool(value, out.online_mode);

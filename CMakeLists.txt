@@ -41,6 +41,11 @@ target_sources(terila PRIVATE
     "src/network/connection_inventory.cpp"
     "src/network/connection_menu.cpp"
     "src/protocol/menu.hpp"
+    "src/protocol/chat.hpp"
+    "src/nbt/nbt.hpp"
+    "src/item/components.hpp"
+    "src/item/components.cpp"
+    "src/network/connection_commands.cpp"
     "src/data/recipe_book.hpp"
     "src/data/recipe_book.cpp"
     "src/network/connection_entities.cpp"
@@ -82,6 +87,7 @@ target_sources(terila PRIVATE
     "src/world/chunk_encoder.hpp"
     "src/world/flat_generator.hpp"
     "src/world/terrain_generator.hpp"
+    "src/world/world_generator.hpp"
 )
 
 # Dependencies
@@ -147,6 +153,8 @@ add_executable(protocol_tests
     "tests/protocol/status_test.cpp"
     "tests/protocol/login_test.cpp"
     "tests/protocol/uuid_test.cpp"
+    "tests/protocol/components_test.cpp"
+    "src/item/components.cpp"
     "tests/protocol/entity_test.cpp"
     "tests/protocol/block_test.cpp"
     "tests/protocol/player_info_test.cpp"

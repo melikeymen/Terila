@@ -104,6 +104,8 @@ namespace terila::protocol {
         set(ids.play_open_screen, find("play", "clientbound", "minecraft:open_screen"), "play_open_screen");
         set(ids.play_container_set_content, find("play", "clientbound", "minecraft:container_set_content"), "play_container_set_content");
         set(ids.play_container_set_data, find("play", "clientbound", "minecraft:container_set_data"), "play_container_set_data");
+        set(ids.play_chat_command, find("play", "serverbound", "minecraft:chat_command"), "play_chat_command");
+        set(ids.play_system_chat, find("play", "clientbound", "minecraft:system_chat"), "play_system_chat");
         set(ids.play_set_held_slot, find("play", "clientbound", "minecraft:set_held_slot"), "play_set_held_slot");
         set(ids.play_set_entity_data, find("play", "clientbound", "minecraft:set_entity_data"), "play_set_entity_data");
         set(ids.play_take_item_entity, find("play", "clientbound", "minecraft:take_item_entity"), "play_take_item_entity");

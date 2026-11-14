@@ -15,7 +15,8 @@ namespace terila::network {
         const auto& entry = inventory_[static_cast<std::size_t>(index)];
         std::vector<std::uint8_t> out;
         if (terila::protocol::write_container_set_slot(out, 0, 0,
-                static_cast<std::int16_t>(slot), entry.item_id, entry.count)) {
+                static_cast<std::int16_t>(slot), entry.item_id, entry.count,
+                entry.components.get(), &component_ids_)) {
             send(out);
         }
 
@@ -42,7 +43,8 @@ namespace terila::network {
 
     // Collected drops merge into a matching stack first, then take the first free slot.
     // The held item is refreshed when the touched slot is the selected hotbar one.
-    bool Connection::add_to_inventory(std::int32_t item_id, std::int32_t count) {
+    bool Connection::add_to_inventory(std::int32_t item_id, std::int32_t count,
+        const terila::item::ComponentsPtr& components) {
         if (item_id <= 0 || count <= 0) {
             return false;
         }
@@ -60,7 +62,8 @@ namespace terila::network {
                     auto& slot = inventory_[static_cast<std::size_t>(i)];
 
                     if (pass == 0) {
-                        if (slot.item_id != item_id || slot.count >= kMaxStackSize) {
+                        if (slot.item_id != item_id || slot.count >= kMaxStackSize ||
+                            !terila::item::same_components(slot.components, components)) {
                             continue;
                         }
                         const std::int32_t added = std::min(kMaxStackSize - slot.count, remaining);
@@ -74,6 +77,7 @@ namespace terila::network {
                         const std::int32_t added = std::min(kMaxStackSize, remaining);
                         slot.item_id = item_id;
                         slot.count = added;
+                        slot.components = components;
                         remaining -= added;
                     }
 

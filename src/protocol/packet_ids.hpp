@@ -72,6 +72,8 @@ namespace terila::protocol {
         std::int32_t play_open_screen = -1;
         std::int32_t play_container_set_content = -1;
         std::int32_t play_container_set_data = -1;
+        std::int32_t play_chat_command = -1;
+        std::int32_t play_system_chat = -1;
         std::int32_t play_set_held_slot = -1;
         std::int32_t play_set_entity_data = -1;
         std::int32_t play_take_item_entity = -1;

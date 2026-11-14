@@ -22,29 +22,42 @@ namespace terila::network {
         const auto resolve_block = [this](std::string_view name) { return block_state(name); };
         const auto resolve_biome = [this](std::string_view name) { return biome_state(name); };
 
-        if (!terrain_.init(data_.overworld.min_y, data_.overworld.height / 16,
+        if (!terrain_.init(world_type_, data_.overworld.min_y, data_.overworld.height / 16,
                 world_seed_, resolve_block, resolve_biome)) {
-            LOG_ERROR(Chunk, "cannot initialise the terrain generator");
+            LOG_ERROR(Chunk, "cannot initialise the {} world generator",
+                terila::world::world_type_name(world_type_));
             return;
         }
 
         air_state_ = block_state("minecraft:air").value_or(0);
-        LOG_INFO(Chunk, "terrain ready: {} sections from y={}, sea level {}, seed {}",
-            terrain_.section_count(), terrain_.min_y(), terrain_.sea_level(),
-            terrain_.seed());
+        LOG_INFO(Chunk, "{} world ready: {} sections from y={}, sea level {}, seed {}",
+            terila::world::world_type_name(terrain_.type()), terrain_.section_count(),
+            terrain_.min_y(), terrain_.sea_level(), terrain_.seed());
     }
 
+    // The overlay only holds blocks that differ from the generated terrain, so a stored
+    // chunk has to be compared against generation. Generating the chunk once and
+    // comparing the two section arrays is what makes that cheap: state_at resolves a
+    // whole column (plus its tree neighbourhood) for every single block, roughly 700x
+    // more work than one generate() call for the same chunk.
     void Connection::apply_loaded_chunk(const terila::world::Chunk& chunk) {
-        for (int sy = 0; sy < chunk.section_count; ++sy) {
+        const auto generated = terrain_.generate(chunk.x, chunk.z);
+        const int sections = std::min(static_cast<int>(chunk.sections.size()),
+            static_cast<int>(generated.sections.size()));
+
+        for (int sy = 0; sy < sections; ++sy) {
             const auto& sec = chunk.sections[static_cast<std::size_t>(sy)];
+            const auto& base = generated.sections[static_cast<std::size_t>(sy)];
+            const std::int32_t section_y = chunk.min_y + sy * 16;
             for (int i = 0; i < 4096; ++i) {
                 const std::int32_t state = terila::world::section_state(sec, i);
-                const std::int32_t y = chunk.min_y + sy * 16 + (i / 256);
+                if (state == terila::world::section_state(base, i)) {
+                    continue;
+                }
+                const std::int32_t y = section_y + (i / 256);
                 const std::int32_t z = chunk.z * 16 + ((i / 16) % 16);
                 const std::int32_t x = chunk.x * 16 + (i % 16);
-                if (state != terrain_.state_at(x, y, z)) {
-                    world_.set(terila::world::BlockPos{ x, y, z }, state);
-                }
+                world_.set(terila::world::BlockPos{ x, y, z }, state);
             }
         }
     }
@@ -82,7 +95,11 @@ namespace terila::network {
                     stored.size(), terrain_.section_count());
                 if (decoded) {
                     apply_loaded_chunk(*decoded);
-                    return terila::world::encode::encode(*decoded);
+                    // The stored slot already holds the wire-ready payload, so stream it
+                    // back verbatim instead of decoding and re-encoding the same chunk.
+                    return std::vector<std::uint8_t>(reinterpret_cast<const std::uint8_t*>(
+                        stored.data()), reinterpret_cast<const std::uint8_t*>(stored.data()) +
+                        stored.size());
                 }
                 LOG_WARN(Chunk, "trf decode ({}, {}) failed, regenerating", cx, cz);
             }
@@ -90,8 +107,26 @@ namespace terila::network {
 
         auto chunk = terrain_.generate(cx, cz);
         auto out = terila::world::encode::encode(chunk);
-        persist_chunk(cx, cz, out, false);
+        queue_persist(cx, cz, out);
         return out;
+    }
+
+    // A freshly generated chunk is deterministic, so it is safe to write it back after
+    // it has been streamed: the tick drains this queue instead of the send path.
+    void Connection::queue_persist(std::int32_t cx, std::int32_t cz,
+        const std::vector<std::uint8_t>& encoded) {
+        if (store_ == nullptr || encoded.empty()) {
+            return;
+        }
+        pending_saves_.push_back(PendingSave{ cx, cz, encoded });
+    }
+
+    void Connection::flush_pending_saves(std::size_t budget) {
+        for (std::size_t i = 0; i < budget && !pending_saves_.empty(); ++i) {
+            auto save = std::move(pending_saves_.front());
+            pending_saves_.pop_front();
+            persist_chunk(save.x, save.z, save.bytes, false);
+        }
     }
 
     void Connection::persist_chunk(std::int32_t cx, std::int32_t cz,

@@ -170,6 +170,25 @@ namespace terila::network {
             return;
         }
 
+        if (gamemode_ != 1) {
+            // Survival and adventure only select a stack the player already owns;
+            // creating the item would be free blocks.
+            for (std::int32_t i = kMainInventorySlots; i < kInventorySlots; ++i) {
+                const auto& slot = inventory_[static_cast<std::size_t>(i)];
+                if (slot.item_id != it->second || slot.count <= 0) {
+                    continue;
+                }
+                carried_slot_ = i - kMainInventorySlots;
+                std::vector<std::uint8_t> out;
+                if (terila::protocol::write_set_held_slot(out, carried_slot_)) {
+                    send(out);
+                }
+                refresh_held_item();
+                return;
+            }
+            return;
+        }
+
         give_hotbar_item(it->second);
     }
     void Connection::refresh_held_item() {

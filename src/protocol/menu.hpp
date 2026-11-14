@@ -1,5 +1,6 @@
 #pragma once
 
+#include "item/components.hpp"
 #include "log/logger.hpp"
 #include "protocol/item.hpp"
 #include "protocol/packet.hpp"
@@ -17,6 +18,7 @@ namespace terila::protocol {
     struct MenuItem {
         std::int32_t item_id = 0;
         std::int32_t count = 0;
+        const terila::item::Components* components = nullptr;
     };
 
     // Network NBT text component: an unnamed compound that only carries "text".
@@ -46,15 +48,17 @@ namespace terila::protocol {
 
     inline bool write_container_set_content(std::vector<std::uint8_t>& output,
         std::int32_t window_id, std::int32_t state_id,
-        const std::vector<MenuItem>& items, MenuItem carried) {
+        const std::vector<MenuItem>& items, MenuItem carried,
+        const terila::item::ComponentIds* component_ids = nullptr) {
         std::vector<std::uint8_t> payload;
         write_varint(payload, window_id);
         write_varint(payload, state_id);
         write_varint(payload, static_cast<std::int32_t>(items.size()));
         for (const auto& item : items) {
-            write_item_stack(payload, item.item_id, item.count);
+            write_item_stack(payload, item.item_id, item.count, item.components, component_ids);
         }
-        write_item_stack(payload, carried.item_id, carried.count);
+        write_item_stack(payload, carried.item_id, carried.count, carried.components,
+            component_ids);
 
         if (!write_packet(output, packet_ids().play_container_set_content, payload)) {
             LOG_WARN(Protocol, "write_container_set_content: failed (window={})", window_id);

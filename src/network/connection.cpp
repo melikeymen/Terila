@@ -11,6 +11,8 @@
 namespace terila::network {
 
     void Connection::start() {
+        component_ids_ = terila::item::component_ids(data_.component_ids);
+
         asio::error_code ec;
         const auto remote = socket_.remote_endpoint(ec);
         if (!ec) {

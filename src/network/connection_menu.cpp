@@ -18,6 +18,13 @@ namespace terila::network {
         constexpr std::size_t kCraftingSlots = 46;
         constexpr std::size_t kFurnaceSlots = 39;
 
+        // Two stacks only merge when the item and its data components match; otherwise
+        // an enchanted item would silently absorb a plain one (and vice versa).
+        bool same_stack(std::int32_t item, const terila::item::ComponentsPtr& left,
+            std::int32_t other_item, const terila::item::ComponentsPtr& right) {
+            return item == other_item && terila::item::same_components(left, right);
+        }
+
     }
 
     int Connection::menu_kind_for_state(std::int32_t state) const {
@@ -33,12 +40,15 @@ namespace terila::network {
         std::vector<terila::protocol::MenuItem> items;
         items.reserve(menu_slots_.size());
         for (const auto& slot : menu_slots_) {
-            items.push_back(terila::protocol::MenuItem{ slot.item_id, slot.count });
+            items.push_back(terila::protocol::MenuItem{ slot.item_id, slot.count,
+                slot.components.get() });
         }
 
         std::vector<std::uint8_t> out;
         if (terila::protocol::write_container_set_content(out, menu_id_, menu_state_id_, items,
-                terila::protocol::MenuItem{ cursor_.item_id, cursor_.count })) {
+                terila::protocol::MenuItem{ cursor_.item_id, cursor_.count,
+                    cursor_.components.get() },
+                &component_ids_)) {
             send(out);
         }
     }
@@ -52,7 +62,8 @@ namespace terila::network {
         std::vector<std::uint8_t> out;
         if (terila::protocol::write_container_set_slot(out,
                 static_cast<std::uint8_t>(menu_id_), menu_state_id_,
-                static_cast<std::int16_t>(slot), entry.item_id, entry.count)) {
+                static_cast<std::int16_t>(slot), entry.item_id, entry.count,
+                entry.components.get(), &component_ids_)) {
             send(out);
         }
     }
@@ -60,6 +71,12 @@ namespace terila::network {
     void Connection::open_menu(int kind, std::string_view title) {
         if (recipes_ == nullptr || kind == kMenuNone) {
             return;
+        }
+
+        // Opening another window discards the current one's layout, so its items and the
+        // cursor go back to the inventory first instead of vanishing.
+        if (menu_open_) {
+            close_menu();
         }
 
         menu_kind_ = static_cast<MenuKind>(kind);
@@ -72,7 +89,7 @@ namespace terila::network {
         for (std::int32_t i = 0; i < kInventorySlots; ++i) {
             const auto& entry = inventory_[static_cast<std::size_t>(i)];
             menu_slots_[static_cast<std::size_t>(offset + i)] =
-                MenuSlot{ entry.item_id, entry.count };
+                MenuSlot{ entry.item_id, entry.count, entry.components };
         }
 
         cursor_ = MenuSlot{};
@@ -104,7 +121,8 @@ namespace terila::network {
         const std::int32_t offset = menu_player_offset();
         for (std::int32_t i = 0; i < kInventorySlots; ++i) {
             const auto& entry = menu_slots_[static_cast<std::size_t>(offset + i)];
-            inventory_[static_cast<std::size_t>(i)] = InvSlot{ entry.item_id, entry.count };
+            inventory_[static_cast<std::size_t>(i)] =
+                InvSlot{ entry.item_id, entry.count, entry.components };
         }
 
         menu_open_ = false;
@@ -114,7 +132,7 @@ namespace terila::network {
         const MenuSlot pending = cursor_;
         cursor_ = MenuSlot{};
         if (pending.item_id != 0 && pending.count > 0) {
-            if (!add_to_inventory(pending.item_id, pending.count)) {
+            if (!add_to_inventory(pending.item_id, pending.count, pending.components)) {
                 LOG_DEBUG(Network, "{}: cursor item {} x{} did not fit in inventory",
                     username_, pending.item_id, pending.count);
             }
@@ -188,10 +206,12 @@ namespace terila::network {
                 if (menu_slots_[0].count > 0) {
                     const auto result = menu_slots_[0];
                     const bool compatible = cursor_.count == 0 ||
-                        (cursor_.item_id == result.item_id &&
+                        (same_stack(cursor_.item_id, cursor_.components, result.item_id,
+                             result.components) &&
                          cursor_.count + result.count <= kMaxStackSize);
                     if (compatible) {
-                        cursor_ = MenuSlot{ result.item_id, cursor_.count + result.count };
+                        cursor_ = MenuSlot{ result.item_id, cursor_.count + result.count,
+                            cursor_.components };
                         for (std::size_t i = 1; i <= 9; ++i) {
                             if (menu_slots_[i].count > 0 && --menu_slots_[i].count == 0) {
                                 menu_slots_[i].item_id = 0;
@@ -208,7 +228,7 @@ namespace terila::network {
                     if (cursor_.count == 0) {
                         if (target.count > 0) {
                             const std::int32_t take = (target.count + 1) / 2;
-                            cursor_ = MenuSlot{ target.item_id, take };
+                            cursor_ = MenuSlot{ target.item_id, take, target.components };
                             target.count -= take;
                             if (target.count == 0) {
                                 target.item_id = 0;
@@ -216,12 +236,14 @@ namespace terila::network {
                         }
                     }
                     else if (target.count == 0) {
-                        target = MenuSlot{ cursor_.item_id, 1 };
+                        target = MenuSlot{ cursor_.item_id, 1, cursor_.components };
                         if (--cursor_.count == 0) {
                             cursor_.item_id = 0;
                         }
                     }
-                    else if (target.item_id == cursor_.item_id && target.count < kMaxStackSize) {
+                    else if (target.count < kMaxStackSize &&
+                        same_stack(target.item_id, target.components, cursor_.item_id,
+                            cursor_.components)) {
                         ++target.count;
                         if (--cursor_.count == 0) {
                             cursor_.item_id = 0;
@@ -238,7 +260,8 @@ namespace terila::network {
                     target = cursor_;
                     cursor_ = MenuSlot{};
                 }
-                else if (target.item_id == cursor_.item_id) {
+                else if (same_stack(target.item_id, target.components, cursor_.item_id,
+                    cursor_.components)) {
                     const std::int32_t moved = std::min(kMaxStackSize - target.count, cursor_.count);
                     target.count += moved;
                     cursor_.count -= moved;
@@ -268,7 +291,7 @@ namespace terila::network {
             return;
         }
 
-        cursor_ = MenuSlot{ target.item_id, kMaxStackSize };
+        cursor_ = MenuSlot{ target.item_id, kMaxStackSize, target.components };
         recompute_crafting_result();
         send_menu_content();
     }
@@ -283,9 +306,11 @@ namespace terila::network {
 
         auto& target = menu_slots_[static_cast<std::size_t>(slot)];
         if (target.count == 0) {
-            target = MenuSlot{ cursor_.item_id, 1 };
+            target = MenuSlot{ cursor_.item_id, 1, cursor_.components };
         }
-        else if (target.item_id == cursor_.item_id && target.count < kMaxStackSize) {
+        else if (target.count < kMaxStackSize &&
+            same_stack(target.item_id, target.components, cursor_.item_id,
+                cursor_.components)) {
             ++target.count;
         }
         else {
@@ -335,7 +360,8 @@ namespace terila::network {
     }
 
     // Room left for one item id across the player slots of the open window.
-    std::int32_t Connection::menu_player_room(std::int32_t item_id) const {
+    std::int32_t Connection::menu_player_room(std::int32_t item_id,
+        const terila::item::ComponentsPtr& components) const {
         const std::int32_t offset = menu_player_offset();
         std::int32_t room = 0;
 
@@ -344,14 +370,15 @@ namespace terila::network {
             if (target.count == 0) {
                 room += kMaxStackSize;
             }
-            else if (target.item_id == item_id) {
+            else if (same_stack(target.item_id, target.components, item_id, components)) {
                 room += kMaxStackSize - target.count;
             }
         }
         return room;
     }
 
-    std::int32_t Connection::add_to_menu_player(std::int32_t item_id, std::int32_t count) {
+    std::int32_t Connection::add_to_menu_player(std::int32_t item_id, std::int32_t count,
+        const terila::item::ComponentsPtr& components) {
         const std::int32_t offset = menu_player_offset();
         std::int32_t remaining = count;
 
@@ -360,7 +387,8 @@ namespace terila::network {
                 auto& target = menu_slots_[static_cast<std::size_t>(i)];
 
                 if (pass == 0) {
-                    if (target.item_id != item_id || target.count >= kMaxStackSize) {
+                    if (target.item_id != item_id || target.count >= kMaxStackSize ||
+                        !terila::item::same_components(target.components, components)) {
                         continue;
                     }
                     const std::int32_t added = std::min(kMaxStackSize - target.count, remaining);
@@ -374,6 +402,7 @@ namespace terila::network {
                     const std::int32_t added = std::min(kMaxStackSize, remaining);
                     target.item_id = item_id;
                     target.count = added;
+                    target.components = components;
                     remaining -= added;
                 }
             }
@@ -405,7 +434,8 @@ namespace terila::network {
             }
 
             auto& target = menu_slots_[static_cast<std::size_t>(dest)];
-            if (target.count > 0 && target.item_id != source.item_id) {
+            if (target.count > 0 && !same_stack(target.item_id, target.components,
+                    source.item_id, source.components)) {
                 return;
             }
             const std::int32_t room = kMaxStackSize - target.count;
@@ -415,6 +445,7 @@ namespace terila::network {
 
             const std::int32_t moved = std::min(room, source.count);
             target.item_id = source.item_id;
+            target.components = source.components;
             target.count += moved;
             source.count -= moved;
             if (source.count == 0) {
@@ -427,7 +458,7 @@ namespace terila::network {
             while (menu_slots_[0].item_id != 0) {
                 const std::int32_t result_item = menu_slots_[0].item_id;
                 const std::int32_t result_count = menu_slots_[0].count;
-                if (menu_player_room(result_item) < result_count) {
+                if (menu_player_room(result_item, nullptr) < result_count) {
                     break;
                 }
                 add_to_menu_player(result_item, result_count);
@@ -446,7 +477,8 @@ namespace terila::network {
             return;
         }
 
-        const std::int32_t remaining = add_to_menu_player(source.item_id, source.count);
+        const std::int32_t remaining = add_to_menu_player(source.item_id, source.count,
+            source.components);
         source.count = remaining;
         if (remaining == 0) {
             source.item_id = 0;

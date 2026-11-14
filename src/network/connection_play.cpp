@@ -3,6 +3,7 @@
 #include "protocol/block.hpp"
 #include "protocol/entity.hpp"
 #include "protocol/packet_ids.hpp"
+#include "protocol/chat.hpp"
 #include "protocol/play.hpp"
 
 #include <cstring>
@@ -75,6 +76,14 @@ namespace terila::network {
             }
             return;
         }
+        if (id == ids.play_chat_command) {
+            const auto command = terila::protocol::read_chat_command(payload);
+            if (command.has_value()) {
+                LOG_DEBUG(Network, "{} ran command: {}", username_, *command);
+                handle_command(*command);
+            }
+            return;
+        }
         if (id == ids.play_container_click) {
             handle_container_click(payload);
             return;
@@ -108,18 +117,29 @@ namespace terila::network {
             return;
         }
         if (id == ids.play_set_creative_mode_slot) {
-            if (payload.size() < 2) return;
+            // Slot (short), the clicked button (byte), then the item stack. Reading the
+            // stack where the button byte sits turns every creative pick into a count of
+            // 0/1 with a garbage item id, so the offset has to skip the button.
+            static constexpr std::size_t kStackOffset = 3;
+            if (payload.size() < kStackOffset) return;
             const std::int32_t slot = static_cast<std::int32_t>((payload[0] << 8) | payload[1]);
 
-            const auto count = terila::protocol::read_varint(payload.data() + 2, payload.size() - 2);
+            const auto count = terila::protocol::read_varint(payload.data() + kStackOffset,
+                payload.size() - kStackOffset);
             if (!count.has_value()) return;
             const auto item = terila::protocol::read_varint(
-                payload.data() + 2 + count->consumed,
-                payload.size() - 2 - count->consumed);
+                payload.data() + kStackOffset + count->consumed,
+                payload.size() - kStackOffset - count->consumed);
 
-            creative_slots_[slot] = item.has_value() ? item->value : 0;
-            set_inventory_slot(slot, item.has_value() ? item->value : 0,
-                item.has_value() ? count->value : 0);
+            const std::int32_t item_id = item.has_value() ? item->value : 0;
+            const std::int32_t item_count = item_id > 0 ? count->value : 0;
+            if (item_id > 0) {
+                creative_slots_[slot] = item_id;
+            }
+            else {
+                creative_slots_.erase(slot);
+            }
+            set_inventory_slot(slot, item_id, item_count);
             refresh_held_item();
             return;
         }

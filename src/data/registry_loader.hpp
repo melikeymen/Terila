@@ -60,6 +60,34 @@ namespace terila::data {
 		return true;
 	}
 
+	// registries/dump/minecraft/data_component_type.json format:
+	//   { registries: { entries: [ { id: "minecraft:enchantments", protocol_id: N } ] } }
+	inline void load_data_component_ids(std::unordered_map<std::string, std::int32_t>& out, const std::string& path) {
+		std::ifstream f(path);
+		if (!f) {
+			LOG_WARN(Data, "cannot open {}", path);
+			return;
+		}
+
+		try {
+			auto j = nlohmann::json::parse(f);
+			if (!j.contains("registries") || !j["registries"].contains("entries")) {
+				LOG_WARN(Data, "unexpected format in {} (no registries.entries)", path);
+				return;
+			}
+
+			for (const auto& e : j["registries"]["entries"]) {
+				if (!e.contains("id") || !e.contains("protocol_id")) continue;
+				out[e["id"].get<std::string>()] = e["protocol_id"].get<std::int32_t>();
+			}
+		}
+		catch (const std::exception& e) {
+			LOG_WARN(Data, "parse failed: {} ({})", path, e.what());
+		}
+
+		LOG_DEBUG(Data, "data component ids: {} entries", out.size());
+	}
+
 	// blocks/state_ids.json format:
 	//   { data: [ { id: "minecraft:acacia_button", default_state_id: N,
 	//               min_state_id: N, max_state_id: N, properties: {...} } ] }

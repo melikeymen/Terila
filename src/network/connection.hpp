@@ -6,11 +6,12 @@
 #include "data/registry_data.hpp"
 #include "entity/item_drop.hpp"
 #include "entity/mob.hpp"
+#include "item/components.hpp"
 #include "log/logger.hpp"
 #include "network/player_hub.hpp"
 #include "protocol/block.hpp"
 #include "world/block_world.hpp"
-#include "world/terrain_generator.hpp"
+#include "world/world_generator.hpp"
 #include "world/trf/trf_store.hpp"
 
 #include <array>
@@ -43,7 +44,7 @@ namespace terila::network {
             const std::unordered_map<std::int32_t, std::int32_t>& menu_blocks,
             const std::array<std::int32_t, 8>& furnace_states,
             std::int32_t furnace_item_id,
-            std::uint32_t world_seed,
+            std::uint32_t world_seed, terila::world::WorldType world_type,
             int view_distance, int simulation_distance, int max_players,
             std::int32_t entity_id, int gamemode)
             : socket_(std::move(socket)), keep_alive_timer_(socket_.get_executor()), data_(data),
@@ -52,6 +53,7 @@ namespace terila::network {
               block_state_item_(block_state_item), item_entity_type_(item_entity_type),
               recipes_(recipes), menu_blocks_(menu_blocks), furnace_states_(furnace_states),
               furnace_item_id_(furnace_item_id), world_seed_(world_seed),
+              world_type_(world_type),
               view_distance_(view_distance), simulation_distance_(simulation_distance),
               max_players_(max_players), entity_id_(entity_id), gamemode_(gamemode)
         {}
@@ -62,6 +64,10 @@ namespace terila::network {
 
         // Called by the server tick for every connected player.
         void tick_entities();
+
+        // Persists a few of the chunks generated while streaming, so the initial chunk
+        // burst is not serialised behind region-file writes on the IO thread.
+        void flush_pending_saves(std::size_t budget);
 
         bool joined() const { return joined_; }
 
@@ -104,6 +110,7 @@ namespace terila::network {
         struct InvSlot {
             std::int32_t item_id = 0;
             std::int32_t count = 0;
+            terila::item::ComponentsPtr components;
         };
 
         // Slots 9..44 of the player window: 0..26 main inventory, 27..35 the hotbar.
@@ -157,6 +164,9 @@ namespace terila::network {
         void apply_loaded_chunk(const terila::world::Chunk& chunk);
         void persist_chunk(std::int32_t cx, std::int32_t cz,
             const std::vector<std::uint8_t>& encoded, bool edited);
+        // Chunks generated while streaming are written back on later ticks.
+        void queue_persist(std::int32_t cx, std::int32_t cz,
+            const std::vector<std::uint8_t>& encoded);
         void persist_block_change(const terila::world::BlockPos& target);
         void queue_chunk_area(std::int32_t center_cx, std::int32_t center_cz);
         void forget_far_chunks(std::int32_t center_cx, std::int32_t center_cz);
@@ -189,7 +199,8 @@ namespace terila::network {
         // --- connection_inventory.cpp ----------------------------------------------
         // Puts collected drops into the player inventory, merging into existing stacks
         // first and telling the client about every slot it changes.
-        bool add_to_inventory(std::int32_t item_id, std::int32_t count);
+        bool add_to_inventory(std::int32_t item_id, std::int32_t count,
+            const terila::item::ComponentsPtr& components = nullptr);
         void send_inventory_slot(std::int32_t slot);
         void set_inventory_slot(std::int32_t slot, std::int32_t item_id, std::int32_t count);
 
@@ -197,6 +208,7 @@ namespace terila::network {
         struct MenuSlot {
             std::int32_t item_id = 0;
             std::int32_t count = 0;
+            terila::item::ComponentsPtr components;
         };
 
         enum MenuKind { kMenuNone = 0, kMenuCrafting = 1, kMenuFurnace = 2 };
@@ -213,13 +225,23 @@ namespace terila::network {
         void drag_click(std::int32_t button, std::int32_t slot, bool outside);
         bool place_one_from_cursor(std::int32_t slot);
         void quick_move(std::int32_t slot);
-        std::int32_t menu_player_room(std::int32_t item_id) const;
-        std::int32_t add_to_menu_player(std::int32_t item_id, std::int32_t count);
+        std::int32_t menu_player_room(std::int32_t item_id,
+            const terila::item::ComponentsPtr& components) const;
+        std::int32_t add_to_menu_player(std::int32_t item_id, std::int32_t count,
+            const terila::item::ComponentsPtr& components = nullptr);
         void send_furnace_data(std::int32_t data_id, std::int32_t value);
         int menu_kind_for_state(std::int32_t state) const;
         std::int32_t menu_player_offset() const {
             return menu_kind_ == kMenuCrafting ? 10 : 3;
         }
+
+        // --- connection_commands.cpp -----------------------------------------------
+        void handle_command(const std::string& command);
+        void send_system_message(std::string_view text);
+        std::int32_t resolve_item(std::string_view name) const;
+        bool give_item(std::int32_t item_id, std::int32_t count,
+            const terila::item::ComponentsPtr& components);
+        void enchant_held_item(std::string_view enchantment, std::int32_t level);
 
         // --- connection_entities.cpp -----------------------------------------------
         // Spawns and removes mobs as they enter or leave the view distance and sends
@@ -248,8 +270,14 @@ namespace terila::network {
         std::int32_t entity_id_ = 76;
         std::int32_t center_cx_ = 0;
         std::int32_t center_cz_ = 0;
-        terila::world::terrain::Generator terrain_;
+        terila::world::WorldGenerator terrain_;
         std::deque<ChunkPos> pending_chunks_;
+        struct PendingSave {
+            std::int32_t x = 0;
+            std::int32_t z = 0;
+            std::vector<std::uint8_t> bytes;
+        };
+        std::deque<PendingSave> pending_saves_;
         std::unordered_set<std::uint64_t> sent_chunks_;
         std::unordered_map<std::int32_t, KnownEntity> known_entities_;
         double player_x_ = 8.5;
@@ -288,6 +316,8 @@ namespace terila::network {
         const std::array<std::int32_t, 8>& furnace_states_;
         std::int32_t furnace_item_id_ = 0;
         std::uint32_t world_seed_ = 0;
+        terila::world::WorldType world_type_ = terila::world::WorldType::Terrain;
+        terila::item::ComponentIds component_ids_{};
         std::array<std::uint8_t, 16> uuid_{};
         float yaw_ = 0.0f;
         float pitch_ = 0.0f;

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "world/terrain_generator.hpp"
+#include "world/world_generator.hpp"
 #include "world/chunk_encoder.hpp"
 #include "world/chunk_decoder.hpp"
 #include "world/block_world.hpp"
@@ -161,6 +162,41 @@ TEST(TerrainGeneratorTest, ChunkSurvivesAnEncodeDecodeRoundTrip) {
     EXPECT_EQ(decoded->x, 2);
     EXPECT_EQ(decoded->z, 5);
     EXPECT_EQ(encode::encode(*decoded), wire);
+}
+
+TEST(WorldGeneratorTest, FlatWorldStreamsItsLayerCake) {
+    terila::world::WorldGenerator generator;
+    ASSERT_TRUE(generator.init(terila::world::WorldType::Flat, -64, 24, 0,
+        mock_block, mock_biome));
+    EXPECT_TRUE(generator.ready());
+    EXPECT_EQ(generator.type(), terila::world::WorldType::Flat);
+
+    const auto chunk = generator.generate(2, 3);
+    EXPECT_EQ(chunk.x, 2);
+    EXPECT_EQ(chunk.z, 3);
+    ASSERT_EQ(chunk.sections.size(), 24u);
+
+    const int surface = generator.surface_height(8, 8);
+    EXPECT_EQ(surface, generator.min_y() + 4);
+    EXPECT_EQ(section_block(chunk, 8, generator.min_y(), 8), 7);        // bedrock
+    EXPECT_EQ(section_block(chunk, 8, generator.min_y() + 1, 8), 13);   // dirt
+    EXPECT_EQ(section_block(chunk, 8, surface, 8), 42);                 // grass
+    EXPECT_EQ(section_block(chunk, 8, surface + 1, 8), 0);              // air
+
+    // The per-block lookup has to agree with the streamed chunk.
+    EXPECT_EQ(generator.state_at(8, generator.min_y(), 8), 7);
+    EXPECT_EQ(generator.state_at(8, surface, 8), 42);
+    EXPECT_EQ(generator.state_at(8, surface + 1, 8), 0);
+    EXPECT_EQ(generator.state_at(8, generator.min_y() - 1, 8), 0);
+}
+
+TEST(WorldGeneratorTest, LevelTypeNamesParse) {
+    using terila::world::WorldType;
+    EXPECT_EQ(terila::world::parse_world_type("flat"), WorldType::Flat);
+    EXPECT_EQ(terila::world::parse_world_type("superflat"), WorldType::Flat);
+    EXPECT_EQ(terila::world::parse_world_type("normal"), WorldType::Terrain);
+    EXPECT_EQ(terila::world::parse_world_type("default"), WorldType::Terrain);
+    EXPECT_FALSE(terila::world::parse_world_type("amplified").has_value());
 }
 
 TEST(TerrainGeneratorTest, GeneratesVegetationSomewhere) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "item/components.hpp"
 #include "log/logger.hpp"
 #include "protocol/packet.hpp"
 #include "protocol/packet_ids.hpp"
@@ -17,26 +18,32 @@ namespace terila::protocol {
     inline constexpr std::int32_t kMetadataItemStack = 7;
 
     // Slot encoding since 1.20.5: the count first, then the item id with the component
-    // deltas. Empty deltas mean "take the components the item registry defines".
+    // patch. An empty patch means "take the components the item registry defines",
+    // while a patch replaces defaults such as an empty enchantment list.
     inline void write_item_stack(std::vector<std::uint8_t>& output, std::int32_t item_id,
-        std::int32_t count) {
+        std::int32_t count, const terila::item::Components* components = nullptr,
+        const terila::item::ComponentIds* component_ids = nullptr) {
         write_varint(output, count);
         if (count <= 0) {
             return;
         }
         write_varint(output, item_id);
-        write_varint(output, 0);   // components added on top of the defaults
-        write_varint(output, 0);   // components removed from the defaults
+
+        const terila::item::ComponentIds ids =
+            component_ids != nullptr ? *component_ids : terila::item::ComponentIds{};
+        terila::item::write_component_patch(output, components, ids);
     }
 
     inline bool write_container_set_slot(std::vector<std::uint8_t>& output,
         std::uint8_t window_id, std::int32_t state_id, std::int16_t slot,
-        std::int32_t item_id, std::int32_t count) {
+        std::int32_t item_id, std::int32_t count,
+        const terila::item::Components* components = nullptr,
+        const terila::item::ComponentIds* component_ids = nullptr) {
         std::vector<std::uint8_t> payload;
         payload.push_back(window_id);
         write_varint(payload, state_id);
         write_int16(payload, slot);
-        write_item_stack(payload, item_id, count);
+        write_item_stack(payload, item_id, count, components, component_ids);
 
         if (!write_packet(output, packet_ids().play_container_set_slot, payload)) {
             LOG_WARN(Protocol, "write_container_set_slot: failed (slot={})", slot);
@@ -48,12 +55,14 @@ namespace terila::protocol {
     // A dropped item only renders once its stack is set, so add_entity is always
     // followed by this packet.
     inline bool write_item_entity_data(std::vector<std::uint8_t>& output, std::int32_t entity_id,
-        std::int32_t item_id, std::int32_t count) {
+        std::int32_t item_id, std::int32_t count,
+        const terila::item::Components* components = nullptr,
+        const terila::item::ComponentIds* component_ids = nullptr) {
         std::vector<std::uint8_t> payload;
         write_varint(payload, entity_id);
         payload.push_back(kItemEntityStackIndex);
         write_varint(payload, kMetadataItemStack);
-        write_item_stack(payload, item_id, count);
+        write_item_stack(payload, item_id, count, components, component_ids);
         payload.push_back(0xFF);   // end of metadata
 
         if (!write_packet(output, packet_ids().play_set_entity_data, payload)) {
