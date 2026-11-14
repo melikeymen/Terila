@@ -58,7 +58,7 @@ TEST(Nbt, RejectsMalformedInput) {
     EXPECT_FALSE(string_reader.read_root_compound());
 }
 
-TEST(Nbt, LegacyTextComponentBytesRemainClassic) {
+TEST(Nbt, LegacyTextComponentUsesNetworkFormat) {
     std::vector<std::uint8_t> bytes;
     write_text_component(bytes, "hello");
     EXPECT_EQ(bytes, (std::vector<std::uint8_t>{10, 8, 0, 4, 't', 'e', 'x', 't', 0, 5, 'h', 'e', 'l', 'l', 'o', 0}));
@@ -82,11 +82,13 @@ TEST(Nbt, NoSilentNarrowing) {
 }
 
 TEST(Nbt, RejectsLongString) {
-    Writer writer(StringFormat::Classic);
-    writer.begin_root_compound();
-    writer.write_string("long", std::string(70000, 'x'));
-    writer.end_compound();
-    EXPECT_TRUE(writer.finish().empty());
+    for (auto format : {StringFormat::Network, StringFormat::Classic}) {
+        Writer writer(format);
+        writer.begin_root_compound();
+        writer.write_string("long", std::string(70000, 'x'));
+        writer.end_compound();
+        EXPECT_TRUE(writer.finish().empty());
+    }
 }
 
 TEST(Nbt, RejectsDeepRecursion) {

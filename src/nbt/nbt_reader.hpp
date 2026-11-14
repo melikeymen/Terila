@@ -1,7 +1,6 @@
 #pragma once
 
 #include "nbt/nbt_value.hpp"
-#include "protocol/varint.hpp"
 
 #include <bit>
 #include <cstddef>
@@ -143,26 +142,16 @@ private:
         return true;
     }
     std::optional<std::size_t> read_count() {
-        std::int32_t count{};
-        if (format_ == StringFormat::Network) {
-            auto parsed = terila::protocol::read_varint(data_.data() + pos_, remaining());
-            if (!parsed || parsed->value < 0) return std::nullopt;
-            pos_ += parsed->consumed; count = parsed->value;
-        } else {
-            std::uint32_t raw{}; if (!read_be(raw)) return std::nullopt;
-            count = static_cast<std::int32_t>(raw); if (count < 0) return std::nullopt;
-        }
+        std::uint32_t raw{};
+        if (!read_be(raw)) return std::nullopt;
+        const auto count = static_cast<std::int32_t>(raw);
+        if (count < 0) return std::nullopt;
         return static_cast<std::size_t>(count);
     }
     std::optional<std::string> read_string_value() {
-        std::size_t length{};
-        if (format_ == StringFormat::Network) {
-            auto parsed = terila::protocol::read_varint(data_.data() + pos_, remaining());
-            if (!parsed || parsed->value < 0) return std::nullopt;
-            length = static_cast<std::size_t>(parsed->value); pos_ += parsed->consumed;
-        } else {
-            std::uint16_t raw{}; if (!read_be(raw)) return std::nullopt; length = raw;
-        }
+        std::uint16_t raw{};
+        if (!read_be(raw)) return std::nullopt;
+        const std::size_t length = raw;
         if (!has(length)) return std::nullopt;
         std::string value(reinterpret_cast<const char*>(data_.data() + pos_), length);
         pos_ += length; return value;

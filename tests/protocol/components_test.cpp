@@ -1,7 +1,9 @@
-#include <gtest/gtest.h>
+﻿#include <gtest/gtest.h>
 
 #include "item/components.hpp"
+#include "nbt/nbt_reader.hpp"
 #include "protocol/item.hpp"
+#include "protocol/varint.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -11,37 +13,6 @@
 
 using terila::item::ComponentIds;
 using terila::item::Components;
-
-namespace {
-
-    bool contains_sequence(const std::vector<std::uint8_t>& haystack,
-        const std::vector<std::uint8_t>& needle) {
-        if (needle.empty() || haystack.size() < needle.size()) {
-            return false;
-        }
-        for (std::size_t i = 0; i + needle.size() <= haystack.size(); ++i) {
-            if (std::equal(needle.begin(), needle.end(), haystack.begin() + i)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // "minecraft:efficiency" as an NBT int tag: tag byte, name length, name, value.
-    std::vector<std::uint8_t> efficiency_tag(std::int32_t level) {
-        const std::string name = "minecraft:efficiency";
-        std::vector<std::uint8_t> tag{ 0x03 };
-        tag.push_back(static_cast<std::uint8_t>(name.size() >> 8));
-        tag.push_back(static_cast<std::uint8_t>(name.size() & 0xFF));
-        tag.insert(tag.end(), name.begin(), name.end());
-        tag.push_back(static_cast<std::uint8_t>((level >> 24) & 0xFF));
-        tag.push_back(static_cast<std::uint8_t>((level >> 16) & 0xFF));
-        tag.push_back(static_cast<std::uint8_t>((level >> 8) & 0xFF));
-        tag.push_back(static_cast<std::uint8_t>(level & 0xFF));
-        return tag;
-    }
-
-} // namespace
 
 TEST(ItemComponentsTest, ComponentIdsComeFromTheRegistry) {
     const std::unordered_map<std::string, std::int32_t> registry{
@@ -87,16 +58,18 @@ TEST(ItemComponentsTest, EfficiencyPatchCarriesTheLevel) {
     ASSERT_GE(out.size(), header.size());
     EXPECT_TRUE(std::equal(header.begin(), header.end(), out.begin()));
 
-    // ... a root compound holding levels -> { efficiency: 255 } ...
-    EXPECT_EQ(out[5], 0x0A);                 // TAG_Compound (root)
-    EXPECT_EQ(out[6], 0x0A);                 // TAG_Compound "levels"
-    EXPECT_TRUE(contains_sequence(out, efficiency_tag(255)));
-
-    // ... then "levels" and the root close, and no component is removed.
-    ASSERT_GE(out.size(), 3u);
-    EXPECT_EQ(out[out.size() - 3], 0x00);
-    EXPECT_EQ(out[out.size() - 2], 0x00);
-    EXPECT_EQ(out[out.size() - 1], 0x00);
+    ASSERT_GT(out.size(), 6u);
+    const auto nbt_size = out.size() - 6;
+    terila::nbt::Reader reader(std::span<const std::uint8_t>(out.data() + 5, nbt_size));
+    auto root = reader.read_root_compound();
+    ASSERT_TRUE(root);
+    const auto* levels = root->at("levels").get_if<terila::nbt::NbtCompound>();
+    ASSERT_NE(levels, nullptr);
+    const auto* level = levels->at("minecraft:efficiency").get_if<std::int32_t>();
+    ASSERT_NE(level, nullptr);
+    EXPECT_EQ(*level, 255);
+    EXPECT_EQ(reader.position(), nbt_size);
+    EXPECT_EQ(out[out.size() - 1], 0);
 }
 
 TEST(ItemComponentsTest, NullAndEmptyPatchesStackTogether) {
@@ -142,6 +115,23 @@ TEST(ItemComponentsTest, CustomNameAddsASecondComponent) {
     ASSERT_GE(out.size(), header.size());
     EXPECT_TRUE(std::equal(header.begin(), header.end(), out.begin()));
 
-    // A text component is an unnamed compound with a single "text" string.
-    EXPECT_TRUE(contains_sequence(out, { 6, 0x0A, 0x08, 0x00, 0x04, 't', 'e', 'x', 't' }));
+    ASSERT_GT(out.size(), 6u);
+    const auto nbt_size = out.size() - 6;
+    terila::nbt::Reader first_reader(std::span<const std::uint8_t>(out.data() + 5, nbt_size));
+    auto first = first_reader.read_root_compound();
+    ASSERT_TRUE(first);
+    const auto first_size = first_reader.position();
+    const auto second_component_offset = 5 + first_size;
+    const auto second_type = terila::protocol::read_varint(out.data() + second_component_offset,
+        nbt_size - first_size);
+    ASSERT_TRUE(second_type);
+    EXPECT_EQ(second_type->value, 6);
+    terila::nbt::Reader name_reader(std::span<const std::uint8_t>(
+        out.data() + second_component_offset + second_type->consumed,
+        nbt_size - first_size - second_type->consumed));
+    auto name_root = name_reader.read_root_compound();
+    ASSERT_TRUE(name_root);
+    const auto* text = name_root->at("text").get_if<std::string>();
+    ASSERT_NE(text, nullptr);
+    EXPECT_EQ(*text, "Diamond Sword");
 }
