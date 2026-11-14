@@ -110,6 +110,9 @@ namespace terila::world::trf {
         if (!file) {
             return std::unexpected(file.error());
         }
+        if (auto locked = file->lock_exclusive(); !locked) {
+            return std::unexpected(locked.error());
+        }
 
         auto region = std::unique_ptr<TrfRegion>(new TrfRegion());
         region->path_ = path;

@@ -12,6 +12,7 @@
 #else
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #endif
 
@@ -233,6 +234,37 @@ namespace terila::world::trf {
         }
 #endif
         return {};
+    }
+
+    std::expected<void, TrfError> TrfFile::lock_exclusive() {
+        if (file_ == nullptr) {
+            return std::unexpected(make_error(TrfErrorCode::Io, "lock on a closed region"));
+        }
+#ifdef _WIN32
+        const intptr_t raw = _get_osfhandle(_fileno(file_));
+        if (raw == -1) {
+            return std::unexpected(make_error(TrfErrorCode::Io, "lock: no file handle"));
+        }
+        OVERLAPPED overlapped{};
+        if (!LockFileEx(reinterpret_cast<HANDLE>(raw),
+                LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &overlapped)) {
+            const DWORD error = GetLastError();
+            if (error == ERROR_LOCK_VIOLATION || error == ERROR_IO_PENDING) {
+                return std::unexpected(make_error(TrfErrorCode::Locked,
+                    "another process holds the region lock"));
+            }
+            return std::unexpected(make_error(TrfErrorCode::Io,
+                "cannot lock region (windows error " + std::to_string(error) + ")"));
+        }
+        return {};
+#else
+        if (flock(fileno(file_), LOCK_EX | LOCK_NB) != 0) {
+            return std::unexpected(make_error(
+                errno == EWOULDBLOCK ? TrfErrorCode::Locked : TrfErrorCode::Io,
+                system_error_detail("cannot lock region")));
+        }
+        return {};
+#endif
     }
 
     std::expected<void, TrfError> TrfFile::flush_stream() {

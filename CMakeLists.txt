@@ -110,6 +110,18 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(nlohmann_json)
 
+# simdjson parses the block registry dump
+FetchContent_Declare(
+  simdjson
+  GIT_REPOSITORY https://github.com/simdjson/simdjson.git
+  GIT_TAG        v3.12.0
+  GIT_SHALLOW    TRUE
+)
+set(SIMDJSON_DEVELOPER_MODE OFF CACHE BOOL "" FORCE)
+set(SIMDJSON_JUST_LIBRARY ON CACHE BOOL "" FORCE)
+set(SIMDJSON_BUILD_STATIC ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(simdjson)
+
 # Standalone Asio
 FetchContent_Declare(
   asio
@@ -140,7 +152,7 @@ endif()
 
 find_package(OpenSSL REQUIRED)
 
-target_link_libraries(terila PRIVATE nlohmann_json::nlohmann_json terila_asio OpenSSL::Crypto)
+target_link_libraries(terila PRIVATE nlohmann_json::nlohmann_json simdjson::simdjson terila_asio OpenSSL::Crypto)
 
 
 
@@ -214,6 +226,70 @@ target_include_directories(chunk_tests PRIVATE
 )
 target_link_libraries(chunk_tests PRIVATE GTest::gtest_main nlohmann_json::nlohmann_json terila_asio)
 
+add_executable(trf_tests
+    "tests/world/trf_tests.cpp"
+    "tests/world/fuzz_smoke_test.cpp"
+    "src/world/trf/trf_crc32c.cpp"
+    "src/world/trf/trf_sha256.cpp"
+    "src/world/trf/trf_file.cpp"
+    "src/world/trf/trf_header.cpp"
+    "src/world/trf/trf_slot.cpp"
+    "src/world/trf/trf_region.cpp"
+    "src/world/trf/trf_store.cpp"
+    "src/log/logger.cpp"
+)
+
+if(MSVC)
+    target_compile_options(trf_tests PRIVATE /utf-8)
+endif()
+
+if(WIN32)
+    target_compile_definitions(trf_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(trf_tests PRIVATE -Wno-character-conversion)
+endif()
+
+target_include_directories(trf_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${googletest_SOURCE_DIR}/googletest/include"
+)
+target_link_libraries(trf_tests PRIVATE GTest::gtest_main OpenSSL::Crypto)
+
+# libFuzzer targets. MSVC 2022 17.4+ and Clang both support this; the fuzz
+# executable only pulls the TRF sources, so it does not clash with terila's main().
+option(TERILA_BUILD_FUZZERS "Build libFuzzer targets" OFF)
+if(TERILA_BUILD_FUZZERS)
+    add_executable(fuzz_trf_decode
+        "tests/fuzz/fuzz_trf_decode.cpp"
+        "src/world/trf/trf_crc32c.cpp"
+        "src/world/trf/trf_sha256.cpp"
+        "src/world/trf/trf_file.cpp"
+        "src/world/trf/trf_header.cpp"
+        "src/world/trf/trf_slot.cpp"
+        "src/log/logger.cpp"
+    )
+    target_include_directories(fuzz_trf_decode PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    )
+    target_link_libraries(fuzz_trf_decode PRIVATE OpenSSL::Crypto)
+
+    if(MSVC)
+        target_compile_definitions(fuzz_trf_decode PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        target_compile_options(fuzz_trf_decode PRIVATE
+            /utf-8 /Od /Z7 /fsanitize=address /fsanitize=fuzzer)
+        target_link_options(fuzz_trf_decode PRIVATE
+            /fsanitize=address /fsanitize=fuzzer)
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(fuzz_trf_decode PRIVATE -fsanitize=fuzzer,address -g -O1)
+        target_link_options(fuzz_trf_decode PRIVATE -fsanitize=fuzzer,address)
+    endif()
+endif()
+
 enable_testing()
 add_test(NAME protocol_tests COMMAND protocol_tests)
 add_test(NAME chunk_tests    COMMAND chunk_tests)
+add_test(NAME trf_tests      COMMAND trf_tests)

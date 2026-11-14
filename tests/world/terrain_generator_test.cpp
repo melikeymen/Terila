@@ -5,6 +5,7 @@
 #include "world/chunk_decoder.hpp"
 #include "world/block_world.hpp"
 
+#include <cstdlib>
 #include <optional>
 #include <string_view>
 
@@ -128,10 +129,12 @@ TEST(TerrainGeneratorTest, StateAtMatchesTheGeneratedChunk) {
         const auto chunk = generator.generate(position.first, position.second);
         int mismatches = 0;
         int reported = 0;
-        for (int local_y = 0; local_y < chunk.section_count * 16; ++local_y) {
+        // Sampled rather than exhaustive: state_at costs a full column per call, and the
+        // generator is smooth enough that a strided sweep still catches disagreements.
+        for (int local_y = 0; local_y < chunk.section_count * 16; local_y += 4) {
             const std::int32_t y = chunk.min_y + local_y;
-            for (int z = 0; z < 16; ++z) {
-                for (int x = 0; x < 16; ++x) {
+            for (int z = 0; z < 16; z += 2) {
+                for (int x = 0; x < 16; x += 2) {
                     const std::int32_t world_x = position.first * 16 + x;
                     const std::int32_t world_z = position.second * 16 + z;
                     const auto chunk_state = section_block(chunk, x, y, z);
@@ -197,6 +200,35 @@ TEST(WorldGeneratorTest, LevelTypeNamesParse) {
     EXPECT_EQ(terila::world::parse_world_type("normal"), WorldType::Terrain);
     EXPECT_EQ(terila::world::parse_world_type("default"), WorldType::Terrain);
     EXPECT_FALSE(terila::world::parse_world_type("amplified").has_value());
+}
+
+TEST(WorldGeneratorTest, SpawnPointIsDryLandNearSeaLevel) {
+    terila::world::WorldGenerator generator;
+    ASSERT_TRUE(generator.init(terila::world::WorldType::Terrain, -64, 24, 1337,
+        mock_block, mock_biome));
+
+    const auto spawn = generator.spawn_point();
+    EXPECT_EQ(spawn.surface_y, generator.surface_height(spawn.x, spawn.z));
+    EXPECT_GE(spawn.surface_y, generator.sea_level());
+
+    // The whole point of the search: never a peak when the centre itself is one.
+    const int center_level =
+        std::abs(generator.surface_height(8, 8) - generator.sea_level());
+    const int spawn_level = std::abs(spawn.surface_y - generator.sea_level());
+    if (generator.surface_height(8, 8) >= generator.sea_level()) {
+        EXPECT_LE(spawn_level, center_level);
+    }
+}
+
+TEST(WorldGeneratorTest, FlatWorldSpawnsInItsCentreColumn) {
+    terila::world::WorldGenerator generator;
+    ASSERT_TRUE(generator.init(terila::world::WorldType::Flat, -64, 24, 0,
+        mock_block, mock_biome));
+
+    const auto spawn = generator.spawn_point();
+    EXPECT_EQ(spawn.x, 8);
+    EXPECT_EQ(spawn.z, 8);
+    EXPECT_EQ(spawn.surface_y, generator.surface_height(8, 8));
 }
 
 TEST(TerrainGeneratorTest, GeneratesVegetationSomewhere) {

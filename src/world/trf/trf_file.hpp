@@ -39,6 +39,10 @@ namespace terila::world::trf {
         std::expected<void, TrfError> read_at(std::uint64_t offset, std::span<std::byte> out) const;
         std::expected<void, TrfError> write_at(std::uint64_t offset, std::span<const std::byte> data);
         std::expected<void, TrfError> resize(std::uint64_t size);
+        // §19: an exclusive OS lock so two processes cannot write the same region.
+        // Returns TrfErrorCode::Locked when someone else already holds it.
+        std::expected<void, TrfError> lock_exclusive();
+
         std::expected<void, TrfError> flush_stream();
         std::expected<void, TrfError> barrier();
         std::expected<std::uint64_t, TrfError> size() const;

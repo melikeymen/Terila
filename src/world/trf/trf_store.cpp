@@ -155,16 +155,20 @@ namespace terila::world::trf {
 
         const auto found = regions_.find(key);
         if (found != regions_.end()) {
-            return found->second.get();
+            found->second.last_used = ++access_clock_;
+            return found->second.region.get();
         }
 
         if (regions_.size() >= max_open_regions) {
-            // Release the file handles; every region keeps its data on disk, and the next
-            // access reopens it (§18 region cache budget).
-            for (auto& entry : regions_) {
-                entry.second->close();
+            // §18: evict the least recently used region instead of dropping every handle.
+            // Erasing closes it, which also releases its OS lock for another process.
+            auto oldest = regions_.end();
+            for (auto it = regions_.begin(); it != regions_.end(); ++it) {
+                if (oldest == regions_.end() || it->second.last_used < oldest->second.last_used) {
+                    oldest = it;
+                }
             }
-            regions_.clear();
+            regions_.erase(oldest);
         }
 
         RegionOptions options;
@@ -182,9 +186,10 @@ namespace terila::world::trf {
             return std::unexpected(region.error());
         }
 
-        auto& slot = regions_[key];
-        slot = std::move(*region);
-        return slot.get();
+        auto& cached = regions_[key];
+        cached.region = std::move(*region);
+        cached.last_used = ++access_clock_;
+        return cached.region.get();
     }
 
     std::expected<LoadResult, TrfError> ChunkStore::load_chunk(std::int32_t cx, std::int32_t cz,
@@ -217,7 +222,7 @@ namespace terila::world::trf {
 
     std::expected<void, TrfError> ChunkStore::flush() {
         for (auto& entry : regions_) {
-            if (auto flushed = entry.second->flush(); !flushed) {
+            if (auto flushed = entry.second.region->flush(); !flushed) {
                 return std::unexpected(flushed.error());
             }
         }

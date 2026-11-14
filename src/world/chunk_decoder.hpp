@@ -41,6 +41,10 @@ namespace terila::world::decode {
             out_palette.clear();
             out_states.clear();
 
+            // Untrusted bit width: above 64 the long packing divides by zero, and nothing
+            // legitimate needs more than the 15 bits a direct block palette uses.
+            if (out_bits > 32) return false;
+
             if (out_bits == 0) {
                 auto vr = terila::protocol::read_varint(data + pos, size - pos);
                 if (!vr) return false;
@@ -67,8 +71,7 @@ namespace terila::world::decode {
 
             const int bits = out_bits;
             const int entries_per_long = 64 / bits;
-            const int long_count = (entry_count + entries_per_long - 1) / entries_per_long;
-            const std::size_t bytes_needed = static_cast<std::size_t>(long_count) * 8;
+            const int long_count = (entry_count + entries_per_long - 1) / entries_per_long;            const std::size_t bytes_needed = static_cast<std::size_t>(long_count) * 8;
             if (pos + bytes_needed > size) return false;
 
             out_states.resize(static_cast<std::size_t>(entry_count));
@@ -103,6 +106,8 @@ namespace terila::world::decode {
         auto hm_count = terila::protocol::read_varint(data + pos, size - pos);
         if (!hm_count || hm_count->value < 0) return std::nullopt;
         pos += hm_count->consumed;
+        // Every heightmap costs at least two bytes, so the count can never exceed the rest.
+        if (static_cast<std::size_t>(hm_count->value) > size - pos) return std::nullopt;
         c.heightmaps.reserve(static_cast<std::size_t>(hm_count->value));
         for (int i = 0; i < hm_count->value; ++i) {
             auto tid = terila::protocol::read_varint(data + pos, size - pos);
@@ -192,6 +197,8 @@ namespace terila::world::decode {
             auto cnt = terila::protocol::read_varint(data + pos, size - pos);
             if (!cnt || cnt->value < 0) return false;
             pos += cnt->consumed;
+            // Each entry still needs a length prefix, so this bounds the allocation.
+            if (static_cast<std::size_t>(cnt->value) > size - pos) return false;
             out.resize(static_cast<std::size_t>(cnt->value));
             for (int i = 0; i < cnt->value; ++i) {
                 auto len = terila::protocol::read_varint(data + pos, size - pos);
