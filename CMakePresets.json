@@ -50,7 +50,7 @@
     },
     {
       "name": "x64-fuzz",
-      "displayName": "x64 Fuzz — ASan + libFuzzer (trf, protocol, chunk)",
+      "displayName": "x64 Fuzz — ASan + libFuzzer (NBT, trf, protocol, chunk)",
       "inherits": "x64-debug",
       "cacheVariables": {
         "TERILA_BUILD_FUZZERS": "ON",
@@ -102,27 +102,27 @@
     {
       "name": "x64-fuzz",
       "configurePreset": "x64-fuzz",
-      "targets": [ "fuzz_trf_decode", "fuzz_protocol", "fuzz_chunk" ]
+      "targets": [ "fuzz_nbt", "fuzz_trf_decode", "fuzz_protocol", "fuzz_chunk" ]
     },
     {
       "name": "x64-fuzz-asan",
       "configurePreset": "x64-fuzz-asan",
-      "targets": [ "fuzz_trf_decode", "fuzz_protocol", "fuzz_chunk" ]
+      "targets": [ "fuzz_nbt", "fuzz_trf_decode", "fuzz_protocol", "fuzz_chunk" ]
     },
     {
       "name": "x64-fuzz-tsan",
       "configurePreset": "x64-fuzz-tsan",
-      "targets": [ "fuzz_trf_decode", "fuzz_protocol", "fuzz_chunk" ]
+      "targets": [ "fuzz_nbt", "fuzz_trf_decode", "fuzz_protocol", "fuzz_chunk" ]
     },
     {
       "name": "x64-fuzz-ubsan",
       "configurePreset": "x64-fuzz-ubsan",
-      "targets": [ "fuzz_trf_decode", "fuzz_protocol", "fuzz_chunk" ]
+      "targets": [ "fuzz_nbt", "fuzz_trf_decode", "fuzz_protocol", "fuzz_chunk" ]
     },
     {
       "name": "x64-fuzz-nosan",
       "configurePreset": "x64-fuzz-nosan",
-      "targets": [ "fuzz_trf_decode", "fuzz_protocol", "fuzz_chunk" ]
+      "targets": [ "fuzz_nbt", "fuzz_trf_decode", "fuzz_protocol", "fuzz_chunk" ]
     }
   ]
 }

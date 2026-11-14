@@ -1,4 +1,4 @@
-#include <gtest/gtest.h>
+﻿#include <gtest/gtest.h>
 
 #include "tests/fuzz/chunk_probe.hpp"
 #include "tests/fuzz/protocol_probe.hpp"
@@ -11,6 +11,12 @@
 #include <iterator>
 #include <string>
 #include <vector>
+
+// Regression corpus for fuzzer-found bugs.
+//
+// Every .bin in tests/fuzz/regressions/ is replayed here on every test run.
+// To add a finding: copy the libFuzzer artifact into that folder with a
+// descriptive name (2026-11-14-chunk-palette-width-sigfpe.bin) and commit it.
 
 namespace {
 

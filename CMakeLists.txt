@@ -43,6 +43,9 @@ target_sources(terila PRIVATE
     "src/protocol/menu.hpp"
     "src/protocol/chat.hpp"
     "src/nbt/nbt.hpp"
+    "src/nbt/nbt_value.hpp"
+    "src/nbt/nbt_reader.hpp"
+    "src/nbt/nbt_writer.hpp"
     "src/item/components.hpp"
     "src/item/components.cpp"
     "src/network/connection_commands.cpp"
@@ -204,6 +207,16 @@ add_executable(protocol_tests
     "src/log/logger.cpp"
 )
 
+add_executable(nbt_tests "tests/nbt/nbt_tests.cpp" "src/log/logger.cpp")
+if(MSVC)
+    target_compile_options(nbt_tests PRIVATE /utf-8)
+endif()
+target_include_directories(nbt_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${googletest_SOURCE_DIR}/googletest/include"
+)
+target_link_libraries(nbt_tests PRIVATE GTest::gtest_main)
+
 if(MSVC)
     target_compile_options(protocol_tests PRIVATE /utf-8)
 endif()
@@ -220,6 +233,7 @@ target_link_libraries(protocol_tests PRIVATE GTest::gtest_main nlohmann_json::nl
 
 terila_copy_runtime(terila)
 terila_copy_runtime(protocol_tests)
+terila_copy_runtime(nbt_tests)
 
 add_executable(chunk_tests
     "tests/world/chunk_decoder_test.cpp"
@@ -335,6 +349,7 @@ function(terila_add_fuzzer name)
 endfunction()
 
 if(TERILA_BUILD_FUZZERS)
+    terila_add_fuzzer(fuzz_nbt "tests/fuzz/fuzz_nbt.cpp")
     terila_add_fuzzer(fuzz_trf_decode
         "tests/fuzz/fuzz_trf_decode.cpp"
         "src/world/trf/trf_crc32c.cpp"
@@ -351,5 +366,6 @@ endif()
 
 enable_testing()
 add_test(NAME protocol_tests COMMAND protocol_tests)
+add_test(NAME nbt_tests COMMAND nbt_tests)
 add_test(NAME chunk_tests    COMMAND chunk_tests)
 add_test(NAME trf_tests      COMMAND trf_tests)

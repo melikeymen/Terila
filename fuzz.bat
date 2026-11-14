@@ -24,9 +24,18 @@ if defined TARGET_WORD (
 )
 
 if /i "%TARGET%"=="all" (
+    set "FUZZ_FAILED="
     call "%~f0" trf %ARGS%
+    if errorlevel 1 set "FUZZ_FAILED=1"
     call "%~f0" protocol %ARGS%
+    if errorlevel 1 set "FUZZ_FAILED=1"
     call "%~f0" chunk %ARGS%
+    if errorlevel 1 set "FUZZ_FAILED=1"
+    if defined FUZZ_FAILED (
+        echo.
+        echo At least one fuzz target reported a failure; see out\fuzz-corpus\
+        exit /b 1
+    )
     exit /b 0
 )
 
