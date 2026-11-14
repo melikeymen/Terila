@@ -6,7 +6,9 @@
 #include "world/terrain_generator.hpp"
 
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -87,6 +89,65 @@ namespace terila::world {
                 return min_y_ + spec_.dirt_layers + 1;
             }
             return terrain_.surface_height(x, z);
+        }
+
+        struct SpawnPoint {
+            std::int32_t x = 8;
+            std::int32_t z = 8;
+            int surface_y = 0;
+        };
+
+        // A fixed (8, 8) lands on whatever the seed produces there, which on a mountainous
+        // seed is a peak. Walk a coarse grid instead and take the dry land closest to sea
+        // level, preferring columns nearer the centre on ties.
+        SpawnPoint spawn_point(std::int32_t center_x = 8, std::int32_t center_z = 8,
+            int radius = 256, int step = 16) const {
+            SpawnPoint best;
+            best.x = center_x;
+            best.z = center_z;
+            best.surface_y = surface_height(best.x, best.z);
+            if (type_ == WorldType::Flat) {
+                return best;
+            }
+
+            const int sea = sea_level();
+            bool best_land = best.surface_y >= sea;
+            int best_level = std::abs(best.surface_y - sea);
+            int best_travel = 0;
+
+            for (int dx = -radius; dx <= radius; dx += step) {
+                for (int dz = -radius; dz <= radius; dz += step) {
+                    const int y = surface_height(center_x + dx, center_z + dz);
+                    // Dry land first: a column under water puts the player in the sea.
+                    // After that, how close the surface is to sea level decides, and the
+                    // walk from the centre only breaks ties - otherwise every candidate
+                    // far from the centre loses to a peak right next to it.
+                    const bool land = y >= sea;
+                    const int level = std::abs(y - sea);
+                    const int travel = std::abs(dx) + std::abs(dz);
+
+                    bool better = false;
+                    if (land != best_land) {
+                        better = land;
+                    }
+                    else if (level != best_level) {
+                        better = level < best_level;
+                    }
+                    else {
+                        better = travel < best_travel;
+                    }
+
+                    if (better) {
+                        best_land = land;
+                        best_level = level;
+                        best_travel = travel;
+                        best.x = center_x + dx;
+                        best.z = center_z + dz;
+                        best.surface_y = y;
+                    }
+                }
+            }
+            return best;
         }
 
         std::int32_t state_at(std::int32_t x, std::int32_t y, std::int32_t z) const {

@@ -24,7 +24,8 @@ namespace terila::network {
 
         if (!terrain_.init(world_type_, data_.overworld.min_y, data_.overworld.height / 16,
                 world_seed_, resolve_block, resolve_biome)) {
-            LOG_ERROR(Chunk, "cannot initialise the {} world generator",
+            LOG_CRITICAL(Chunk, "cannot initialise the {} world generator — no player can join "
+                "until the block and biome registries are fixed",
                 terila::world::world_type_name(world_type_));
             return;
         }
@@ -86,8 +87,18 @@ namespace terila::network {
             std::vector<std::byte> stored;
             const auto loaded = store_->load_chunk(cx, cz, stored);
             if (!loaded) {
-                LOG_WARN(Chunk, "trf load ({}, {}) failed: {} ({})", cx, cz,
-                    terila::world::trf::to_string(loaded.error().code), loaded.error().detail);
+                // A missing or damaged chunk is local; an I/O error means the whole region
+                // is unreachable, which is persistence gone rather than one chunk.
+                if (loaded.error().code == terila::world::trf::TrfErrorCode::Io) {
+                    LOG_CRITICAL(Chunk, "trf load ({}, {}) hit an I/O error: {} ({})", cx, cz,
+                        terila::world::trf::to_string(loaded.error().code),
+                        loaded.error().detail);
+                }
+                else if (loaded.error().code != terila::world::trf::TrfErrorCode::NotFound) {
+                    LOG_WARN(Chunk, "trf load ({}, {}) failed: {} ({})", cx, cz,
+                        terila::world::trf::to_string(loaded.error().code),
+                        loaded.error().detail);
+                }
             }
             else if (loaded->present) {
                 const auto decoded = terila::world::decode::decode(
@@ -138,7 +149,8 @@ namespace terila::network {
         const auto payload = std::span<const std::byte>(
             reinterpret_cast<const std::byte*>(encoded.data()), encoded.size());
         if (auto saved = store_->save_chunk(cx, cz, payload, flags); !saved) {
-            LOG_WARN(Chunk, "trf save ({}, {}) failed: {} ({})", cx, cz,
+            LOG_CRITICAL(Chunk, "trf save ({}, {}) failed: {} ({}) — edited chunks now live only "
+                "in memory, a restart loses them", cx, cz,
                 terila::world::trf::to_string(saved.error().code), saved.error().detail);
         }
     }

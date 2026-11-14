@@ -120,8 +120,10 @@ namespace terila::network {
             username_, placed, target.x, target.y, target.z);
     }
 
-    double Connection::drop_ground_y() const {
-        return static_cast<double>(terrain_.surface_height(8, 8) + 2);
+    // Drops fall onto the surface under the block that produced them, not onto the height
+    // of the spawn column.
+    double Connection::drop_ground_y(std::int32_t x, std::int32_t z) const {
+        return static_cast<double>(terrain_.surface_height(x, z) + 2);
     }
 
     // Every broken block turns into a drop so the world feels physical; blocks without
@@ -135,7 +137,8 @@ namespace terila::network {
             LOG_DEBUG(Network, "block state {} has no item form", state);
             return;
         }
-        drops_->spawn(it->second, 1, pos.x + 0.5, pos.y + 0.6, pos.z + 0.5, drop_ground_y());
+        drops_->spawn(it->second, 1, pos.x + 0.5, pos.y + 0.6, pos.z + 0.5,
+            drop_ground_y(pos.x, pos.z));
     }
 
     void Connection::give_hotbar_item(std::int32_t item_id) {

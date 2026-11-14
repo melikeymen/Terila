@@ -45,6 +45,7 @@ namespace terila::network {
             const std::array<std::int32_t, 8>& furnace_states,
             std::int32_t furnace_item_id,
             std::uint32_t world_seed, terila::world::WorldType world_type,
+            std::int32_t spawn_x, std::int32_t spawn_z,
             int view_distance, int simulation_distance, int max_players,
             std::int32_t entity_id, int gamemode)
             : socket_(std::move(socket)), keep_alive_timer_(socket_.get_executor()), data_(data),
@@ -53,7 +54,7 @@ namespace terila::network {
               block_state_item_(block_state_item), item_entity_type_(item_entity_type),
               recipes_(recipes), menu_blocks_(menu_blocks), furnace_states_(furnace_states),
               furnace_item_id_(furnace_item_id), world_seed_(world_seed),
-              world_type_(world_type),
+              world_type_(world_type), spawn_x_(spawn_x), spawn_z_(spawn_z),
               view_distance_(view_distance), simulation_distance_(simulation_distance),
               max_players_(max_players), entity_id_(entity_id), gamemode_(gamemode)
         {}
@@ -156,6 +157,11 @@ namespace terila::network {
         // --- connection_chunks.cpp -------------------------------------------------
         static std::uint64_t chunk_key(std::int32_t cx, std::int32_t cz) noexcept;
 
+        // Floor division by 16: >> rounds towards zero for negative columns.
+        static std::int32_t chunk_coordinate(std::int32_t block) {
+            return block >= 0 ? block / 16 : -((-block + 15) / 16);
+        }
+
         // Resolves the block and biome ids the terrain generator needs.
         void init_terrain();
 
@@ -190,7 +196,7 @@ namespace terila::network {
 
         // --- dropped items ---------------------------------------------------------
         // Surface a broken block falls onto: the block above the grass layer.
-        double drop_ground_y() const;
+        double drop_ground_y(std::int32_t x, std::int32_t z) const;
         void spawn_block_drop(const terila::world::BlockPos& pos, std::int32_t state);
         void handle_pick_block(const terila::protocol::BlockPosValue& clicked);
         void give_hotbar_item(std::int32_t item_id);
@@ -270,6 +276,9 @@ namespace terila::network {
         std::int32_t entity_id_ = 76;
         std::int32_t center_cx_ = 0;
         std::int32_t center_cz_ = 0;
+        // Block column every player starts at, chosen by the world generator.
+        std::int32_t spawn_x_ = 8;
+        std::int32_t spawn_z_ = 8;
         terila::world::WorldGenerator terrain_;
         std::deque<ChunkPos> pending_chunks_;
         struct PendingSave {

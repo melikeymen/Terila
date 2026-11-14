@@ -6,8 +6,10 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace terila::entity {
@@ -47,6 +49,12 @@ namespace terila::entity {
         float flee_yaw = 0.0f;
         double knockback = 0.0;
         float knockback_yaw = 0.0f;
+
+        // Column whose terrain height produced the current y, so the noise is not rerun
+        // for every mob on every tick.
+        std::int32_t ground_x = 0;
+        std::int32_t ground_z = 0;
+        bool ground_known = false;
     };
 
     // Degrees around +Y, matching the (sin, -cos) movement convention used below.
@@ -64,7 +72,22 @@ namespace terila::entity {
     // damage and are streamed to players by the connection layer.
     class MobManager {
     public:
+        using GroundResolver = std::function<double(double x, double z)>;
+
+        // The surface a mob stands on, resolved from the world generator.
+        void set_ground_resolver(GroundResolver resolver) {
+            ground_resolver_ = std::move(resolver);
+        }
+
+        // Fallback height, used only when no resolver is installed.
         void set_ground(double y) { ground_y_ = y; }
+
+        // Mobs stay inside this circle instead of a fixed box around the origin.
+        void set_roam_area(double center_x, double center_z, double radius) {
+            roam_x_ = center_x;
+            roam_z_ = center_z;
+            roam_radius_ = radius;
+        }
 
         bool spawn(const std::string& type_name,
             const std::unordered_map<std::string, std::int32_t>& types,
@@ -82,8 +105,8 @@ namespace terila::entity {
             mob.type_name = type_name;
             mob.hostile = hostile;
             mob.x = x;
-            mob.y = ground_y_;
             mob.z = z;
+            ground_at(mob);
             mob.max_health = max_health;
             mob.health = max_health;
 
@@ -99,8 +122,9 @@ namespace terila::entity {
             mob.uuid[8] = static_cast<std::uint8_t>((mob.uuid[8] & 0x3F) | 0x80);
 
             mobs_.push_back(std::move(mob));
-            LOG_DEBUG(Entity, "spawned {} as entity id={} at ({:.1f}, {:.1f}) hostile={} hp={}",
-                type_name, mobs_.back().id, x, z, hostile, max_health);
+            LOG_DEBUG(Entity, "spawned {} as entity id={} at ({:.1f}, {:.1f}, {:.1f}) hostile={} hp={}",
+                type_name, mobs_.back().id, mobs_.back().x, mobs_.back().y, mobs_.back().z,
+                hostile, max_health);
             return true;
         }
 
@@ -210,19 +234,38 @@ namespace terila::entity {
             move(mob, yaw, speed);
         }
 
-        // Only the area around spawn exists yet, so the herd is kept nearby.
         bool move(Mob& mob, float yaw, double distance) {
             constexpr double kPi = 3.14159265358979323846;
             const double radians = static_cast<double>(yaw) * kPi / 180.0;
             const double nx = mob.x + std::sin(radians) * distance;
             const double nz = mob.z - std::cos(radians) * distance;
-            if (std::abs(nx) > 48.0 || std::abs(nz) > 48.0) {
+            if (!inside_roam(nx, nz)) {
                 return false;
             }
             mob.x = nx;
             mob.z = nz;
-            mob.y = ground_y_;
+            ground_at(mob);
             return true;
+        }
+
+        bool inside_roam(double x, double z) const {
+            const double dx = x - roam_x_;
+            const double dz = z - roam_z_;
+            return dx * dx + dz * dz <= roam_radius_ * roam_radius_;
+        }
+
+        // Mobs follow the terrain: y is the surface under the column they stand on, so
+        // they walk over hills instead of floating at one fixed height.
+        void ground_at(Mob& mob) {
+            const auto bx = static_cast<std::int32_t>(std::floor(mob.x));
+            const auto bz = static_cast<std::int32_t>(std::floor(mob.z));
+            if (mob.ground_known && bx == mob.ground_x && bz == mob.ground_z) {
+                return;
+            }
+            mob.ground_x = bx;
+            mob.ground_z = bz;
+            mob.ground_known = true;
+            mob.y = ground_resolver_ ? ground_resolver_(mob.x, mob.z) : ground_y_;
         }
 
         static const PlayerPos* nearest_player(const std::vector<PlayerPos>& players,
@@ -247,7 +290,11 @@ namespace terila::entity {
         }
 
         std::vector<Mob> mobs_;
+        GroundResolver ground_resolver_;
         double ground_y_ = 0.0;
+        double roam_x_ = 0.0;
+        double roam_z_ = 0.0;
+        double roam_radius_ = 48.0;
         std::uint32_t rng_state_ = 0x9E3779B9u;
         std::int32_t next_id_ = 1;
     };

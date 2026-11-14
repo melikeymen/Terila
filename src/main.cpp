@@ -22,6 +22,8 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
+#include <random>
 #include <functional>
 #include <vector>
 #include <string>
@@ -71,24 +73,37 @@ int main() {
     terila::config::ServerConfig srv;
     terila::config::load(srv, (base / "server.properties").string());
 
-    if (srv.online_mode) {
-        LOG_WARN(Main, "online-mode=true is not implemented yet, staying in offline mode");
-        srv.online_mode = false;
-    }
-    if (srv.network_encryption) {
-        LOG_WARN(Main, "network-encryption=true is not implemented yet, connections stay unencrypted");
-        srv.network_encryption = false;
-    }
-
     terila::log::Config cfg;
     if (auto lvl = terila::log::parse_level(srv.log_level)) cfg.min_level = *lvl;
     cfg.file_path = srv.log_file;
+    if (srv.log_exit_level == "never") {
+        cfg.exit_enabled = false;
+    }
+    else if (auto exit_level = terila::log::parse_level(srv.log_exit_level)) {
+        cfg.exit_on_level = *exit_level;
+    }
     terila::log::init(cfg);
 
     LOG_INFO(Main, "server starting");
-    LOG_DEBUG(Main, "config: bind={} port={} log_level={} online_mode={} network_encryption={} view_distance={} simulation_distance={} level_type={}",
-        srv.bind_address, srv.port, srv.log_level, srv.online_mode, srv.network_encryption,
-        srv.view_distance, srv.simulation_distance, srv.level_type);
+    LOG_DEBUG(Main, "config: bind={} port={} log_level={} log_exit_level={} online_mode={} network_encryption={} view_distance={} simulation_distance={} level_type={}",
+        srv.bind_address, srv.port, srv.log_level, srv.log_exit_level, srv.online_mode,
+        srv.network_encryption, srv.view_distance, srv.simulation_distance, srv.level_type);
+    if (srv.log_exit_level != "never" && !terila::log::parse_level(srv.log_exit_level)) {
+        LOG_WARN(Config, "unknown log-exit-level '{}', keeping fatal", srv.log_exit_level);
+    }
+
+    // Both settings are advertised as working; silently running without them is a whole
+    // subsystem missing, so they are CRITICAL rather than a warning.
+    if (srv.online_mode) {
+        LOG_CRITICAL(Main, "online-mode=true but session auth is not implemented; falling back "
+            "to offline mode — any client can claim any username");
+        srv.online_mode = false;
+    }
+    if (srv.network_encryption) {
+        LOG_CRITICAL(Main, "network-encryption=true but AES/CFB8 is not implemented; traffic "
+            "stays plaintext — do not expose this server");
+        srv.network_encryption = false;
+    }
 
     // level-type picks which generator the server streams.
     terila::world::WorldType world_type = terila::world::WorldType::Terrain;
@@ -161,8 +176,7 @@ int main() {
     terila::data::load_binary(data.advancement_payload, in + "/advancements/minecraft.nbt");
     terila::data::load_command_tree(data.command_tree_payload, in + "/commands/tree.nbt");
 
-    terila::data::load_block_state_ids(data.block_state_ids, in + "/blocks/state_ids.json");
-    terila::data::load_block_states(data.block_states, in + "/blocks/state_ids.json");
+    terila::data::load_blocks(data, in + "/blocks/state_ids.json");
     terila::data::load_biome_ids(data.biome_ids, in + "/worldgen/biomes.json");
     terila::data::load_dimensions(data.overworld, in + "/worldgen/dimensions.json");
     terila::data::load_entity_type_ids(data.entity_type_ids, in + "/entities/minecraft.json");
@@ -174,7 +188,7 @@ int main() {
     if (data.block_state_ids.empty()) { LOG_FATAL(Data, "block_state_ids empty"); return 7; }
     if (data.biome_ids.empty()) { LOG_FATAL(Data, "biome_ids empty");       return 7; }
     if (data.entity_type_ids.empty()) {
-        LOG_WARN(Data, "entity_type_ids empty, mobs stay disabled");
+        LOG_CRITICAL(Data, "entity_type_ids is empty — the mob subsystem is disabled");
     }
 
     LOG_DEBUG(Registry, "datapack registries: {}", data.datapack_registries.size());
@@ -200,28 +214,58 @@ int main() {
         return 7;
     }
 
-    const int spawn_surface = world_terrain.surface_height(8, 8);
-    LOG_INFO(Data, "{} world ready: seed '{}' ({}), spawn stands on y={}, sea level {}",
+    // The spawn column is searched, not assumed: a fixed (8, 8) is whatever the seed puts
+    // there, which on a mountainous seed is a peak the player has to jump down from.
+    const auto spawn = world_terrain.spawn_point();
+    const int spawn_surface = spawn.surface_y;
+    LOG_INFO(Chunk, "{} world ready: seed '{}' ({}), spawn at ({}, {}) stands on y={}, sea level {}",
         terila::world::world_type_name(world_type), srv.level_seed, world_terrain.seed(),
-        spawn_surface, world_terrain.sea_level());
+        spawn.x, spawn.z, spawn_surface, world_terrain.sea_level());
 
     terila::entity::MobManager mobs;
+    // Mobs follow the terrain: every column reports its own surface, so nobody spawns in
+    // the air or inside a hill and wandering herds walk over the landscape.
     mobs.set_ground(static_cast<double>(spawn_surface + 1));
-    // The spawn area is temperate, so only the overworld's plains animals live there.
+    mobs.set_ground_resolver([&world_terrain](double x, double z) {
+        return static_cast<double>(world_terrain.surface_height(
+            static_cast<std::int32_t>(std::floor(x)),
+            static_cast<std::int32_t>(std::floor(z))) + 1.0);
+        });
+    mobs.set_roam_area(spawn.x + 0.5, spawn.z + 0.5, 128.0);
+
+    // Each animal gets its own column in a disc around the spawn point instead of the
+    // whole herd sharing one grid; columns under water are re-rolled so nothing stands on
+    // the sea floor.
     static const std::vector<std::string> kPlainsMobs = {
         "minecraft:cow", "minecraft:sheep", "minecraft:pig", "minecraft:chicken",
         "minecraft:rabbit", "minecraft:horse", "minecraft:donkey", "minecraft:bee"
     };
+    constexpr int kCopiesPerType = 8;
+    constexpr double kPi = 3.14159265358979323846;
+    constexpr double kHerdRadius = 96.0;
+
+    std::mt19937 herd_rng(world_terrain.seed() ^ 0x9E3779B9u);
+    std::uniform_real_distribution<double> herd_angle(0.0, 2.0 * kPi);
+    std::uniform_real_distribution<double> herd_distance(8.0, kHerdRadius);
 
     std::size_t spawned = 0;
-    for (std::size_t i = 0; i < kPlainsMobs.size(); ++i) {
-        const std::string& name = kPlainsMobs[i];
-        for (int copy = 0; copy < 2; ++copy) {
-            const int index = static_cast<int>(i) * 2 + copy;
-            const int column = index % 8;
-            const int row = index / 8;
-            const double x = 8.5 + (static_cast<double>(column) - 3.5) * 3.0;
-            const double z = 14.5 + static_cast<double>(row) * 3.0;
+    for (const std::string& name : kPlainsMobs) {
+        for (int copy = 0; copy < kCopiesPerType; ++copy) {
+            double x = spawn.x + 0.5;
+            double z = spawn.z + 0.5;
+            bool found_land = false;
+            for (int attempt = 0; attempt < 12 && !found_land; ++attempt) {
+                const double angle = herd_angle(herd_rng);
+                const double distance = herd_distance(herd_rng);
+                x = spawn.x + 0.5 + std::cos(angle) * distance;
+                z = spawn.z + 0.5 + std::sin(angle) * distance;
+                found_land = world_terrain.surface_height(
+                    static_cast<std::int32_t>(std::floor(x)),
+                    static_cast<std::int32_t>(std::floor(z))) >= world_terrain.sea_level();
+            }
+            if (!found_land) {
+                continue;
+            }
 
             if (mobs.spawn(name, data.entity_type_ids, x, z, false, 10)) {
                 ++spawned;
@@ -231,7 +275,20 @@ int main() {
             }
         }
     }
-    LOG_INFO(Entity, "spawned {} plains animals", spawned);
+    if (spawned == 0) {
+        // An all-ocean spawn would otherwise look like a broken entity registry.
+        for (const std::string& name : kPlainsMobs) {
+            if (mobs.spawn(name, data.entity_type_ids, spawn.x + 0.5, spawn.z + 0.5, false, 10)) {
+                ++spawned;
+            }
+        }
+    }
+    LOG_INFO(Entity, "spawned {} plains animals across the world around ({}, {})",
+        spawned, spawn.x, spawn.z);
+    if (spawned == 0) {
+        LOG_CRITICAL(Entity, "none of the planned plains animals spawned — the entity registry "
+            "is broken");
+    }
 
     // Items whose id doubles as a placeable block, e.g. minecraft:stone.
     std::unordered_map<std::int32_t, std::int32_t> item_block_state;
@@ -257,7 +314,8 @@ int main() {
         item_entity_type = it->second;
     }
     else {
-        LOG_WARN(Entity, "minecraft:item is missing, block drops stay disabled");
+        LOG_CRITICAL(Entity, "minecraft:item is missing from the entity registry — block drops "
+            "and the pickup chain are disabled");
     }
 
     terila::entity::ItemDropManager drops;
@@ -265,7 +323,7 @@ int main() {
     terila::data::RecipeBook recipes;
     if (!recipes.load(in + "/recipes/minecraft.json", in + "/tags/items.json",
             data.item_ids, data.block_state_ids)) {
-        LOG_WARN(Data, "recipes are unavailable, crafting tables and furnaces stay closed");
+        LOG_CRITICAL(Data, "recipes failed to load — crafting tables and furnaces stay closed");
     }
 
     // Blocks that open a window when used: 1 = crafting table, 2 = furnace. Every furnace
@@ -369,7 +427,7 @@ int main() {
 
     auto do_accept = [&](auto&& self) -> void {
         acceptor.async_accept(
-            [&acceptor, &data, &mobs, &world, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, world_type, &srv, &players, &player_hub, &chunk_store, &next_player_entity_id, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
+            [&acceptor, &data, &mobs, &world, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, world_type, &spawn, &srv, &players, &player_hub, &chunk_store, &next_player_entity_id, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
                 if (error) {
                     LOG_ERROR(Network, "accept failed: {} ({})", error.message(), error.value());
                     self(self);
@@ -383,7 +441,7 @@ int main() {
                 auto conn = std::make_shared<terila::network::Connection>(std::move(socket), data, mobs,
                     world, item_block_state, player_hub, &chunk_store, &drops, block_state_item,
                     item_entity_type, &recipes, menu_blocks, furnace_states, furnace_item_id,
-                    srv.seed_value(), world_type, srv.view_distance,
+                    srv.seed_value(), world_type, spawn.x, spawn.z, srv.view_distance,
                     srv.simulation_distance, static_cast<int>(srv.max_players),
                     next_player_entity_id++, srv.gamemode);
                 conn->start();

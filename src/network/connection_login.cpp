@@ -138,10 +138,12 @@ namespace terila::network {
 
             // Vanilla sends the teleport before the game event, then the cache
             // center, then the chunks wrapped in a batch.
+            const double spawn_x = spawn_x_ + 0.5;
+            const double spawn_z = spawn_z_ + 0.5;
             const double spawn_y =
-                static_cast<double>(terrain_.surface_height(8, 8) + 1);
+                static_cast<double>(terrain_.surface_height(spawn_x_, spawn_z_) + 1);
             if (!terila::protocol::write_player_position(out, next_teleport_id_++,
-                8.5, spawn_y, 8.5, 0.0, 0.0, 0.0, 0.0f, 0.0f)) {
+                spawn_x, spawn_y, spawn_z, 0.0, 0.0, 0.0, 0.0f, 0.0f)) {
                 LOG_ERROR(Network, "player_position failed");
                 close();
                 return;
@@ -155,7 +157,8 @@ namespace terila::network {
             }
             send(out); out.clear();
 
-            if (!terila::protocol::write_set_center_chunk(out, 0, 0)) {
+            if (!terila::protocol::write_set_center_chunk(out,
+                chunk_coordinate(spawn_x_), chunk_coordinate(spawn_z_))) {
                 LOG_ERROR(Network, "set_center_chunk failed");
                 close();
                 return;
@@ -172,11 +175,11 @@ namespace terila::network {
             LOG_INFO(Network, "{} joined the game", username_);
 
             // From here chunks stream in batches, both at spawn and while walking.
-            center_cx_ = 0;
-            center_cz_ = 0;
-            player_x_ = 8.5;
+            center_cx_ = chunk_coordinate(spawn_x_);
+            center_cz_ = chunk_coordinate(spawn_z_);
+            player_x_ = spawn_x;
             player_y_ = spawn_y;
-            player_z_ = 8.5;
+            player_z_ = spawn_z;
             queue_chunk_area(0, 0);
             if (hub_) {
                 const auto weak_self = weak_from_this();
