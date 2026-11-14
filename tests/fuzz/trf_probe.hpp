@@ -1,6 +1,5 @@
 #pragma once
 
-#include "world/chunk_decoder.hpp"
 #include "world/trf/trf_format.hpp"
 #include "world/trf/trf_header.hpp"
 #include "world/trf/trf_slot.hpp"
@@ -30,8 +29,6 @@ namespace terila::test {
             (void)trf::Slot::decode(
                 std::span<const std::byte, trf::slot_size>(bytes, trf::slot_size));
         }
-
-        (void)terila::world::decode::decode(data, size, 24);
     }
 
 } // namespace terila::test

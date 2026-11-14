@@ -50,10 +50,43 @@
     },
     {
       "name": "x64-fuzz",
-      "displayName": "x64 Fuzz — libFuzzer + ASan (fuzz_trf_decode only)",
+      "displayName": "x64 Fuzz — ASan + libFuzzer (trf, protocol, chunk)",
       "inherits": "x64-debug",
       "cacheVariables": {
-        "TERILA_BUILD_FUZZERS": "ON"
+        "TERILA_BUILD_FUZZERS": "ON",
+        "TERILA_FUZZ_SANITIZER": "address"
+      }
+    },
+    {
+      "name": "x64-fuzz-asan",
+      "displayName": "x64 Fuzz — ASan (address sanitizer)",
+      "inherits": "x64-fuzz",
+      "cacheVariables": {
+        "TERILA_FUZZ_SANITIZER": "address"
+      }
+    },
+    {
+      "name": "x64-fuzz-tsan",
+      "displayName": "x64 Fuzz — TSan (thread sanitizer, needs clang-cl)",
+      "inherits": "x64-fuzz",
+      "cacheVariables": {
+        "TERILA_FUZZ_SANITIZER": "thread"
+      }
+    },
+    {
+      "name": "x64-fuzz-ubsan",
+      "displayName": "x64 Fuzz — UBSan (undefined behaviour, needs clang-cl)",
+      "inherits": "x64-fuzz",
+      "cacheVariables": {
+        "TERILA_FUZZ_SANITIZER": "undefined"
+      }
+    },
+    {
+      "name": "x64-fuzz-nosan",
+      "displayName": "x64 Fuzz — no sanitizer",
+      "inherits": "x64-fuzz",
+      "cacheVariables": {
+        "TERILA_FUZZ_SANITIZER": "none"
       }
     }
   ],
@@ -69,7 +102,27 @@
     {
       "name": "x64-fuzz",
       "configurePreset": "x64-fuzz",
-      "targets": [ "fuzz_trf_decode" ]
+      "targets": [ "fuzz_trf_decode", "fuzz_protocol", "fuzz_chunk" ]
+    },
+    {
+      "name": "x64-fuzz-asan",
+      "configurePreset": "x64-fuzz-asan",
+      "targets": [ "fuzz_trf_decode", "fuzz_protocol", "fuzz_chunk" ]
+    },
+    {
+      "name": "x64-fuzz-tsan",
+      "configurePreset": "x64-fuzz-tsan",
+      "targets": [ "fuzz_trf_decode", "fuzz_protocol", "fuzz_chunk" ]
+    },
+    {
+      "name": "x64-fuzz-ubsan",
+      "configurePreset": "x64-fuzz-ubsan",
+      "targets": [ "fuzz_trf_decode", "fuzz_protocol", "fuzz_chunk" ]
+    },
+    {
+      "name": "x64-fuzz-nosan",
+      "configurePreset": "x64-fuzz-nosan",
+      "targets": [ "fuzz_trf_decode", "fuzz_protocol", "fuzz_chunk" ]
     }
   ]
 }

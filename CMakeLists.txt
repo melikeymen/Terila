@@ -152,6 +152,37 @@ endif()
 
 find_package(OpenSSL REQUIRED)
 
+# A Windows executable only starts next to its runtime DLLs: OpenSSL comes from vcpkg and
+# the AddressSanitizer runtime from the MSVC toolset, and neither is on PATH when the
+# binary is started by hand or by a debugger outside Visual Studio.
+set(TERILA_OPENSSL_DLLS "")
+if(WIN32)
+    file(GLOB TERILA_OPENSSL_DLLS "${OPENSSL_ROOT_DIR}/bin/libcrypto-*.dll")
+endif()
+
+function(terila_copy_runtime target)
+    if(NOT WIN32)
+        return()
+    endif()
+
+    if(TERILA_OPENSSL_DLLS)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${TERILA_OPENSSL_DLLS} $<TARGET_FILE_DIR:${target}>)
+    endif()
+
+    # /fsanitize=address and /fsanitize=fuzzer link the ASan runtime dynamically.
+    if(MSVC)
+        get_filename_component(terila_msvc_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+        file(GLOB TERILA_ASAN_DLLS "${terila_msvc_bin}/clang_rt.asan_dynamic-*.dll")
+        if(TERILA_ASAN_DLLS)
+            add_custom_command(TARGET ${target} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${TERILA_ASAN_DLLS} $<TARGET_FILE_DIR:${target}>)
+        endif()
+    endif()
+endfunction()
+
 target_link_libraries(terila PRIVATE nlohmann_json::nlohmann_json simdjson::simdjson terila_asio OpenSSL::Crypto)
 
 
@@ -187,17 +218,8 @@ target_include_directories(protocol_tests PRIVATE
 )
 target_link_libraries(protocol_tests PRIVATE GTest::gtest_main nlohmann_json::nlohmann_json terila_asio OpenSSL::Crypto)
 
-# Windows needs the OpenSSL runtime next to the executables.
-if(WIN32)
-    file(GLOB OPENSSL_RUNTIME_DLLS "${OPENSSL_ROOT_DIR}/bin/libcrypto-*.dll")
-    if(OPENSSL_RUNTIME_DLLS)
-        foreach(target terila protocol_tests)
-            add_custom_command(TARGET ${target} POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    ${OPENSSL_RUNTIME_DLLS} $<TARGET_FILE_DIR:${target}>)
-        endforeach()
-    endif()
-endif()
+terila_copy_runtime(terila)
+terila_copy_runtime(protocol_tests)
 
 add_executable(chunk_tests
     "tests/world/chunk_decoder_test.cpp"
@@ -229,6 +251,7 @@ target_link_libraries(chunk_tests PRIVATE GTest::gtest_main nlohmann_json::nlohm
 add_executable(trf_tests
     "tests/world/trf_tests.cpp"
     "tests/world/fuzz_smoke_test.cpp"
+    "tests/fuzz/regression_tests.cpp"
     "src/world/trf/trf_crc32c.cpp"
     "src/world/trf/trf_sha256.cpp"
     "src/world/trf/trf_file.cpp"
@@ -256,37 +279,74 @@ target_include_directories(trf_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${googletest_SOURCE_DIR}/googletest/include"
 )
-target_link_libraries(trf_tests PRIVATE GTest::gtest_main OpenSSL::Crypto)
+# The saved fuzz inputs are replayed from tests/fuzz/regressions.
+target_compile_definitions(trf_tests PRIVATE
+    TERILA_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests")
+# The portable smoke test also probes the protocol readers, which build JSON replies.
+target_link_libraries(trf_tests PRIVATE GTest::gtest_main OpenSSL::Crypto
+    nlohmann_json::nlohmann_json)
+terila_copy_runtime(trf_tests)
 
-# libFuzzer targets. MSVC 2022 17.4+ and Clang both support this; the fuzz
-# executable only pulls the TRF sources, so it does not clash with terila's main().
+# libFuzzer targets, one executable per byte-facing parser so their corpora stay
+# separate. MSVC 2022 17.4+ and Clang both support this, and the sanitizer comes from
+# TERILA_FUZZ_SANITIZER so the preset name can advertise ASan, TSan or UBSan.
 option(TERILA_BUILD_FUZZERS "Build libFuzzer targets" OFF)
+set(TERILA_FUZZ_SANITIZER "address" CACHE STRING
+    "Sanitizer for the fuzz targets: address, thread, undefined or none")
+
+function(terila_add_fuzzer name)
+    add_executable(${name} ${ARGN} "src/log/logger.cpp")
+    target_include_directories(${name} PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    )
+    if(WIN32)
+        target_compile_definitions(${name} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    endif()
+    # The protocol readers build their JSON replies with nlohmann, exactly like the server.
+    target_link_libraries(${name} PRIVATE nlohmann_json::nlohmann_json)
+
+    if(MSVC)
+        if(TERILA_FUZZ_SANITIZER STREQUAL "thread" OR
+            TERILA_FUZZ_SANITIZER STREQUAL "undefined")
+            message(FATAL_ERROR
+                "cl.exe cannot combine /fsanitize=fuzzer with ${TERILA_FUZZ_SANITIZER}. "
+                "Configure this preset with -DCMAKE_CXX_COMPILER=clang-cl.exe instead.")
+        endif()
+        target_compile_options(${name} PRIVATE /utf-8 /Od /Z7 /fsanitize=fuzzer)
+        target_link_options(${name} PRIVATE /fsanitize=fuzzer)
+        if(TERILA_FUZZ_SANITIZER STREQUAL "address")
+            target_compile_options(${name} PRIVATE /fsanitize=address)
+            target_link_options(${name} PRIVATE /fsanitize=address)
+        endif()
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        if(TERILA_FUZZ_SANITIZER STREQUAL "none")
+            target_compile_options(${name} PRIVATE -fsanitize=fuzzer -g -O1)
+            target_link_options(${name} PRIVATE -fsanitize=fuzzer)
+        else()
+            target_compile_options(${name} PRIVATE
+                -fsanitize=fuzzer,${TERILA_FUZZ_SANITIZER} -g -O1)
+            target_link_options(${name} PRIVATE
+                -fsanitize=fuzzer,${TERILA_FUZZ_SANITIZER})
+        endif()
+    endif()
+
+    terila_copy_runtime(${name})
+endfunction()
+
 if(TERILA_BUILD_FUZZERS)
-    add_executable(fuzz_trf_decode
+    terila_add_fuzzer(fuzz_trf_decode
         "tests/fuzz/fuzz_trf_decode.cpp"
         "src/world/trf/trf_crc32c.cpp"
         "src/world/trf/trf_sha256.cpp"
         "src/world/trf/trf_file.cpp"
         "src/world/trf/trf_header.cpp"
         "src/world/trf/trf_slot.cpp"
-        "src/log/logger.cpp"
-    )
-    target_include_directories(fuzz_trf_decode PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src"
     )
     target_link_libraries(fuzz_trf_decode PRIVATE OpenSSL::Crypto)
 
-    if(MSVC)
-        target_compile_definitions(fuzz_trf_decode PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-        target_compile_options(fuzz_trf_decode PRIVATE
-            /utf-8 /Od /Z7 /fsanitize=address /fsanitize=fuzzer)
-        target_link_options(fuzz_trf_decode PRIVATE
-            /fsanitize=address /fsanitize=fuzzer)
-    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        target_compile_options(fuzz_trf_decode PRIVATE -fsanitize=fuzzer,address -g -O1)
-        target_link_options(fuzz_trf_decode PRIVATE -fsanitize=fuzzer,address)
-    endif()
+    terila_add_fuzzer(fuzz_protocol "tests/fuzz/fuzz_protocol.cpp")
+    terila_add_fuzzer(fuzz_chunk "tests/fuzz/fuzz_chunk.cpp")
 endif()
 
 enable_testing()

@@ -68,8 +68,10 @@ jobs:
         -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
         -S ${{ github.workspace }}
 
+    # Two jobs at a time: the runners are small, and the asio and simdjson headers make
+    # every translation unit heavy enough that a full-width build gets OOM-killed.
     - name: Build
-      run: cmake --build ${{ steps.strings.outputs.build-output-dir }} --config ${{ matrix.build_type }} --parallel
+      run: cmake --build ${{ steps.strings.outputs.build-output-dir }} --config ${{ matrix.build_type }} --parallel 2
       
     - name: Test
       working-directory: ${{ steps.strings.outputs.build-output-dir }}

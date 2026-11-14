@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include "tests/fuzz/chunk_probe.hpp"
+#include "tests/fuzz/protocol_probe.hpp"
 #include "tests/fuzz/trf_probe.hpp"
 #include "world/trf/trf_header.hpp"
 
@@ -27,6 +29,8 @@ TEST(TrfFuzzSmokeTest, RandomBytesNeverCrashTheDecoders) {
             buffer[i] = static_cast<std::uint8_t>(rng() & 0xFFu);
         }
         terila::test::probe_trf_decoders(buffer.data(), length);
+        terila::test::probe_protocol(buffer.data(), length);
+        terila::test::probe_chunk(buffer.data(), length);
     }
 }
 
