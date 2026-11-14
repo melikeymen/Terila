@@ -31,7 +31,9 @@ namespace terila::log {
         TimestampFormat timestamp = TimestampFormat::Millis;
         bool            color_enabled = true;
         std::string     file_path = "";
+        // The first level that terminates the process; log-exit-level=never turns it off.
         Level           exit_on_level = Level::Fatal;
+        bool            exit_enabled = true;
         bool            crash_context = false;
         std::size_t     ring_capacity = 256;
     };

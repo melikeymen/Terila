@@ -16,6 +16,7 @@ namespace terila::log {
         std::atomic<Level>          g_min_level{ Level::Info };
         std::atomic<std::uint32_t>  g_scope_mask{ 0xFFFFFFFFu };
         std::atomic<Level>          g_exit_on_level{ Level::Fatal };
+        std::atomic<bool>           g_exit_enabled{ true };
         std::atomic<bool>           g_color{ true };
         std::atomic<TimestampFormat> g_timestamp{ TimestampFormat::Millis };
 
@@ -104,6 +105,7 @@ namespace terila::log {
         g_min_level.store(cfg.min_level);
         g_scope_mask.store(cfg.scope_mask);
         g_exit_on_level.store(cfg.exit_on_level);
+        g_exit_enabled.store(cfg.exit_enabled);
         g_timestamp.store(cfg.timestamp);
         g_color.store(cfg.color_enabled);
 
@@ -116,7 +118,8 @@ namespace terila::log {
         if (!cfg.file_path.empty()) {
             g_file.open(cfg.file_path, std::ios::out | std::ios::app);
             if (!g_file) {
-                std::fprintf(stderr, "[logger] failed to open log file: %s\n", cfg.file_path.c_str());
+                std::fprintf(stderr, "[CRITICAL] [LOGGER] cannot open log file: %s — "
+                    "console logging continues, the disk log is gone\n", cfg.file_path.c_str());
             }
         }
 
@@ -207,7 +210,7 @@ namespace terila::log {
             g_file.flush();
         }
 
-        if (lvl >= g_exit_on_level.load()) {
+        if (g_exit_enabled.load() && lvl >= g_exit_on_level.load()) {
             if (g_file.is_open()) g_file.flush();
             std::fflush(stdout);
             // atexit handlers may log again, so release the mutex before exiting.

@@ -14,6 +14,7 @@
 #include <unordered_map>
 #include <exception>
 #include <nlohmann/json.hpp>
+#include <simdjson.h>
 
 namespace terila::data {
 
@@ -88,85 +89,66 @@ namespace terila::data {
 		LOG_DEBUG(Data, "data component ids: {} entries", out.size());
 	}
 
-	// blocks/state_ids.json format:
-	//   { data: [ { id: "minecraft:acacia_button", default_state_id: N,
-	//               min_state_id: N, max_state_id: N, properties: {...} } ] }
-	inline void load_block_state_ids(std::unordered_map<std::string, std::int32_t>& out, const std::string& path) {
-		std::ifstream f(path);
-		if (!f) {
+	// blocks/state_ids.json, one pass over the dump: the default state id and every
+	// variant of the block sit in the same array entry.
+	//   { data: [ { id, default_state_id, min_state_id, max_state_id, states: [...] } ] }
+	inline void load_blocks(RegistryData& out, const std::string& path) {
+		simdjson::padded_string json;
+		if (simdjson::padded_string::load(path).get(json) != simdjson::SUCCESS) {
 			LOG_WARN(Data, "cannot open {}", path);
 			return;
 		}
 
-		try {
-			auto j = nlohmann::json::parse(f);
-
-			if (!j.contains("data") || !j["data"].is_array()) {
-				LOG_WARN(Data, "unexpected format in {} (no 'data' array)", path);
-				return;
-			}
-
-			for (const auto& e : j["data"]) {
-				if (!e.contains("id") || !e["id"].is_string()) continue;
-				std::string name = e["id"].get<std::string>();
-
-				std::int32_t id = -1;
-				if (e.contains("default_state_id"))      id = e["default_state_id"].get<std::int32_t>();
-				else if (e.contains("min_state_id"))     id = e["min_state_id"].get<std::int32_t>();
-				if (id < 0) continue;
-
-				if (out.find(name) == out.end()) out[name] = id;
-			}
-		}
-		catch (const std::exception& e) {
-			LOG_WARN(Data, "parse failed: {} ({})", path, e.what());
-		}
-
-		LOG_DEBUG(Data, "block_state_ids: {} entries", out.size());
-	}
-
-	// Every variant of every block, with the property values that name it. Needed where a
-	// state is chosen by its properties instead of the block's default one, such as a
-	// furnace facing the player who placed it.
-	inline void load_block_states(std::unordered_map<std::string, std::vector<BlockStateInfo>>& out, const std::string& path) {
-		std::ifstream f(path);
-		if (!f) {
-			LOG_WARN(Data, "cannot open {}", path);
+		simdjson::dom::parser parser;
+		simdjson::dom::element doc;
+		if (parser.parse(json).get(doc) != simdjson::SUCCESS) {
+			LOG_WARN(Data, "parse failed: {}", path);
 			return;
 		}
 
-		try {
-			auto j = nlohmann::json::parse(f);
-			if (!j.contains("data") || !j["data"].is_array()) {
-				LOG_WARN(Data, "unexpected format in {} (no 'data' array)", path);
-				return;
+		simdjson::dom::array data;
+		if (doc["data"].get_array().get(data) != simdjson::SUCCESS) {
+			LOG_WARN(Data, "unexpected format in {} (no 'data' array)", path);
+			return;
+		}
+
+		for (simdjson::dom::element entry : data) {
+			std::string_view name;
+			if (entry["id"].get_string().get(name) != simdjson::SUCCESS) continue;
+			const std::string block{ name };
+
+			std::int64_t state_id = -1;
+			entry["default_state_id"].get_int64().get(state_id);
+			if (state_id < 0) entry["min_state_id"].get_int64().get(state_id);
+			if (state_id >= 0) {
+				out.block_state_ids.try_emplace(block, static_cast<std::int32_t>(state_id));
 			}
 
-			for (const auto& e : j["data"]) {
-				if (!e.contains("id") || !e["id"].is_string() || !e.contains("states")) continue;
-				if (!e["states"].is_array()) continue;
+			simdjson::dom::array states;
+			if (entry["states"].get_array().get(states) != simdjson::SUCCESS) continue;
 
-				auto& variants = out[e["id"].get<std::string>()];
-				for (const auto& s : e["states"]) {
-					if (!s.contains("id")) continue;
-					BlockStateInfo info;
-					info.id = s["id"].get<std::int32_t>();
-					if (s.contains("properties") && s["properties"].is_object()) {
-						for (auto it = s["properties"].begin(); it != s["properties"].end(); ++it) {
-							if (it.value().is_string()) {
-								info.properties[it.key()] = it.value().get<std::string>();
-							}
-						}
+			auto& variants = out.block_states[block];
+			variants.reserve(states.size());
+			for (simdjson::dom::element variant : states) {
+				std::int64_t id = -1;
+				if (variant["id"].get_int64().get(id) != simdjson::SUCCESS) continue;
+
+				BlockStateInfo info;
+				info.id = static_cast<std::int32_t>(id);
+				simdjson::dom::object properties;
+				if (variant["properties"].get_object().get(properties) == simdjson::SUCCESS) {
+					for (auto property : properties) {
+						std::string_view value;
+						if (property.value.get_string().get(value) != simdjson::SUCCESS) continue;
+						info.properties.emplace(std::string(property.key), std::string(value));
 					}
-					variants.push_back(std::move(info));
 				}
+				variants.push_back(std::move(info));
 			}
 		}
-		catch (const std::exception& e) {
-			LOG_WARN(Data, "parse failed: {} ({})", path, e.what());
-		}
 
-		LOG_DEBUG(Data, "block_states: {} blocks", out.size());
+		LOG_DEBUG(Data, "blocks: {} ids, {} variant tables",
+			out.block_state_ids.size(), out.block_states.size());
 	}
 
 	// worldgen/biomes.json format:

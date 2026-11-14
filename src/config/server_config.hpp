@@ -14,6 +14,9 @@ namespace terila::config {
         std::uint16_t port = 25565;
         std::string   log_level = "info";
         std::string   log_file = "";
+        // Lowest level that shuts the process down: never, fatal (default), critical,
+        // error or warn.
+        std::string   log_exit_level = "fatal";
 
         // Mojang session authentication. false lets cracked (offline) clients join.
         std::string   level_seed = "terila";
@@ -133,6 +136,9 @@ namespace terila::config {
             }
             else if (key == "log-file") {
                 out.log_file = value;
+            }
+            else if (key == "log-exit-level") {
+                out.log_exit_level = value;
             }
             else if (key == "level-seed") {
                 out.level_seed = value;
