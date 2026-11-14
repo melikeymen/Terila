@@ -1,7 +1,7 @@
 #include "item/components.hpp"
 
 #include "log/logger.hpp"
-#include "nbt/nbt.hpp"
+#include "nbt/nbt_writer.hpp"
 #include "protocol/varint.hpp"
 
 #include <algorithm>
@@ -45,21 +45,23 @@ namespace terila::item {
 
         // minecraft:enchantments is a compound with a "levels" map of enchantment -> level.
         std::vector<std::uint8_t> enchantments_tag(const Components& components) {
-            std::vector<std::uint8_t> tag;
-            terila::nbt::begin_root(tag);
-            terila::nbt::begin_compound(tag, "levels");
+            terila::nbt::Writer writer(terila::nbt::StringFormat::Network);
+            writer.begin_root_compound();
+            writer.begin_compound("levels");
             for (const auto& enchantment : components.enchantments) {
-                terila::nbt::write_int(tag, enchantment.id, enchantment.level);
+                writer.write_int(enchantment.id, enchantment.level);
             }
-            terila::nbt::end(tag);   // levels
-            terila::nbt::end(tag);   // root
-            return tag;
+            writer.end_compound();
+            writer.end_compound();
+            return writer.finish();
         }
 
         std::vector<std::uint8_t> custom_name_tag(const std::string& name) {
-            std::vector<std::uint8_t> tag;
-            terila::nbt::write_text_component(tag, name);
-            return tag;
+            terila::nbt::Writer writer(terila::nbt::StringFormat::Network);
+            writer.begin_root_compound();
+            writer.write_string("text", name);
+            writer.end_compound();
+            return writer.finish();
         }
 
     } // namespace

@@ -2,6 +2,7 @@
 
 #include "item/components.hpp"
 #include "log/logger.hpp"
+#include "nbt/nbt_writer.hpp"
 #include "protocol/item.hpp"
 #include "protocol/packet.hpp"
 #include "protocol/packet_ids.hpp"
@@ -23,13 +24,12 @@ namespace terila::protocol {
 
     // Network NBT text component: an unnamed compound that only carries "text".
     inline void write_component_text(std::vector<std::uint8_t>& output, std::string_view text) {
-        output.push_back(0x0A);   // TAG_Compound, no root name on the wire
-        output.push_back(0x08);   // TAG_String
-        write_uint16(output, 4);
-        output.insert(output.end(), { 't', 'e', 'x', 't' });
-        write_uint16(output, static_cast<std::uint16_t>(text.size()));
-        output.insert(output.end(), text.begin(), text.end());
-        output.push_back(0x00);   // TAG_End
+        terila::nbt::Writer writer(terila::nbt::StringFormat::Network);
+        writer.begin_root_compound();
+        writer.write_string("text", text);
+        writer.end_compound();
+        auto bytes = writer.finish();
+        output.insert(output.end(), bytes.begin(), bytes.end());
     }
 
     inline bool write_open_screen(std::vector<std::uint8_t>& output, std::int32_t window_id,

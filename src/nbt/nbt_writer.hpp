@@ -2,7 +2,6 @@
 
 #include "nbt/nbt_reader.hpp"
 #include "protocol/primitives.hpp"
-#include "protocol/varint.hpp"
 
 #include <bit>
 #include <cstdint>
@@ -53,18 +52,12 @@ private:
             output_.push_back(static_cast<std::uint8_t>(value >> ((sizeof(U) - i - 1) * 8)));
     }
     void write_string_raw(std::string_view value) {
-        if (format_ == StringFormat::Network) {
-            if (value.size() > static_cast<std::size_t>((std::numeric_limits<std::int32_t>::max)())) { failed_ = true; return; }
-            terila::protocol::write_varint(output_, static_cast<std::int32_t>(value.size()));
-        } else {
-            if (value.size() > (std::numeric_limits<std::uint16_t>::max)()) { failed_ = true; return; }
-            terila::protocol::write_uint16(output_, static_cast<std::uint16_t>(value.size()));
-        }
+        if (value.size() > (std::numeric_limits<std::uint16_t>::max)()) { failed_ = true; return; }
+        terila::protocol::write_uint16(output_, static_cast<std::uint16_t>(value.size()));
         output_.insert(output_.end(), value.begin(), value.end());
     }
     void write_count(std::size_t count) {
-        if (format_ == StringFormat::Network) terila::protocol::write_varint(output_, static_cast<std::int32_t>(count));
-        else terila::protocol::write_int32(output_, static_cast<std::int32_t>(count));
+        terila::protocol::write_int32(output_, static_cast<std::int32_t>(count));
     }
     void write_header(Tag tag, std::string_view name) { output_.push_back(static_cast<std::uint8_t>(tag)); write_string_raw(name); }
     bool is_valid_value(const NbtValue& value) const {
@@ -90,9 +83,7 @@ private:
         }, value.value);
     }
     bool string_size_valid(std::size_t size) const {
-        return format_ == StringFormat::Network
-            ? size <= static_cast<std::size_t>((std::numeric_limits<std::int32_t>::max)())
-            : size <= (std::numeric_limits<std::uint16_t>::max)();
+        return size <= (std::numeric_limits<std::uint16_t>::max)();
     }
     void write_payload(const NbtValue& value) {
         if (!is_valid_value(value)) { failed_ = true; return; }
