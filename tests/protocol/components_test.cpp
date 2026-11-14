@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
 #include "item/components.hpp"
+#include "nbt/nbt_reader.hpp"
 #include "protocol/item.hpp"
+#include "protocol/string.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -13,33 +15,6 @@ using terila::item::ComponentIds;
 using terila::item::Components;
 
 namespace {
-
-    bool contains_sequence(const std::vector<std::uint8_t>& haystack,
-        const std::vector<std::uint8_t>& needle) {
-        if (needle.empty() || haystack.size() < needle.size()) {
-            return false;
-        }
-        for (std::size_t i = 0; i + needle.size() <= haystack.size(); ++i) {
-            if (std::equal(needle.begin(), needle.end(), haystack.begin() + i)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // "minecraft:efficiency" as an NBT int tag: tag byte, name length, name, value.
-    std::vector<std::uint8_t> efficiency_tag(std::int32_t level) {
-        const std::string name = "minecraft:efficiency";
-        std::vector<std::uint8_t> tag{ 0x03 };
-        tag.push_back(static_cast<std::uint8_t>(name.size() >> 8));
-        tag.push_back(static_cast<std::uint8_t>(name.size() & 0xFF));
-        tag.insert(tag.end(), name.begin(), name.end());
-        tag.push_back(static_cast<std::uint8_t>((level >> 24) & 0xFF));
-        tag.push_back(static_cast<std::uint8_t>((level >> 16) & 0xFF));
-        tag.push_back(static_cast<std::uint8_t>((level >> 8) & 0xFF));
-        tag.push_back(static_cast<std::uint8_t>(level & 0xFF));
-        return tag;
-    }
 
 } // namespace
 
@@ -77,26 +52,27 @@ TEST(ItemComponentsTest, PlainStackHasAnEmptyPatch) {
 TEST(ItemComponentsTest, EfficiencyPatchCarriesTheLevel) {
     Components components;
     components.set_enchantment("minecraft:efficiency", 255);
-    const ComponentIds ids{ 13, 6 };
+    ComponentIds ids{ 13, 6 };
+    const std::unordered_map<std::string, std::int32_t> enchantment_registry{
+        { "minecraft:efficiency", 5 }
+    };
+    ids.enchantment_registry = &enchantment_registry;
 
     std::vector<std::uint8_t> out;
     terila::protocol::write_item_stack(out, 1050, 1, &components, &ids);
 
-    // count, item, one added component of type 13 ...
-    const std::vector<std::uint8_t> header{ 1, 0x9A, 0x08, 1, 13 };
-    ASSERT_GE(out.size(), header.size());
-    EXPECT_TRUE(std::equal(header.begin(), header.end(), out.begin()));
-
-    // ... a root compound holding levels -> { efficiency: 255 } ...
-    EXPECT_EQ(out[5], 0x0A);                 // TAG_Compound (root)
-    EXPECT_EQ(out[6], 0x0A);                 // TAG_Compound "levels"
-    EXPECT_TRUE(contains_sequence(out, efficiency_tag(255)));
-
-    // ... then "levels" and the root close, and no component is removed.
-    ASSERT_GE(out.size(), 3u);
-    EXPECT_EQ(out[out.size() - 3], 0x00);
-    EXPECT_EQ(out[out.size() - 2], 0x00);
-    EXPECT_EQ(out[out.size() - 1], 0x00);
+    const std::string component_name = "minecraft:enchantments";
+    ASSERT_EQ(component_name.size(), 22u);
+    ASSERT_EQ(out.size(), 32u);
+    EXPECT_EQ(out[0], 1);
+    EXPECT_EQ(out[3], 1);
+    EXPECT_EQ(out[4], component_name.size());
+    EXPECT_TRUE(std::equal(component_name.begin(), component_name.end(), out.begin() + 5));
+    EXPECT_EQ(out[27], 1);
+    EXPECT_EQ(out[28], 5);
+    EXPECT_EQ(out[29], 0xFF);
+    EXPECT_EQ(out[30], 0x01);
+    EXPECT_EQ(out[31], 0);
 }
 
 TEST(ItemComponentsTest, NullAndEmptyPatchesStackTogether) {
@@ -131,17 +107,25 @@ TEST(ItemComponentsTest, SetEnchantmentOverwritesInPlace) {
 
 TEST(ItemComponentsTest, CustomNameAddsASecondComponent) {
     Components components;
-    components.set_enchantment("minecraft:sharpness", 255);
     components.custom_name = "Diamond Sword";
-    const ComponentIds ids{ 13, 6 };
+    const ComponentIds ids{ -1, 6 };
 
     std::vector<std::uint8_t> out;
     terila::protocol::write_item_stack(out, 1050, 1, &components, &ids);
 
-    const std::vector<std::uint8_t> header{ 1, 0x9A, 0x08, 2, 13 };
+    const std::vector<std::uint8_t> header{ 1, 0x9A, 0x08, 1, 21 };
     ASSERT_GE(out.size(), header.size());
     EXPECT_TRUE(std::equal(header.begin(), header.end(), out.begin()));
-
-    // A text component is an unnamed compound with a single "text" string.
-    EXPECT_TRUE(contains_sequence(out, { 6, 0x0A, 0x08, 0x00, 0x04, 't', 'e', 'x', 't' }));
+    const auto component_name = terila::protocol::read_string(out.data() + 4,
+        out.size() - 4);
+    ASSERT_TRUE(component_name);
+    EXPECT_EQ(component_name->value, "minecraft:custom_name");
+    const auto nbt_offset = 4 + component_name->consumed;
+    terila::nbt::Reader reader(std::span<const std::uint8_t>(out.data() + nbt_offset,
+        out.size() - nbt_offset - 1));
+    auto root = reader.read_root_compound();
+    ASSERT_TRUE(root);
+    const auto* text = root->at("text").get_if<std::string>();
+    ASSERT_NE(text, nullptr);
+    EXPECT_EQ(*text, "Diamond Sword");
 }

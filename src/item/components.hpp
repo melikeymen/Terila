@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <cstdint>
 #include <memory>
@@ -52,6 +52,7 @@ namespace terila::item {
     struct ComponentIds {
         std::int32_t enchantments = -1;   // minecraft:enchantments
         std::int32_t custom_name = -1;    // minecraft:custom_name
+        const std::unordered_map<std::string, std::int32_t>* enchantment_registry = nullptr;
 
         bool usable() const { return enchantments >= 0 || custom_name >= 0; }
     };

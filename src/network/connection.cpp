@@ -12,6 +12,7 @@ namespace terila::network {
 
     void Connection::start() {
         component_ids_ = terila::item::component_ids(data_.component_ids);
+        component_ids_.enchantment_registry = &data_.enchantment_ids;
 
         asio::error_code ec;
         const auto remote = socket_.remote_endpoint(ec);

@@ -1,4 +1,4 @@
-#include "network/connection.hpp"
+﻿#include "network/connection.hpp"
 
 #include "protocol/login.hpp"
 #include "protocol/packet.hpp"
@@ -180,7 +180,7 @@ namespace terila::network {
             player_x_ = spawn_x;
             player_y_ = spawn_y;
             player_z_ = spawn_z;
-            queue_chunk_area(0, 0);
+            queue_chunk_area(center_cx_, center_cz_);
             if (hub_) {
                 const auto weak_self = weak_from_this();
                 hub_->join(entity_id_, uuid_, username_, gamemode_,

@@ -184,6 +184,8 @@ int main() {
     terila::data::load_item_ids(data.item_ids, in + "/items/minecraft.json");
     terila::data::load_data_component_ids(data.component_ids,
         in + "/registries/dump/minecraft/data_component_type.json");
+    terila::data::load_enchantment_ids(data.enchantment_ids,
+        in + "/registries/dump/minecraft/enchantment.json");
 
     if (data.block_state_ids.empty()) { LOG_FATAL(Data, "block_state_ids empty"); return 7; }
     if (data.biome_ids.empty()) { LOG_FATAL(Data, "biome_ids empty");       return 7; }

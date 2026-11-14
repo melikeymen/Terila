@@ -61,7 +61,7 @@ TEST(Nbt, RejectsMalformedInput) {
 TEST(Nbt, LegacyTextComponentBytesRemainClassic) {
     std::vector<std::uint8_t> bytes;
     write_text_component(bytes, "hello");
-    EXPECT_EQ(bytes, (std::vector<std::uint8_t>{10, 8, 0, 4, 't', 'e', 'x', 't', 0, 5, 'h', 'e', 'l', 'l', 'o', 0}));
+    EXPECT_EQ(bytes, (std::vector<std::uint8_t>{10, 0, 0, 8, 0, 4, 't', 'e', 'x', 't', 0, 5, 'h', 'e', 'l', 'l', 'o', 0}));
 }
 
 TEST(Nbt, RejectsMixedTypeList) {

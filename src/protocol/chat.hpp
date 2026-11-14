@@ -6,6 +6,7 @@
 #include "protocol/string.hpp"
 
 #include <cstdint>
+#include <format>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -24,8 +25,19 @@ namespace terila::protocol {
     }
 
     inline bool write_system_chat(std::vector<std::uint8_t>& output, std::string_view message) {
+        LOG_DEBUG(Protocol, "write_system_chat: msg='{}' size={}", message, message.size());
         std::vector<std::uint8_t> payload;
-        terila::nbt::write_text_component(payload, message);
+        terila::nbt::Writer writer(terila::nbt::StringFormat::Network);
+        writer.begin_root_compound();
+        writer.write_string("text", message);
+        writer.end_compound();
+        auto component = writer.finish();
+        std::string hex;
+        for (auto b : component) {
+            hex += std::format("{:02X} ", b);
+        }
+        LOG_DEBUG(Protocol, "write_system_chat: component size={} hex={}", component.size(), hex);
+        payload.insert(payload.end(), component.begin(), component.end());
         payload.push_back(0);   // overlay: shown in chat, not above the hotbar
 
         if (!write_packet(output, packet_ids().play_system_chat, payload)) {
