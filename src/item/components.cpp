@@ -27,8 +27,10 @@ namespace terila::item {
         enchantments.push_back(Enchantment{ std::move(id), level });
     }
 
-    ComponentIds component_ids(const std::unordered_map<std::string, std::int32_t>& registry) {
+    ComponentIds component_ids(const std::unordered_map<std::string, std::int32_t>& registry,
+        const std::unordered_map<std::string, std::int32_t>* enchantment_registry) {
         ComponentIds ids;
+        ids.enchantment_registry = enchantment_registry;
         if (const auto it = registry.find("minecraft:enchantments"); it != registry.end()) {
             ids.enchantments = it->second;
         }
@@ -41,31 +43,6 @@ namespace terila::item {
         return ids;
     }
 
-    namespace {
-
-        // minecraft:enchantments is a compound with a "levels" map of enchantment -> level.
-        std::vector<std::uint8_t> enchantments_tag(const Components& components) {
-            terila::nbt::Writer writer(terila::nbt::StringFormat::Network);
-            writer.begin_root_compound();
-            writer.begin_compound("levels");
-            for (const auto& enchantment : components.enchantments) {
-                writer.write_int(enchantment.id, enchantment.level);
-            }
-            writer.end_compound();
-            writer.end_compound();
-            return writer.finish();
-        }
-
-        std::vector<std::uint8_t> custom_name_tag(const std::string& name) {
-            terila::nbt::Writer writer(terila::nbt::StringFormat::Network);
-            writer.begin_root_compound();
-            writer.write_string("text", name);
-            writer.end_compound();
-            return writer.finish();
-        }
-
-    } // namespace
-
     void write_component_patch(std::vector<std::uint8_t>& out, const Components* components,
         const ComponentIds& ids) {
         if (components == nullptr || components->empty() || !ids.usable()) {
@@ -74,26 +51,38 @@ namespace terila::item {
             return;
         }
 
-        struct Entry {
-            std::int32_t type = -1;
-            std::vector<std::uint8_t> tag;
-        };
-
-        std::vector<Entry> entries;
+        std::vector<std::pair<std::int32_t, std::vector<std::uint8_t>>> entries;
         if (!components->enchantments.empty() && ids.enchantments >= 0) {
-            entries.push_back(Entry{ ids.enchantments, enchantments_tag(*components) });
+            std::vector<std::uint8_t> payload;
+            terila::protocol::write_varint(payload,
+                static_cast<std::int32_t>(components->enchantments.size()));
+            for (const auto& e : components->enchantments) {
+                std::int32_t enchantment_id = 0;
+                if (ids.enchantment_registry != nullptr) {
+                    const auto it = ids.enchantment_registry->find(e.id);
+                    if (it != ids.enchantment_registry->end()) {
+                        enchantment_id = it->second;
+                    }
+                }
+                terila::protocol::write_varint(payload, enchantment_id);
+                terila::protocol::write_varint(payload, e.level);
+            }
+            entries.push_back({ ids.enchantments, std::move(payload) });
         }
         if (!components->custom_name.empty() && ids.custom_name >= 0) {
-            entries.push_back(Entry{ ids.custom_name,
-                custom_name_tag(components->custom_name) });
+            terila::nbt::Writer writer(terila::nbt::StringFormat::Network);
+            writer.begin_root_compound();
+            writer.write_string("text", components->custom_name);
+            writer.end_compound();
+            entries.push_back({ ids.custom_name, writer.finish() });
         }
 
         terila::protocol::write_varint(out, static_cast<std::int32_t>(entries.size()));
-        for (const auto& entry : entries) {
-            terila::protocol::write_varint(out, entry.type);
-            out.insert(out.end(), entry.tag.begin(), entry.tag.end());
+        terila::protocol::write_varint(out, 0);
+        for (const auto& [type_id, tag] : entries) {
+            terila::protocol::write_varint(out, type_id);
+            out.insert(out.end(), tag.begin(), tag.end());
         }
-        terila::protocol::write_varint(out, 0);   // components removed from the defaults
     }
 
 } // namespace terila::item

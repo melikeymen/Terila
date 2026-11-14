@@ -48,28 +48,17 @@ TEST(ItemComponentsTest, PlainStackHasAnEmptyPatch) {
 TEST(ItemComponentsTest, EfficiencyPatchCarriesTheLevel) {
     Components components;
     components.set_enchantment("minecraft:efficiency", 255);
-    const ComponentIds ids{ 13, 6 };
+    const std::unordered_map<std::string, std::int32_t> enchantment_registry{
+        { "minecraft:efficiency", 5 }
+    };
+    ComponentIds ids{ 13, 6, &enchantment_registry };
 
     std::vector<std::uint8_t> out;
     terila::protocol::write_item_stack(out, 1050, 1, &components, &ids);
 
-    // count, item, one added component of type 13 ...
-    const std::vector<std::uint8_t> header{ 1, 0x9A, 0x08, 1, 13 };
-    ASSERT_GE(out.size(), header.size());
-    EXPECT_TRUE(std::equal(header.begin(), header.end(), out.begin()));
-
-    ASSERT_GT(out.size(), 6u);
-    const auto nbt_size = out.size() - 6;
-    terila::nbt::Reader reader(std::span<const std::uint8_t>(out.data() + 5, nbt_size));
-    auto root = reader.read_root_compound();
-    ASSERT_TRUE(root);
-    const auto* levels = root->at("levels").get_if<terila::nbt::NbtCompound>();
-    ASSERT_NE(levels, nullptr);
-    const auto* level = levels->at("minecraft:efficiency").get_if<std::int32_t>();
-    ASSERT_NE(level, nullptr);
-    EXPECT_EQ(*level, 255);
-    EXPECT_EQ(reader.position(), nbt_size);
-    EXPECT_EQ(out[out.size() - 1], 0);
+    EXPECT_EQ(out, (std::vector<std::uint8_t>{
+        1, 0x9A, 0x08, 1, 0, 13, 1, 5, 0xFF, 0x01
+    }));
 }
 
 TEST(ItemComponentsTest, NullAndEmptyPatchesStackTogether) {
@@ -106,29 +95,20 @@ TEST(ItemComponentsTest, CustomNameAddsASecondComponent) {
     Components components;
     components.set_enchantment("minecraft:sharpness", 255);
     components.custom_name = "Diamond Sword";
-    const ComponentIds ids{ 13, 6 };
+    const std::unordered_map<std::string, std::int32_t> enchantment_registry{
+        { "minecraft:sharpness", 9 }
+    };
+    const ComponentIds ids{ 13, 6, &enchantment_registry };
 
     std::vector<std::uint8_t> out;
     terila::protocol::write_item_stack(out, 1050, 1, &components, &ids);
 
-    const std::vector<std::uint8_t> header{ 1, 0x9A, 0x08, 2, 13 };
+    const std::vector<std::uint8_t> header{ 1, 0x9A, 0x08, 2, 0, 13, 1, 9, 0xFF, 0x01, 6 };
     ASSERT_GE(out.size(), header.size());
     EXPECT_TRUE(std::equal(header.begin(), header.end(), out.begin()));
 
-    ASSERT_GT(out.size(), 6u);
-    const auto nbt_size = out.size() - 6;
-    terila::nbt::Reader first_reader(std::span<const std::uint8_t>(out.data() + 5, nbt_size));
-    auto first = first_reader.read_root_compound();
-    ASSERT_TRUE(first);
-    const auto first_size = first_reader.position();
-    const auto second_component_offset = 5 + first_size;
-    const auto second_type = terila::protocol::read_varint(out.data() + second_component_offset,
-        nbt_size - first_size);
-    ASSERT_TRUE(second_type);
-    EXPECT_EQ(second_type->value, 6);
-    terila::nbt::Reader name_reader(std::span<const std::uint8_t>(
-        out.data() + second_component_offset + second_type->consumed,
-        nbt_size - first_size - second_type->consumed));
+    terila::nbt::Reader name_reader(std::span<const std::uint8_t>(out.data() + header.size(),
+        out.size() - header.size()));
     auto name_root = name_reader.read_root_compound();
     ASSERT_TRUE(name_root);
     const auto* text = name_root->at("text").get_if<std::string>();

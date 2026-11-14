@@ -52,14 +52,16 @@ namespace terila::item {
     struct ComponentIds {
         std::int32_t enchantments = -1;   // minecraft:enchantments
         std::int32_t custom_name = -1;    // minecraft:custom_name
+        const std::unordered_map<std::string, std::int32_t>* enchantment_registry = nullptr;
 
         bool usable() const { return enchantments >= 0 || custom_name >= 0; }
     };
 
-    ComponentIds component_ids(const std::unordered_map<std::string, std::int32_t>& registry);
+    ComponentIds component_ids(const std::unordered_map<std::string, std::int32_t>& registry,
+        const std::unordered_map<std::string, std::int32_t>* enchantment_registry = nullptr);
 
-    // Appends the component patch that follows the item id: the added component count,
-    // each component as (type id, NBT value), then the removed count.
+    // Appends the component patch that follows the item id: added count, removed count,
+    // then each added component as a type id and its encoded value.
     void write_component_patch(std::vector<std::uint8_t>& out, const Components* components,
         const ComponentIds& ids);
 

@@ -200,6 +200,7 @@ add_executable(protocol_tests
     "tests/protocol/login_test.cpp"
     "tests/protocol/uuid_test.cpp"
     "tests/protocol/components_test.cpp"
+    "tests/protocol/chat_test.cpp"
     "src/item/components.cpp"
     "tests/protocol/entity_test.cpp"
     "tests/protocol/block_test.cpp"
