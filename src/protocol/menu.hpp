@@ -2,7 +2,7 @@
 
 #include "item/components.hpp"
 #include "log/logger.hpp"
-#include "nbt/nbt_writer.hpp"
+#include "tag/text.hpp"
 #include "protocol/item.hpp"
 #include "protocol/packet.hpp"
 #include "protocol/packet_ids.hpp"
@@ -24,11 +24,7 @@ namespace terila::protocol {
 
     // Network NBT text component: an unnamed compound that only carries "text".
     inline void write_component_text(std::vector<std::uint8_t>& output, std::string_view text) {
-        terila::nbt::Writer writer(terila::nbt::StringFormat::Network);
-        writer.begin_root_compound();
-        writer.write_string("text", text);
-        writer.end_compound();
-        auto bytes = writer.finish();
+        const auto bytes = terila::tag::text_component_bytes(text);
         output.insert(output.end(), bytes.begin(), bytes.end());
     }
 

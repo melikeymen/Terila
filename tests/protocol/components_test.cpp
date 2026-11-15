@@ -1,7 +1,7 @@
 ﻿#include <gtest/gtest.h>
 
 #include "item/components.hpp"
-#include "nbt/nbt_reader.hpp"
+#include "tag/codec.hpp"
 #include "protocol/item.hpp"
 #include "protocol/varint.hpp"
 
@@ -113,11 +113,13 @@ TEST(ItemComponentsTest, CustomNameAddsASecondComponent) {
     ASSERT_GE(out.size(), header.size());
     EXPECT_TRUE(std::equal(header.begin(), header.end(), out.begin()));
 
-    terila::nbt::Reader name_reader(std::span<const std::uint8_t>(out.data() + header.size(),
+    terila::tag::TagReader name_reader(std::span<const std::uint8_t>(out.data() + header.size(),
         out.size() - header.size()));
-    auto name_root = name_reader.read_root_compound();
+    auto name_root = name_reader.root_map();
     ASSERT_TRUE(name_root);
-    const auto* text = name_root->at("text").get_if<std::string>();
+    const auto* entry = terila::tag::at(terila::tag::TagValue(*name_root), "text");
+    ASSERT_NE(entry, nullptr);
+    const auto* text = entry->get_if<std::string>();
     ASSERT_NE(text, nullptr);
     EXPECT_EQ(*text, "Diamond Sword");
 }

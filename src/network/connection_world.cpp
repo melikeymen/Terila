@@ -91,13 +91,18 @@ namespace terila::network {
             // The client predicted a placement the server does not agree with; send the
             // real state back so the ghost block disappears instead of lingering until
             // the chunk is streamed again.
+            LOG_DEBUG(Network, "{}: placement refused, ({}, {}, {}) already holds state {}",
+                username_, target.x, target.y, target.z, existing);
             send_block_change(target, existing, sequence);
             return;
         }
 
         const auto it = item_block_state_.find(held_item_id_);
         if (it == item_block_state_.end()) {
-            LOG_DEBUG(Network, "held item {} has no block form", held_item_id_);
+            // A refused placement leaves the client with a predicted block that only goes
+            // away when the chunk is streamed again, so say why it was refused.
+            LOG_INFO(Network, "{}: placement refused, held item {} has no block form (slot {})",
+                username_, held_item_id_, carried_slot_);
             return;
         }
 
@@ -194,10 +199,24 @@ namespace terila::network {
 
         give_hotbar_item(it->second);
     }
+    // The held item is whatever the selected hotbar slot holds. The inventory is the
+    // authority in both game modes — creative only mirrors it — so a stack a player picked
+    // up, crafted or was given is seen exactly like one taken from the creative menu.
     void Connection::refresh_held_item() {
         const std::int32_t hotbar_slot = 36 + carried_slot_;
-        const auto it = creative_slots_.find(hotbar_slot);
-        held_item_id_ = (it == creative_slots_.end()) ? 0 : it->second;
+        const std::int32_t index = hotbar_slot - kFirstInventorySlot;
+
+        held_item_id_ = 0;
+        if (index >= 0 && index < kInventorySlots) {
+            const auto& slot = inventory_[static_cast<std::size_t>(index)];
+            if (slot.count > 0) {
+                held_item_id_ = slot.item_id;
+            }
+        }
+        if (held_item_id_ == 0) {
+            const auto it = creative_slots_.find(hotbar_slot);
+            held_item_id_ = (it == creative_slots_.end()) ? 0 : it->second;
+        }
         LOG_DEBUG(Network, "held item is now {} (hotbar slot {})", held_item_id_, carried_slot_);
     }
 

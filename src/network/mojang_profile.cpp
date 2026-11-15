@@ -20,6 +20,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #else
+#include <fcntl.h>
 #include <netdb.h>
 #include <sys/select.h>
 #include <sys/socket.h>
@@ -63,8 +64,8 @@ namespace terila::network {
             FD_ZERO(&set);
             FD_SET(socket, &set);
             timeval timeout{};
-            timeout.tv_sec = kTimeoutMs / 1000;
-            timeout.tv_usec = (kTimeoutMs % 1000) * 1000;
+            timeout.tv_sec = static_cast<decltype(timeout.tv_sec)>(kTimeoutMs / 1000);
+            timeout.tv_usec = static_cast<decltype(timeout.tv_usec)>((kTimeoutMs % 1000) * 1000);
             const int ready = ::select(static_cast<int>(socket) + 1,
                 writing ? nullptr : &set, writing ? &set : nullptr, nullptr, &timeout);
             return ready > 0;

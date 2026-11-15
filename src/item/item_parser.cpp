@@ -1,7 +1,6 @@
 #include "item/item_parser.hpp"
 
-#include "nbt/nbt_writer.hpp"
-#include "nbt/snbt.hpp"
+#include "tag/text.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -69,59 +68,55 @@ namespace terila::item {
             return parts;
         }
 
-        // The value is written as the named tag the client reads with NbtIo.readAnyTag:
-        // a type byte followed by the payload, with no name. The writer refuses values it
-        // cannot encode (a string over 65535 bytes, a mixed list), and that has to be an
-        // error here: a half written component would break the whole packet.
-        std::optional<std::vector<std::uint8_t>> component_nbt(const terila::nbt::NbtValue& value) {
-            terila::nbt::Writer writer(terila::nbt::StringFormat::Network);
-            writer.write_value(value);
-            auto payload = writer.finish();
-            if (payload.empty()) {
+        // The value travels as the unnamed tag the client reads back from a component:
+        // a type byte followed by the payload. A value that cannot be encoded (a string
+        // over 65535 bytes, a mixed list) is an error here, because a half written
+        // component would break the whole packet.
+        std::optional<std::vector<std::uint8_t>> component_nbt(const terila::tag::TagValue& value) {
+            auto bytes = terila::tag::encode_value(value);
+            if (bytes.empty()) {
                 return std::nullopt;
             }
-            std::vector<std::uint8_t> bytes;
-            bytes.reserve(payload.size() + 1);
-            bytes.push_back(static_cast<std::uint8_t>(value.tag()));
-            bytes.insert(bytes.end(), payload.begin(), payload.end());
             return bytes;
         }
 
         // A chat component: a plain string is the shorthand for {"text": "..."}.
-        std::optional<std::vector<std::uint8_t>> text_component_nbt(const terila::nbt::NbtValue& value) {
+        std::optional<std::vector<std::uint8_t>> text_component_nbt(const terila::tag::TagValue& value) {
             if (const auto* text = value.get_if<std::string>(); text != nullptr) {
-                terila::nbt::NbtCompound compound;
-                compound.insert_or_assign("text", terila::nbt::NbtValue(*text));
-                return component_nbt(terila::nbt::NbtValue(std::move(compound)));
+                terila::tag::TagMap compound;
+                compound.insert_or_assign("text", terila::tag::TagValue(*text));
+                return component_nbt(terila::tag::TagValue(std::move(compound)));
             }
             return component_nbt(value);
         }
 
-        bool build_enchantments(const terila::nbt::NbtValue& value, const ComponentIds& ids,
+        // The game accepts both spellings of this component: the compact map of names to
+        // levels ({sharpness:255}) and the wrapped one ({levels:{...}}). An empty map is
+        // the component with nothing in it, which is different from leaving it out.
+        bool build_enchantments(const terila::tag::TagValue& value, const ComponentIds& ids,
             Components& out, std::string& error) {
-            const auto* compound = value.get_if<terila::nbt::NbtCompound>();
+            const auto* compound = value.get_if<terila::tag::TagMap>();
             if (compound == nullptr) {
-                error = "minecraft:enchantments expects {levels:{...}}";
+                error = "minecraft:enchantments expects a map of levels";
                 return false;
             }
             out.enchantments_present = true;
             if (compound->empty()) {
                 return true;
             }
-            const auto levels = compound->find("levels");
-            if (levels == compound->end()) {
-                error = "minecraft:enchantments expects {levels:{...}}";
-                return false;
-            }
-            const auto* entries = levels->second.get_if<terila::nbt::NbtCompound>();
-            if (entries == nullptr) {
-                error = "minecraft:enchantments levels must be a compound";
-                return false;
+
+            const auto* entries = compound;
+            if (const auto* wrapped = terila::tag::at(value, "levels"); wrapped != nullptr) {
+                entries = wrapped->get_if<terila::tag::TagMap>();
+                if (entries == nullptr) {
+                    error = "minecraft:enchantments levels must be a map";
+                    return false;
+                }
             }
 
             for (const auto& [name, level] : *entries) {
-                const auto* raw = level.get_if<std::int32_t>();
-                if (raw == nullptr) {
+                const auto raw = level.as_long();
+                if (!raw.has_value()) {
                     error = std::format("enchantment level of {} is not an integer", name);
                     return false;
                 }
@@ -149,9 +144,10 @@ namespace terila::item {
                 return false;
             }
 
-            const auto value = terila::nbt::parse_snbt(trim(value_text));
+            std::string why;
+            const auto value = terila::tag::parse_tag(trim(value_text), why);
             if (!value) {
-                error = "malformed value for " + id;
+                error = "malformed value for " + id + ": " + why;
                 return false;
             }
 
@@ -188,7 +184,7 @@ namespace terila::item {
             }
             if (id == "minecraft:unbreakable") {
                 // Unit: only the presence of the component carries meaning.
-                if (value->get_if<terila::nbt::NbtCompound>() == nullptr) {
+                if (value->get_if<terila::tag::TagMap>() == nullptr) {
                     error = "minecraft:unbreakable expects {}";
                     return false;
                 }
