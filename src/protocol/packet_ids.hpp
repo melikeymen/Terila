@@ -74,6 +74,10 @@ namespace terila::protocol {
         std::int32_t play_container_set_data = -1;
         std::int32_t play_chat_command = -1;
         std::int32_t play_system_chat = -1;
+        // The command tree the client needs before it offers names and argument hints.
+        std::int32_t play_commands = -1;
+        std::int32_t play_command_suggestion = -1;
+        std::int32_t play_command_suggestions = -1;
         std::int32_t play_set_held_slot = -1;
         std::int32_t play_set_entity_data = -1;
         std::int32_t play_take_item_entity = -1;

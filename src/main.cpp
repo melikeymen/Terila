@@ -9,6 +9,7 @@
 #include "data/registry_data.hpp"
 #include "data/registry_loader.hpp"
 #include "config/server_config.hpp"
+#include "config/server_files.hpp"
 #include "protocol/packet_ids_loader.hpp"
 #include "entity/mob.hpp"
 #include "world/block_world.hpp"
@@ -70,8 +71,26 @@ int main() {
         return 7;
     }
 
+    // A first run has neither file. Write them instead of failing, and read eula.txt back
+    // so an explicit eula=false still refuses to start.
+    const fs::path properties_path = base / "server.properties";
+    const fs::path eula_path = base / "eula.txt";
+    bool properties_created = false;
+    bool eula_created = false;
+    const bool config_files_written =
+        terila::config::ensure_default_file(properties_path,
+            terila::config::kDefaultProperties, &properties_created) &&
+        terila::config::ensure_default_file(eula_path, terila::config::kDefaultEula,
+            &eula_created);
+    if (!config_files_written) {
+        std::fprintf(stderr, "cannot write server.properties or eula.txt next to %s\n",
+            base.string().c_str());
+        return 7;
+    }
+    const bool eula_ok = terila::config::eula_accepted(eula_path);
+
     terila::config::ServerConfig srv;
-    terila::config::load(srv, (base / "server.properties").string());
+    terila::config::load(srv, properties_path.string());
 
     terila::log::Config cfg;
     if (auto lvl = terila::log::parse_level(srv.log_level)) cfg.min_level = *lvl;
@@ -85,6 +104,19 @@ int main() {
     terila::log::init(cfg);
 
     LOG_INFO(Main, "server starting");
+    if (properties_created) {
+        LOG_INFO(Config, "server.properties was missing, wrote the defaults to {}",
+            properties_path.string());
+    }
+    if (eula_created) {
+        LOG_INFO(Config, "eula.txt was missing, wrote it with eula=true ({})",
+            eula_path.string());
+    }
+    if (!eula_ok) {
+        LOG_FATAL(Config, "eula.txt says eula=false — accepting the Minecraft EULA is required "
+            "to run the server; set eula=true and start again");
+        return 8;
+    }
     LOG_DEBUG(Main, "config: bind={} port={} log_level={} log_exit_level={} online_mode={} network_encryption={} view_distance={} simulation_distance={} level_type={}",
         srv.bind_address, srv.port, srv.log_level, srv.log_exit_level, srv.online_mode,
         srv.network_encryption, srv.view_distance, srv.simulation_distance, srv.level_type);
@@ -184,6 +216,8 @@ int main() {
     terila::data::load_item_ids(data.item_ids, in + "/items/minecraft.json");
     terila::data::load_data_component_ids(data.component_ids,
         in + "/registries/dump/minecraft/data_component_type.json");
+    terila::data::load_command_argument_types(data.command_argument_types,
+        in + "/registries/dump/minecraft/command_argument_type.json");
     terila::data::load_enchantment_ids(data.enchantment_ids,
         in + "/registries/dump/minecraft/enchantment.json");
 

@@ -1,5 +1,7 @@
 ﻿#include "network/connection.hpp"
 
+#include "protocol/command_tree.hpp"
+
 #include "protocol/login.hpp"
 #include "protocol/packet.hpp"
 #include "protocol/packet_ids.hpp"
@@ -168,6 +170,30 @@ namespace terila::network {
             // Permissions, the starting gamemode and matching abilities (flight for
             // creative and spectator) before the first chunk arrives.
             send_gamemode_state();
+
+            // Without the tree the client shows no command list at all: a bare "/" lists
+            // nothing and every word the player types is flagged as unknown. The tree is
+            // built from the commands this server actually runs, because the dump in
+            // input/commands is not a tree the client accepts (it cycles).
+            {
+                // brigadier:string, resolved from the same registry dump the client uses;
+                // 5 is its id in every version that has the parser at all.
+                const auto it = data_.command_argument_types.find("brigadier:string");
+                const auto string_parser = it == data_.command_argument_types.end() ? 5 : it->second;
+
+                const auto nodes = terila::protocol::builtin_command_tree(string_parser);
+                const auto tree = terila::protocol::write_command_tree(nodes, 0);
+                if (!tree.empty() &&
+                    terila::protocol::write_packet(out, ids.play_commands, tree)) {
+                    send(out);
+                    out.clear();
+                    LOG_DEBUG(Protocol, "command tree sent: {} nodes, {} bytes",
+                        nodes.size(), tree.size());
+                }
+                else {
+                    LOG_ERROR(Protocol, "commands packet failed ({} nodes)", nodes.size());
+                }
+            }
 
             state_ = State::Play;
             joined_ = true;

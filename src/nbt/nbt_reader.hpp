@@ -2,6 +2,7 @@
 
 #include "nbt/nbt_value.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -32,6 +33,7 @@ public:
     std::size_t position() const noexcept { return pos_; }
 
     std::optional<NbtCompound> read_root_compound() {
+        nodes_ = 0;
         const auto old = pos_;
         std::uint8_t raw{};
         if (!read_u8(raw) || raw != static_cast<std::uint8_t>(Tag::Compound)) return fail<NbtCompound>(old);
@@ -45,6 +47,7 @@ public:
     }
 
     std::optional<NamedTag> read_named_tag() {
+        if (depth_ == 0) nodes_ = 0;
         const auto old = pos_;
         std::uint8_t raw{};
         if (!read_u8(raw) || raw == 0 || raw > 12) return fail<NamedTag>(old);
@@ -58,6 +61,9 @@ public:
     std::optional<NbtValue> read_payload(Tag type) {
         const auto old = pos_;
         if (depth_ >= 256) { pos_ = old; return std::nullopt; }
+        // One input byte can create a whole NbtValue, so a 16 MB list asked for gigabytes.
+        // The budget bounds the total allocation, not the input size.
+        if (++nodes_ > kMaxNodes) { pos_ = old; return std::nullopt; }
         struct DepthGuard { std::size_t& depth; explicit DepthGuard(std::size_t& value) : depth(value) { ++depth; } ~DepthGuard() { --depth; } } guard(depth_);
         if (type == Tag::End) return fail<NbtValue>(old);
         NbtValue result;
@@ -91,26 +97,35 @@ public:
         case Tag::ByteArray: {
             auto count = read_count(); if (!count || !has(*count)) return fail<NbtValue>(old);
             NbtByteArray values; values.reserve(*count);
-            for (std::size_t i = 0; i < *count; ++i) { read_u8(byte); values.push_back(static_cast<std::int8_t>(byte)); }
+            for (std::size_t i = 0; i < *count; ++i) {
+                if (!read_u8(byte)) return fail<NbtValue>(old);
+                values.push_back(static_cast<std::int8_t>(byte));
+            }
             result = NbtValue(std::move(values)); break;
         }
         case Tag::IntArray: {
             auto count = read_count(); if (!count || *count > remaining() / 4) return fail<NbtValue>(old);
             NbtIntArray values; values.reserve(*count);
-            for (std::size_t i = 0; i < *count; ++i) { read_be(int_value); values.push_back(static_cast<std::int32_t>(int_value)); }
+            for (std::size_t i = 0; i < *count; ++i) {
+                if (!read_be(int_value)) return fail<NbtValue>(old);
+                values.push_back(static_cast<std::int32_t>(int_value));
+            }
             result = NbtValue(std::move(values)); break;
         }
         case Tag::LongArray: {
             auto count = read_count(); if (!count || *count > remaining() / 8) return fail<NbtValue>(old);
             NbtLongArray values; values.reserve(*count);
-            for (std::size_t i = 0; i < *count; ++i) { read_be(long_value); values.push_back(static_cast<std::int64_t>(long_value)); }
+            for (std::size_t i = 0; i < *count; ++i) {
+                if (!read_be(long_value)) return fail<NbtValue>(old);
+                values.push_back(static_cast<std::int64_t>(long_value));
+            }
             result = NbtValue(std::move(values)); break;
         }
         case Tag::List: {
             std::uint8_t elem_raw{}; if (!read_u8(elem_raw) || elem_raw > 12) return fail<NbtValue>(old);
             auto count = read_count(); if (!count || (elem_raw == 0 && *count != 0)) return fail<NbtValue>(old);
             if (*count > remaining()) return fail<NbtValue>(old);
-            NbtList values; values.reserve(*count);
+            NbtList values; values.reserve(std::min(*count, kMaxNodes));
             for (std::size_t i = 0; i < *count; ++i) {
                 auto item = read_payload(static_cast<Tag>(elem_raw)); if (!item) return fail<NbtValue>(old);
                 values.push_back(std::move(*item));
@@ -127,10 +142,14 @@ public:
     }
 
 private:
+    // 1M values is a few tens of megabytes at worst and far more than any real payload.
+    static constexpr std::size_t kMaxNodes = 1'000'000;
+
     std::span<const std::uint8_t> data_;
     StringFormat format_;
     std::size_t pos_{};
     std::size_t depth_{};
+    std::size_t nodes_{};
 
     std::size_t remaining() const noexcept { return data_.size() - pos_; }
     bool has(std::size_t count) const noexcept { return count <= remaining(); }

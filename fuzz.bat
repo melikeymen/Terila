@@ -1,9 +1,10 @@
-@echo off
-rem Fuzzes the byte-facing parsers. The first word picks the target (trf, protocol, chunk
-rem or all); everything else goes to libFuzzer unchanged:
+﻿@echo off
+rem Fuzzes the byte-facing parsers. The first word picks the target (trf, protocol, chunk,
+rem nbt or all); everything else goes to libFuzzer unchanged:
 rem   fuzz.bat                                        trf, one worker, 60 seconds
 rem   fuzz.bat protocol -jobs=4 -workers=4
 rem   fuzz.bat chunk -runs=2000 -print_final_stats=1
+rem   fuzz.bat nbt -max_total_time=120
 rem   fuzz.bat all -max_total_time=120
 rem Crashes, timeouts and leaks are written to out\fuzz-corpus\<target>\crashes.
 rem %* is used for the arguments because %1 is split at '=' by cmd, which would turn
@@ -16,6 +17,7 @@ set "TARGET_WORD="
 if /i "%~1"=="trf"      set "TARGET_WORD=trf"
 if /i "%~1"=="protocol" set "TARGET_WORD=protocol"
 if /i "%~1"=="chunk"    set "TARGET_WORD=chunk"
+if /i "%~1"=="nbt"      set "TARGET_WORD=nbt"
 if /i "%~1"=="all"      set "TARGET_WORD=all"
 
 if defined TARGET_WORD (
@@ -30,6 +32,8 @@ if /i "%TARGET%"=="all" (
     call "%~f0" protocol %ARGS%
     if errorlevel 1 set "FUZZ_FAILED=1"
     call "%~f0" chunk %ARGS%
+    if errorlevel 1 set "FUZZ_FAILED=1"
+    call "%~f0" nbt %ARGS%
     if errorlevel 1 set "FUZZ_FAILED=1"
     if defined FUZZ_FAILED (
         echo.
@@ -80,5 +84,6 @@ if /i "%ARGS%"=="%TARGET_WORD%" (
 if /i "%TARGET_WORD%"=="trf"      set "ARGS=%ARGS:*trf =%"
 if /i "%TARGET_WORD%"=="protocol" set "ARGS=%ARGS:*protocol =%"
 if /i "%TARGET_WORD%"=="chunk"    set "ARGS=%ARGS:*chunk =%"
+if /i "%TARGET_WORD%"=="nbt"      set "ARGS=%ARGS:*nbt =%"
 if /i "%TARGET_WORD%"=="all"      set "ARGS=%ARGS:*all =%"
 exit /b 0

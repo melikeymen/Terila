@@ -89,6 +89,12 @@ namespace terila::data {
 		LOG_DEBUG(Data, "data component ids: {} entries", out.size());
 	}
 
+	// The command tree has to name its arguments with the parser ids of this exact
+	// version, so they are read from the registry dump instead of being hardcoded.
+	inline void load_command_argument_types(std::unordered_map<std::string, std::int32_t>& out, const std::string& path) {
+		load_data_component_ids(out, path);
+	}
+
 	inline void load_enchantment_ids(std::unordered_map<std::string, std::int32_t>& out, const std::string& path) {
 		std::ifstream f(path);
 		if (!f) {

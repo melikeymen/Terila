@@ -205,6 +205,8 @@ add_executable(protocol_tests
     "tests/protocol/entity_test.cpp"
     "tests/protocol/block_test.cpp"
     "tests/protocol/player_info_test.cpp"
+    "tests/protocol/nbt_reader_test.cpp"
+    "tests/protocol/command_tree_test.cpp"
     "src/log/logger.cpp"
 )
 

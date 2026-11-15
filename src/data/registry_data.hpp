@@ -37,6 +37,8 @@ namespace terila::data {
         std::unordered_map<std::string, std::int32_t> item_ids;
         std::unordered_map<std::string, std::int32_t> component_ids;
         std::unordered_map<std::string, std::int32_t> enchantment_ids;
+        // minecraft:command_argument_type, needed to describe arguments in the command tree.
+        std::unordered_map<std::string, std::int32_t> command_argument_types;
         DimensionInfo overworld;
 
     };
