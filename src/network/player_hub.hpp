@@ -44,7 +44,9 @@ namespace terila::network {
         std::size_t count() const { return players_.size(); }
 
         void join(std::int32_t entity_id, const std::array<std::uint8_t, 16>& uuid,
-            std::string name, int gamemode, const Position& position, Sender sender)
+            std::string name, int gamemode,
+            const std::vector<protocol::ProfileProperty>& properties,
+            const Position& position, Sender sender)
         {
             if (players_.find(entity_id) != players_.end()) {
                 return;
@@ -54,6 +56,7 @@ namespace terila::network {
             member.uuid = uuid;
             member.name = name;
             member.gamemode = gamemode;
+            member.properties = properties;
             member.position = position;
             member.send = std::move(sender);
             players_.emplace(entity_id, std::move(member));
@@ -64,7 +67,7 @@ namespace terila::network {
             for_newcomer.reserve(players_.size());
             for (const auto& [id, other] : players_) {
                 for_newcomer.push_back(protocol::PlayerListEntry{
-                    other.uuid, other.name, other.gamemode, 0, true });
+                    other.uuid, other.name, other.gamemode, 0, true, other.properties });
             }
 
             std::vector<std::uint8_t> packet;
@@ -79,7 +82,7 @@ namespace terila::network {
             for (const auto other_id : others) {
                 std::vector<std::uint8_t> info;
                 const std::vector<protocol::PlayerListEntry> entry{
-                    protocol::PlayerListEntry{ uuid, name, gamemode, 0, true } };
+                    protocol::PlayerListEntry{ uuid, name, gamemode, 0, true, properties } };
                 if (protocol::write_player_info_add(info, entry)) {
                     send_to(other_id, info);
                 }
@@ -137,6 +140,7 @@ namespace terila::network {
             std::array<std::uint8_t, 16> uuid{};
             std::string name;
             int gamemode = 0;
+            std::vector<protocol::ProfileProperty> properties;
             Position position;
             Sender send;
         };

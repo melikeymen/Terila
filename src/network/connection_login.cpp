@@ -1,5 +1,7 @@
 ﻿#include "network/connection.hpp"
 
+#include "network/mojang_profile.hpp"
+
 #include "protocol/command_tree.hpp"
 
 #include "protocol/login.hpp"
@@ -24,19 +26,27 @@ namespace terila::network {
                 return;
             }
 
-            const auto uuid = terila::protocol::offline_uuid(result->username);
+            // The real UUID of an account cannot be derived from its name, so it is asked
+            // for; the offline UUID only stands in when there is no account to ask about.
+            const auto profile = terila::network::lookup_mojang_profile(result->username);
+            const auto uuid = profile.found
+                ? profile.uuid
+                : terila::protocol::offline_uuid(result->username);
             uuid_ = uuid;
+            profile_properties_ = profile.properties;
             std::array<std::uint8_t, 16> session_id{};
-            username_ = result->username;
+            username_ = profile.found && !profile.name.empty() ? profile.name
+                : result->username;
 
             // One line per attempt: who is connecting, from where, with which identity.
-            LOG_INFO(Network, "{}[/{}] logging in (uuid {})", username_, remote_,
-                terila::protocol::uuid_to_string(uuid));
+            LOG_INFO(Network, "{}[/{}] logging in (uuid {}, {})", username_, remote_,
+                terila::protocol::uuid_to_string(uuid),
+                profile.found ? "account" : "offline identity");
 
             std::vector<std::uint8_t> out;
 
-            if (!terila::protocol::write_login_success(out, result->username, uuid, session_id)) {
-                LOG_ERROR(Network, "write_login_success failed for username={}", result->username);
+            if (!terila::protocol::write_login_success(out, username_, uuid, session_id)) {
+                LOG_ERROR(Network, "write_login_success failed for username={}", username_);
                 close();
                 return;
             }
@@ -212,7 +222,7 @@ namespace terila::network {
             queue_chunk_area(center_cx_, center_cz_);
             if (hub_) {
                 const auto weak_self = weak_from_this();
-                hub_->join(entity_id_, uuid_, username_, gamemode_,
+                hub_->join(entity_id_, uuid_, username_, gamemode_, profile_properties_,
                     PlayerHub::Position{ player_x_, player_y_, player_z_, yaw_, pitch_ },
                     [weak_self](const std::vector<std::uint8_t>& packet) {
                         if (const auto connection = weak_self.lock()) {

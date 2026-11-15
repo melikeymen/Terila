@@ -22,12 +22,22 @@ namespace terila::protocol {
     // reader walks the set, not the entry fields.
     inline constexpr std::int32_t kPlayerInfoAddBits = 0x1D;   // 0,2,3,4
 
+    // One game profile property. The "textures" one carries the skin: its value is the
+    // base64 texture blob and the signature is what makes the client trust it.
+    struct ProfileProperty {
+        std::string name;
+        std::string value;
+        std::string signature;
+        bool signed_value = false;
+    };
+
     struct PlayerListEntry {
         std::array<std::uint8_t, 16> uuid{};
         std::string name;
         std::int32_t gamemode = 0;
         std::int32_t latency = 0;
         bool listed = true;
+        std::vector<ProfileProperty> properties;
     };
 
     inline void write_player_info_entry(std::vector<std::uint8_t>& payload,
@@ -35,9 +45,18 @@ namespace terila::protocol {
     {
         payload.insert(payload.end(), entry.uuid.begin(), entry.uuid.end());
 
-        // ADD_PLAYER: name, then the profile property list.
+        // ADD_PLAYER: name, then the profile property list (count, then per property
+        // name, value and an optional signature), which is where the skin lives.
         write_string(payload, entry.name);
-        write_varint(payload, 0);
+        write_varint(payload, static_cast<std::int32_t>(entry.properties.size()));
+        for (const auto& property : entry.properties) {
+            write_string(payload, property.name);
+            write_string(payload, property.value);
+            payload.push_back(property.signed_value ? 1 : 0);
+            if (property.signed_value) {
+                write_string(payload, property.signature);
+            }
+        }
 
         // UPDATE_GAME_MODE, UPDATE_LISTED, UPDATE_LATENCY, in ordinal order.
         write_varint(payload, entry.gamemode);

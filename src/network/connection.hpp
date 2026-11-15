@@ -327,6 +327,8 @@ namespace terila::network {
         terila::world::WorldType world_type_ = terila::world::WorldType::Terrain;
         terila::item::ComponentIds component_ids_{};
         std::array<std::uint8_t, 16> uuid_{};
+        // The signed skin properties of the account, sent with its player list entries.
+        std::vector<protocol::ProfileProperty> profile_properties_;
         float yaw_ = 0.0f;
         float pitch_ = 0.0f;
         int gamemode_ = 1;

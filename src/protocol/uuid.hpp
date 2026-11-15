@@ -6,7 +6,9 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
 
 namespace terila::protocol {
 
@@ -34,6 +36,38 @@ namespace terila::protocol {
         digest[6] = static_cast<std::uint8_t>((digest[6] & 0x0F) | 0x30);
         digest[8] = static_cast<std::uint8_t>((digest[8] & 0x3F) | 0x80);
         return digest;
+    }
+
+    // Parses the 32 hex digits the account services return; dashes are optional.
+    inline std::optional<std::array<std::uint8_t, 16>> uuid_from_hex(std::string_view hex) {
+        std::array<std::uint8_t, 16> out{};
+        std::size_t written = 0;
+        int high = -1;
+        for (const char c : hex) {
+            if (c == '-') {
+                continue;
+            }
+            const int digit = (c >= '0' && c <= '9') ? c - '0'
+                : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+                : (c >= 'A' && c <= 'F') ? c - 'A' + 10
+                : -1;
+            if (digit < 0) {
+                return std::nullopt;
+            }
+            if (high < 0) {
+                high = digit;
+                continue;
+            }
+            if (written >= out.size()) {
+                return std::nullopt;
+            }
+            out[written++] = static_cast<std::uint8_t>((high << 4) | digit);
+            high = -1;
+        }
+        if (written != out.size() || high >= 0) {
+            return std::nullopt;
+        }
+        return out;
     }
 
     inline std::string uuid_to_string(const std::array<std::uint8_t, 16>& uuid) {

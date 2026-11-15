@@ -56,6 +56,8 @@ target_sources(terila PRIVATE
     "src/data/recipe_book.cpp"
     "src/network/connection_entities.cpp"
     "src/network/player_hub.hpp"
+    "src/network/mojang_profile.hpp"
+    "src/network/mojang_profile.cpp"
     "src/protocol/login.hpp"
     "src/data/registry_data.hpp"
     "src/data/registry_loader.hpp"
@@ -190,7 +192,11 @@ function(terila_copy_runtime target)
     endif()
 endfunction()
 
-target_link_libraries(terila PRIVATE nlohmann_json::nlohmann_json simdjson::simdjson terila_asio OpenSSL::Crypto)
+target_link_libraries(terila PRIVATE nlohmann_json::nlohmann_json simdjson::simdjson terila_asio OpenSSL::Crypto OpenSSL::SSL)
+if (WIN32)
+    # The account lookup opens plain TLS sockets of its own.
+    target_link_libraries(terila PRIVATE ws2_32)
+endif()
 
 
 
