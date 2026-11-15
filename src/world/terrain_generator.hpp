@@ -1,6 +1,7 @@
 #pragma once
 
 #include "world/chunk.hpp"
+#include "world/light_engine.hpp"
 #include "log/logger.hpp"
 
 #include <algorithm>
@@ -111,6 +112,11 @@ namespace terila::world::terrain {
     // generated one and the overlay only stores real edits.
     class Generator {
     public:
+        // One column of the heightmap: the surface height and the biome that paints it.
+        struct Column {
+            int height = 0;
+            int biome = 0;
+        };
         bool init(int min_y, int section_count, std::uint32_t seed,
             const IdResolver& block, const IdResolver& biome) {
             min_y_ = min_y;
@@ -181,6 +187,17 @@ namespace terila::world::terrain {
             add("minecraft:deep_ocean", blocks_.gravel, blocks_.stone, blocks_.stone,
                 0, 0, 0, 0, false);
 
+            // Light properties of the blocks this generator places. Everything not listed
+            // stays opaque: no light passes and none is emitted.
+            light_rules_ = LightRules{};
+            light_rules_.set(blocks_.air, LightBlock{ 0, 0, true });
+            light_rules_.set(blocks_.water, LightBlock{ 0, 1, false });
+            light_rules_.set(blocks_.snow, LightBlock{ 0, 0, true });   // the thin layer
+            for (const auto leaves : { blocks_.oak_leaves, blocks_.spruce_leaves,
+                blocks_.acacia_leaves }) {
+                light_rules_.set(leaves, LightBlock{ 0, 1, false });
+            }
+
             ready_ = complete && biomes_.size() == kBiomeCount;
             return ready_;
         }
@@ -197,7 +214,105 @@ namespace terila::world::terrain {
         }
 
         std::int32_t state_at(std::int32_t x, std::int32_t y, std::int32_t z) const {
-            const Column col = column(x, z);
+            return state_at_with(x, y, z, [this](std::int32_t cx, std::int32_t cz) {
+                return column(cx, cz);
+            });
+        }
+
+        using ColumnCache = std::unordered_map<std::uint64_t, Column>;
+
+        // The light engine asks for thousands of single blocks per chunk, and every one of
+        // them would otherwise rebuild the noise field of its whole 5x5 plant
+        // neighbourhood, so the columns are cached for the duration of one chunk.
+        std::int32_t state_at(std::int32_t x, std::int32_t y, std::int32_t z,
+            ColumnCache& cache) const {
+            return state_at_with(x, y, z, [this, &cache](std::int32_t cx, std::int32_t cz) {
+                const auto key = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(cx)) << 32) |
+                    static_cast<std::uint32_t>(cz);
+                const auto found = cache.find(key);
+                if (found != cache.end()) {
+                    return found->second;
+                }
+                const Column created = column(cx, cz);
+                cache.emplace(key, created);
+                return created;
+            });
+        }
+
+        // The y of the block that keeps the sky out of a column: the surface, the water above
+        // a flooded floor, or the highest leaf of a tree leaning into the column. Snow is
+        // left out on purpose, it lets sunlight straight through. The light engine reads it
+        // for the chunk and its whole 15 block halo, so it stays free of per-cell work.
+        int sky_top(std::int32_t x, std::int32_t z) const {
+            return sky_top_with(x, z, [this](std::int32_t cx, std::int32_t cz) {
+                return column(cx, cz);
+            });
+        }
+
+        int sky_top(std::int32_t x, std::int32_t z, ColumnCache& cache) const {
+            return sky_top_with(x, z, [this, &cache](std::int32_t cx, std::int32_t cz) {
+                const auto key = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(cx)) << 32) |
+                    static_cast<std::uint32_t>(cz);
+                const auto found = cache.find(key);
+                if (found != cache.end()) {
+                    return found->second;
+                }
+                const Column created = column(cx, cz);
+                cache.emplace(key, created);
+                return created;
+            });
+        }
+
+        template<class ColumnFn>
+        int sky_top_with(std::int32_t x, std::int32_t z, ColumnFn&& get_column) const {
+            const Column col = get_column(x, z);
+            int top = std::max(col.height, sea_level_ > col.height ? sea_level_ : col.height);
+
+            for (std::int32_t tz = z - 2; tz <= z + 2; ++tz) {
+                for (std::int32_t tx = x - 2; tx <= x + 2; ++tx) {
+                    const Column plant = get_column(tx, tz);
+                    const Biome& biome = biomes_[static_cast<std::size_t>(plant.biome)];
+                    if (plant.height <= sea_level_ || plant.height > sea_level_ + 40) {
+                        continue;
+                    }
+                    const int dx = x - tx;
+                    const int dz = z - tz;
+                    const int distance = std::abs(dx) + std::abs(dz);
+                    const bool trunk_column = dx == 0 && dz == 0;
+
+                    if (biome.tree_chance > 0 &&
+                        detail::hash3(tx, tz, kFeatureSeed) % static_cast<std::uint32_t>(
+                            biome.tree_chance) == 0) {
+                        const int trunk = 4 + static_cast<int>(
+                            detail::hash3(tx, tz, kFeatureSeed + 1) % 3);
+                        if (trunk_column) {
+                            top = std::max(top, plant.height + trunk);
+                        }
+                        for (int dy = trunk + 1; dy >= trunk - 2; --dy) {
+                            const bool inside_trunk = trunk_column && dy <= trunk;
+                            if (distance <= 3 && !inside_trunk &&
+                                !(dy == trunk + 1 && distance > 1)) {
+                                top = std::max(top, plant.height + dy);
+                                break;
+                            }
+                        }
+                    }
+                    if (biome.cactus_chance > 0 &&
+                        detail::hash3(tx, tz, kFeatureSeed + 2) % static_cast<std::uint32_t>(
+                            biome.cactus_chance) == 0 && trunk_column) {
+                        const int height = 1 + static_cast<int>(
+                            detail::hash3(tx, tz, kFeatureSeed + 3) % 3);
+                        top = std::max(top, plant.height + height);
+                    }
+                }
+            }
+            return top;
+        }
+
+        template<class ColumnFn>
+        std::int32_t state_at_with(std::int32_t x, std::int32_t y, std::int32_t z,
+            ColumnFn&& get_column) const {
+            const Column col = get_column(x, z);
             const Biome& biome = biomes_[static_cast<std::size_t>(col.biome)];
 
             if (y < min_y_ || y >= min_y_ + section_count_ * 16) {
@@ -233,7 +348,7 @@ namespace terila::world::terrain {
             // same order over the terrain, so the last match is the visible block.
             for (std::int32_t tz = z - 2; tz <= z + 2; ++tz) {
                 for (std::int32_t tx = x - 2; tx <= x + 2; ++tx) {
-                    const Column plant = column(tx, tz);
+                    const Column plant = get_column(tx, tz);
                     const Biome& plant_biome = biomes_[static_cast<std::size_t>(plant.biome)];
                     if (plant.height <= sea_level_ || plant.height > sea_level_ + 40) {
                         continue;
@@ -491,82 +606,21 @@ namespace terila::world::terrain {
                 }
             }
 
-            // Sky light: full above the highest solid block of each column, dark below.
-            std::array<int, 256> top_solid{};
-            for (int lz = 0; lz < 16; ++lz) {
-                for (int lx = 0; lx < 16; ++lx) {
-                    int top = min_y_ - 1;
-                    for (int y = min_y_ + world_height - 1; y >= min_y_; --y) {
-                        const auto state = blocks[static_cast<std::size_t>(y - min_y_) * 256 +
-                            static_cast<std::size_t>(lz) * 16 + static_cast<std::size_t>(lx)];
-                        if (state != blocks_.air && state != blocks_.water) {
-                            top = y;
-                            break;
-                        }
-                    }
-                    top_solid[static_cast<std::size_t>(lz * 16 + lx)] = top;
-                }
+            // Real light propagation, not a column guess: sunlight falls from the sky
+            // and spreads sideways into caves and under overhangs, water and leaves
+            // cost a level per block, and every light source floods outwards. The
+            // neighbouring columns come from the same generator, so the light along a
+            // chunk border matches what the chunk on the other side computes.
+            {
+                ColumnCache columns;
+                const auto sample = [&](std::int32_t wx, std::int32_t wy, std::int32_t wz) {
+                    return state_at(wx, wy, wz, columns);
+                };
+                const auto top = [this, &columns](std::int32_t wx, std::int32_t wz) {
+                    return sky_top(wx, wz, columns);
+                };
+                LightEngine::compute(chunk, light_rules_, top, sample);
             }
-
-            int min_top = *std::min_element(top_solid.begin(), top_solid.end());
-            int max_top = *std::max_element(top_solid.begin(), top_solid.end());
-
-            std::vector<std::int64_t> sky_mask(1 + (static_cast<std::size_t>(section_count_) + 1) / 64, 0);
-            std::vector<std::int64_t> empty_sky_mask = sky_mask;
-
-            const auto set_bit = [](std::vector<std::int64_t>& mask, int bit) {
-                mask[static_cast<std::size_t>(bit / 64)] |= (1LL << (bit % 64));
-            };
-
-            for (int sy = 0; sy < section_count_; ++sy) {
-                const int section_bottom = min_y_ + sy * 16;
-                const int section_top = section_bottom + 15;
-
-                if (section_bottom > max_top) {
-                    set_bit(empty_sky_mask, sy + 1);
-                    continue;
-                }
-                if (section_top <= min_top) {
-                    continue;
-                }
-
-                std::vector<std::uint8_t> sky(2048, 0);
-                for (int y = 0; y < 16; ++y) {
-                    for (int z = 0; z < 16; ++z) {
-                        for (int x = 0; x < 16; ++x) {
-                            const int world_y = section_bottom + y;
-                            if (world_y <= top_solid[static_cast<std::size_t>(z * 16 + x)]) {
-                                continue;
-                            }
-                            const int index = (y * 16 + z) * 16 + x;
-                            const auto byte_index = static_cast<std::size_t>(index / 2);
-                            if (index % 2 == 0) {
-                                sky[byte_index] |= 0x0F;
-                            }
-                            else {
-                                sky[byte_index] |= 0xF0;
-                            }
-                        }
-                    }
-                }
-                set_bit(sky_mask, sy + 1);
-                chunk.light.sky_updates.push_back(std::move(sky));
-            }
-
-            chunk.light.sky_y_mask = sky_mask;
-            chunk.light.empty_sky_y_mask = empty_sky_mask;
-            if (!chunk.light.sky_updates.empty()) {
-                chunk.light.sky_y_mask.push_back(0);   // keep masks long-aligned only
-            }
-
-            // No block light anywhere.
-            std::vector<std::int64_t> block_mask(sky_mask.size(), 0);
-            std::vector<std::int64_t> empty_block_mask(sky_mask.size(), 0);
-            for (int sy = 0; sy < section_count_; ++sy) {
-                set_bit(empty_block_mask, sy + 1);
-            }
-            chunk.light.block_y_mask = block_mask;
-            chunk.light.empty_block_y_mask = empty_block_mask;
 
             return chunk;
         }
@@ -574,11 +628,6 @@ namespace terila::world::terrain {
     private:
         static constexpr std::size_t kBiomeCount = 10;
         static constexpr std::uint32_t kFeatureSeed = 0x7E41A5u;
-
-        struct Column {
-            int height = 0;
-            int biome = 0;
-        };
 
         Column column(std::int32_t x, std::int32_t z) const {
             const float fx = static_cast<float>(x);
@@ -651,6 +700,7 @@ namespace terila::world::terrain {
         }
 
         Blocks blocks_{};
+        LightRules light_rules_{};
         std::vector<Biome> biomes_;
         int min_y_ = -64;
         int section_count_ = 24;

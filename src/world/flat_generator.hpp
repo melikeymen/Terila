@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "world/chunk.hpp"
+#include "world/light_engine.hpp"
 #include "log/logger.hpp"
 
 #include <cstdint>
@@ -129,30 +130,24 @@ namespace terila::world::flat {
         }
         bottom.block_count = static_cast<std::uint16_t>(non_air);
 
-        // Light mask bit i addresses section i-1: bit 0 is the section below the world.
-        const int n = spec.section_count;
-        c.light.sky_y_mask = { 6LL };                              // bits 1,2 = sections 0,1
-
-        // Section 0 holds the terrain, so only the blocks at or above the surface
-        // see the sky; filling it with 0xFF would light up the underground.
-        std::vector<std::uint8_t> bottom_sky(2048, 0);
-        for (int y = grass_local_y; y < 16; ++y) {
-            for (int z = 0; z < 16; ++z) {
-                for (int x = 0; x < 16; ++x) {
-                    const int index = (y * 16 + z) * 16 + x;
-                    const auto byte_index = static_cast<std::size_t>(index / 2);
-                    if (index % 2 == 0) bottom_sky[byte_index] |= 0x0F;
-                    else                bottom_sky[byte_index] |= 0xF0;
-                }
-            }
+        // Sky light comes from the real engine: the flat world is a full column of
+        // open sky down to the grass, so every air block above it is lit and the
+        // ground itself stays dark, exactly as the game would compute it.
+        {
+            LightRules rules;
+            rules.set(air_id, LightBlock{ 0, 0, true });
+            const auto sample = [&](std::int32_t, std::int32_t wy, std::int32_t) {
+                const int local = wy - c.min_y;
+                if (local == 0) return bedrock_id;
+                if (local <= spec.dirt_layers) return dirt_id;
+                if (local == grass_local_y) return grass_id;
+                return air_id;
+            };
+            const auto top = [grass_local_y](std::int32_t, std::int32_t) {
+                return grass_local_y;
+            };
+            LightEngine::compute(c, rules, top, sample);
         }
-        c.light.sky_updates = { bottom_sky, std::vector<std::uint8_t>(2048, 0xFF) };
-        c.light.empty_sky_y_mask = { (1LL << (n + 1)) - 8LL };     // bits 3..n = sections 2..n-1
-
-        // No block light anywhere
-        c.light.block_y_mask.clear();
-        c.light.block_updates.clear();
-        c.light.empty_block_y_mask = { (1LL << (n + 1)) - 2LL };   // bits 1..n
 
         return c;
     }

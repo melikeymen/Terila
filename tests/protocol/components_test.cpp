@@ -51,7 +51,10 @@ TEST(ItemComponentsTest, EfficiencyPatchCarriesTheLevel) {
     const std::unordered_map<std::string, std::int32_t> enchantment_registry{
         { "minecraft:efficiency", 5 }
     };
-    ComponentIds ids{ 13, 6, &enchantment_registry };
+    ComponentIds ids;
+    ids.enchantments = 13;
+    ids.custom_name = 6;
+    ids.enchantment_registry = &enchantment_registry;
 
     std::vector<std::uint8_t> out;
     terila::protocol::write_item_stack(out, 1050, 1, &components, &ids);
@@ -98,7 +101,10 @@ TEST(ItemComponentsTest, CustomNameAddsASecondComponent) {
     const std::unordered_map<std::string, std::int32_t> enchantment_registry{
         { "minecraft:sharpness", 9 }
     };
-    const ComponentIds ids{ 13, 6, &enchantment_registry };
+    ComponentIds ids;
+    ids.enchantments = 13;
+    ids.custom_name = 6;
+    ids.enchantment_registry = &enchantment_registry;
 
     std::vector<std::uint8_t> out;
     terila::protocol::write_item_stack(out, 1050, 1, &components, &ids);

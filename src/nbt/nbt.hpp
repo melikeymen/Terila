@@ -1,6 +1,8 @@
 ﻿#pragma once
 
+#include "nbt/nbt_reader.hpp"
 #include "nbt/nbt_writer.hpp"
+#include "nbt/snbt.hpp"
 
 #include <cstdint>
 #include <string_view>

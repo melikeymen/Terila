@@ -1,5 +1,6 @@
 #pragma once
 
+#include "protocol/primitives.hpp"
 #include "protocol/string.hpp"
 #include "protocol/varint.hpp"
 
@@ -65,37 +66,46 @@ namespace terila::protocol {
         return properties;
     }
 
+    // brigadier:integer properties: a flag byte (bit 0 min, bit 1 max) then the bounds.
+    inline std::vector<std::uint8_t> integer_properties(std::int32_t min, bool has_max,
+        std::int32_t max) {
+        std::vector<std::uint8_t> properties;
+        properties.push_back(static_cast<std::uint8_t>(has_max ? 0x03 : 0x01));
+        terila::protocol::write_int32(properties, min);
+        if (has_max) {
+            terila::protocol::write_int32(properties, max);
+        }
+        return properties;
+    }
+
     // The commands this server runs, in the order the login handler sends them:
-    //   /give <item>      /enchant <text>
-    // Both take the rest of the line, so a component patch such as
-    // diamond_sword[minecraft:unbreakable={}] stays one argument.
-    inline std::vector<CommandNode> builtin_command_tree(std::int32_t string_parser) {
-        std::vector<CommandNode> nodes(5);
+    //   /give <item> [count]
+    // The item argument uses minecraft:item_stack, the parser /give uses in the game, so
+    // the client completes item ids and validates the component patch it is given.
+    inline std::vector<CommandNode> builtin_command_tree(std::int32_t item_stack_parser,
+        std::int32_t integer_parser) {
+        std::vector<CommandNode> nodes(4);
 
         // The client casts the resolved root to RootCommandNode, so node 0 must be the
         // stub-less root type; as a literal the cast fails after a successful decode.
         nodes[0].kind = CommandNode::Root;
-        nodes[0].children = { 1, 2 };
+        nodes[0].children = { 1 };
 
         nodes[1].kind = CommandNode::Literal;
         nodes[1].name = "give";
-        nodes[1].children = { 3 };
+        nodes[1].children = { 2 };
 
-        nodes[2].kind = CommandNode::Literal;
-        nodes[2].name = "enchant";
-        nodes[2].children = { 4 };
+        nodes[2].kind = CommandNode::Argument;
+        nodes[2].name = "item";
+        nodes[2].parser = item_stack_parser;
+        nodes[2].children = { 3 };
+        nodes[2].executable = true;
 
         nodes[3].kind = CommandNode::Argument;
-        nodes[3].name = "item";
-        nodes[3].parser = string_parser;
-        nodes[3].properties = greedy_string_properties();
+        nodes[3].name = "count";
+        nodes[3].parser = integer_parser;
+        nodes[3].properties = integer_properties(1, false, 0);
         nodes[3].executable = true;
-
-        nodes[4].kind = CommandNode::Argument;
-        nodes[4].name = "text";
-        nodes[4].parser = string_parser;
-        nodes[4].properties = greedy_string_properties();
-        nodes[4].executable = true;
 
         return nodes;
     }

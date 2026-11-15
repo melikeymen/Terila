@@ -60,7 +60,10 @@ public:
 
     std::optional<NbtValue> read_payload(Tag type) {
         const auto old = pos_;
-        if (depth_ >= 256) { pos_ = old; return std::nullopt; }
+        // Every level is a full read_payload frame, which the sanitizer builds pad heavily;
+        // the old 256 still ran the 1 MB fuzz stack out, so the tree is kept shallow. Real
+        // payloads (chunks, item components) nest a handful of levels, never 64.
+        if (depth_ >= kMaxDepth) { pos_ = old; return std::nullopt; }
         // One input byte can create a whole NbtValue, so a 16 MB list asked for gigabytes.
         // The budget bounds the total allocation, not the input size.
         if (++nodes_ > kMaxNodes) { pos_ = old; return std::nullopt; }
@@ -144,6 +147,7 @@ public:
 private:
     // 1M values is a few tens of megabytes at worst and far more than any real payload.
     static constexpr std::size_t kMaxNodes = 1'000'000;
+    static constexpr std::size_t kMaxDepth = 64;
 
     std::span<const std::uint8_t> data_;
     StringFormat format_;

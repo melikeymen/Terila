@@ -247,7 +247,6 @@ namespace terila::network {
         std::int32_t resolve_item(std::string_view name) const;
         bool give_item(std::int32_t item_id, std::int32_t count,
             const terila::item::ComponentsPtr& components);
-        void enchant_held_item(std::string_view enchantment, std::int32_t level);
 
         // --- connection_entities.cpp -----------------------------------------------
         // Spawns and removes mobs as they enter or leave the view distance and sends

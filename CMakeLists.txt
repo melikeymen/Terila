@@ -48,6 +48,9 @@ target_sources(terila PRIVATE
     "src/nbt/nbt_writer.hpp"
     "src/item/components.hpp"
     "src/item/components.cpp"
+    "src/item/item_parser.hpp"
+    "src/item/item_parser.cpp"
+    "src/nbt/snbt.hpp"
     "src/network/connection_commands.cpp"
     "src/data/recipe_book.hpp"
     "src/data/recipe_book.cpp"
@@ -65,6 +68,7 @@ target_sources(terila PRIVATE
     "src/protocol/block.hpp"
     "src/entity/mob.hpp"
     "src/world/block_world.hpp"
+    "src/world/light_engine.hpp"
     "src/world/trf/trf_error.hpp"
     "src/world/trf/trf_format.hpp"
     "src/world/trf/trf_crc32c.hpp"
@@ -207,6 +211,10 @@ add_executable(protocol_tests
     "tests/protocol/player_info_test.cpp"
     "tests/protocol/nbt_reader_test.cpp"
     "tests/protocol/command_tree_test.cpp"
+    "tests/protocol/snbt_test.cpp"
+    "tests/protocol/item_parser_test.cpp"
+    "src/item/components.cpp"
+    "src/item/item_parser.cpp"
     "src/log/logger.cpp"
 )
 
@@ -242,6 +250,7 @@ add_executable(chunk_tests
     "tests/world/chunk_decoder_test.cpp"
     "tests/world/terrain_generator_test.cpp"
     "tests/world/chunk_encoder_test.cpp"
+    "tests/world/light_engine_test.cpp"
     "src/log/logger.cpp"
 )
 

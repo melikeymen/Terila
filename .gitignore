@@ -134,9 +134,5 @@ input/
 # Local design notes: the TRF spec is a scratch reference, not part of the build
 docs/trf-spec.md
 
-# local fuzz files
-fuzz_night.bat
-fuzz_night_worker.bat
-fuzz_night.ps1
 # Written on the first start
 eula.txt

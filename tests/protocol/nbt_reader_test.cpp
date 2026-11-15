@@ -7,6 +7,30 @@
 
 namespace nbt = terila::nbt;
 
+namespace {
+
+    // One compound child per level, each with a three byte name: the reader rejects a
+    // repeated key, so an empty name at every level would stop at the second one for
+    // reasons that have nothing to do with depth.
+    std::vector<std::uint8_t> nested_compounds(std::size_t levels) {
+        std::vector<std::uint8_t> bytes;
+        bytes.reserve(levels * 6 + 1 + levels);
+        bytes.push_back(0x0A);   // the root compound
+        for (std::size_t i = 0; i < levels; ++i) {
+            bytes.push_back(0x0A);            // a compound child
+            bytes.push_back(0x00);            // name length: 3
+            bytes.push_back(0x03);
+            bytes.push_back(static_cast<std::uint8_t>((i >> 16) & 0xFF));
+            bytes.push_back(static_cast<std::uint8_t>((i >> 8) & 0xFF));
+            bytes.push_back(static_cast<std::uint8_t>(i & 0xFF));
+        }
+        // One end tag per open compound: the innermost first, then the root itself.
+        bytes.insert(bytes.end(), levels + 1, 0x00);
+        return bytes;
+    }
+
+} // namespace
+
 TEST(NbtReaderTest, ReadsAnEmptyRootCompound) {
     // Network NBT: the root compound carries no name, only its payload.
     const std::vector<std::uint8_t> bytes{ 0x0A, 0x00 };
@@ -50,6 +74,20 @@ TEST(NbtReaderTest, StopsAtTheNodeBudget) {
 
     nbt::Reader reader(bytes);
     EXPECT_FALSE(reader.read_payload(nbt::Tag::List).has_value());
+}
+
+// Nesting is recursion: without a bound a payload of compound headers walks the C++
+// stack until it overflows, which is what the nbt fuzzer hit.
+TEST(NbtReaderTest, RejectsDeepNestingInsteadOfOverflowingTheStack) {
+    const auto bytes = nested_compounds(100'000);
+    nbt::Reader reader(bytes);
+    EXPECT_FALSE(reader.read_root_compound().has_value());
+}
+
+TEST(NbtReaderTest, ReadsNestingUpToTheLimit) {
+    const auto bytes = nested_compounds(40);
+    nbt::Reader reader(bytes);
+    EXPECT_TRUE(reader.read_root_compound().has_value());
 }
 
 TEST(NbtReaderTest, RejectsATruncatedArray) {

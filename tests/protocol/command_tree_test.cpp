@@ -37,22 +37,33 @@ TEST(CommandTreeTest, EncodesCountRootIndexAndGreedyArguments) {
 }
 
 TEST(CommandTreeTest, BuiltinTreeStartsWithARootNode) {
-    const auto nodes = protocol::builtin_command_tree(5);
-    ASSERT_EQ(nodes.size(), 5u);
+    const auto nodes = protocol::builtin_command_tree(14, 3);
+    ASSERT_EQ(nodes.size(), 4u);
     EXPECT_EQ(nodes[0].kind, protocol::CommandNode::Root);
-    EXPECT_EQ(nodes[0].children, (std::vector<std::int32_t>{ 1, 2 }));
+    EXPECT_EQ(nodes[0].children, (std::vector<std::int32_t>{ 1 }));
     EXPECT_EQ(nodes[1].name, "give");
-    EXPECT_EQ(nodes[2].name, "enchant");
-    EXPECT_EQ(nodes[3].parser, 5);
+    EXPECT_EQ(nodes[2].name, "item");
+    EXPECT_EQ(nodes[2].parser, 14);   // minecraft:item_stack
+    EXPECT_EQ(nodes[3].name, "count");
+    EXPECT_EQ(nodes[3].parser, 3);    // brigadier:integer
     EXPECT_TRUE(nodes[3].executable);
 
     const auto bytes = protocol::write_command_tree(nodes, 0);
     ASSERT_GT(bytes.size(), 5u);
-    EXPECT_EQ(bytes[0], 5);      // five nodes
+    EXPECT_EQ(bytes[0], 4);      // four nodes
     EXPECT_EQ(bytes[1], 0x00);   // root flags
-    EXPECT_EQ(bytes[2], 2);      // two children
+    EXPECT_EQ(bytes[2], 1);      // one child
     EXPECT_EQ(bytes[3], 1);
-    EXPECT_EQ(bytes[4], 2);
+}
+
+TEST(CommandTreeTest, IntegerPropertiesCarryTheMinimum) {
+    const auto properties = protocol::integer_properties(1, false, 0);
+    ASSERT_EQ(properties.size(), 5u);
+    EXPECT_EQ(properties[0], 0x01);   // minimum only
+    EXPECT_EQ(properties[1], 0x00);
+    EXPECT_EQ(properties[2], 0x00);
+    EXPECT_EQ(properties[3], 0x00);
+    EXPECT_EQ(properties[4], 0x01);
 }
 
 TEST(CommandTreeTest, RejectsAVeryLongArgumentName) {

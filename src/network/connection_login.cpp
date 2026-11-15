@@ -176,12 +176,15 @@ namespace terila::network {
             // built from the commands this server actually runs, because the dump in
             // input/commands is not a tree the client accepts (it cycles).
             {
-                // brigadier:string, resolved from the same registry dump the client uses;
-                // 5 is its id in every version that has the parser at all.
-                const auto it = data_.command_argument_types.find("brigadier:string");
-                const auto string_parser = it == data_.command_argument_types.end() ? 5 : it->second;
+                // Parser ids come from the same registry dump the client uses; the fallbacks
+                // are their ids in the versions that carry those parsers.
+                const auto parser_id = [this](const char* name, std::int32_t fallback) {
+                    const auto found = data_.command_argument_types.find(name);
+                    return found == data_.command_argument_types.end() ? fallback : found->second;
+                    };
 
-                const auto nodes = terila::protocol::builtin_command_tree(string_parser);
+                const auto nodes = terila::protocol::builtin_command_tree(
+                    parser_id("minecraft:item_stack", 14), parser_id("brigadier:integer", 3));
                 const auto tree = terila::protocol::write_command_tree(nodes, 0);
                 if (!tree.empty() &&
                     terila::protocol::write_packet(out, ids.play_commands, tree)) {
