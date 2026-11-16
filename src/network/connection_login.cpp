@@ -194,7 +194,8 @@ namespace terila::network {
                     };
 
                 const auto nodes = terila::protocol::builtin_command_tree(
-                    parser_id("minecraft:item_stack", 14), parser_id("brigadier:integer", 3));
+                    parser_id("minecraft:item_stack", 14), parser_id("brigadier:integer", 3),
+                    parser_id("minecraft:entity", 6));
                 const auto tree = terila::protocol::write_command_tree(nodes, 0);
                 if (!tree.empty() &&
                     terila::protocol::write_packet(out, ids.play_commands, tree)) {

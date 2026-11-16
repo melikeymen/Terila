@@ -255,6 +255,11 @@ namespace terila::network {
     }
 
     void Connection::pump_chunks() {
+        // Nothing queued: do not build a coroutine frame only to have it return at once,
+        // because this runs after every completed write.
+        if (pending_chunks_.empty()) {
+            return;
+        }
         if (chunk_stream_.finished()) {
             chunk_stream_.restart(stream_chunks());
         }

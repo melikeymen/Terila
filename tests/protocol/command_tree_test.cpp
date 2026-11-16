@@ -37,11 +37,12 @@ TEST(CommandTreeTest, EncodesCountRootIndexAndGreedyArguments) {
 }
 
 TEST(CommandTreeTest, BuiltinTreeStartsWithARootNode) {
-    const auto nodes = protocol::builtin_command_tree(14, 3);
-    ASSERT_EQ(nodes.size(), 4u);
+    const auto nodes = protocol::builtin_command_tree(14, 3, 6);
+    ASSERT_EQ(nodes.size(), 7u);
     EXPECT_EQ(nodes[0].kind, protocol::CommandNode::Root);
     EXPECT_EQ(nodes[0].children, (std::vector<std::int32_t>{ 1 }));
     EXPECT_EQ(nodes[1].name, "give");
+    EXPECT_EQ(nodes[1].children, (std::vector<std::int32_t>{ 2, 4 }));
     EXPECT_EQ(nodes[2].name, "item");
     EXPECT_EQ(nodes[2].parser, 14);   // minecraft:item_stack
     EXPECT_EQ(nodes[3].name, "count");
@@ -50,10 +51,44 @@ TEST(CommandTreeTest, BuiltinTreeStartsWithARootNode) {
 
     const auto bytes = protocol::write_command_tree(nodes, 0);
     ASSERT_GT(bytes.size(), 5u);
-    EXPECT_EQ(bytes[0], 4);      // four nodes
+    EXPECT_EQ(bytes[0], 7);      // seven nodes
     EXPECT_EQ(bytes[1], 0x00);   // root flags
     EXPECT_EQ(bytes[2], 1);      // one child
     EXPECT_EQ(bytes[3], 1);
+}
+
+TEST(CommandTreeTest, GiveAcceptsATargetSelectorBeforeTheItem) {
+    const auto nodes = protocol::builtin_command_tree(14, 3, 6);
+
+    // /give @a <item> [count]
+    EXPECT_EQ(nodes[4].name, "targets");
+    EXPECT_EQ(nodes[4].parser, 6);   // minecraft:entity
+    ASSERT_EQ(nodes[4].properties.size(), 1u);
+    EXPECT_EQ(nodes[4].properties[0], 0x02);   // several players
+    EXPECT_EQ(nodes[4].children, (std::vector<std::int32_t>{ 5 }));
+    EXPECT_EQ(nodes[5].name, "item");
+    EXPECT_EQ(nodes[5].parser, 14);
+    EXPECT_EQ(nodes[6].name, "count");
+    EXPECT_TRUE(nodes[5].executable);
+    EXPECT_TRUE(nodes[6].executable);
+}
+
+TEST(CommandTreeTest, EveryChildIndexIsInRangeAndUsedOnce) {
+    const auto nodes = protocol::builtin_command_tree(14, 3, 6);
+
+    std::vector<int> parents(nodes.size(), 0);
+    for (const auto& node : nodes) {
+        for (const auto child : node.children) {
+            ASSERT_GE(child, 0);
+            ASSERT_LT(static_cast<std::size_t>(child), nodes.size());
+            ++parents[static_cast<std::size_t>(child)];
+        }
+    }
+    // A Brigadier node has exactly one parent, so every node but the root is entered once.
+    EXPECT_EQ(parents[0], 0);
+    for (std::size_t i = 1; i < parents.size(); ++i) {
+        EXPECT_EQ(parents[i], 1) << "node " << i;
+    }
 }
 
 TEST(CommandTreeTest, IntegerPropertiesCarryTheMinimum) {

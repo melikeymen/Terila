@@ -241,6 +241,13 @@ namespace terila::network {
             }
             return;
         }
+        // client_tick_end arrives with no payload twenty times a second and means nothing to
+        // the server, so it is kept out of the debug log where it would bury every other
+        // packet.
+        if (payload.empty()) {
+            LOG_TRACE(Network, "ignored empty play packet id=0x{:02X}", id);
+            return;
+        }
         LOG_DEBUG(Network, "unhandled play packet id=0x{:02X} ({} bytes)", id, payload.size());
     }
 

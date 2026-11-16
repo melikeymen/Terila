@@ -78,13 +78,24 @@ namespace terila::protocol {
         return properties;
     }
 
+    // minecraft:entity properties: one flags byte, 0x01 single entity only and 0x02
+    // players only. /give takes several players, so the selector is players-only.
+    inline std::vector<std::uint8_t> players_only_properties() {
+        return std::vector<std::uint8_t>{ 0x02 };
+    }
+
     // The commands this server runs, in the order the login handler sends them:
+    //   /give <targets> <item> [count]
     //   /give <item> [count]
     // The item argument uses minecraft:item_stack, the parser /give uses in the game, so
-    // the client completes item ids and validates the component patch it is given.
+    // the client completes item ids and validates the component patch it is given, and
+    // the target argument uses minecraft:entity so @a, @p, @s and a player name parse.
+    //
+    // The item branch exists twice on purpose: a Brigadier node has one parent, so the
+    // two shapes of the command cannot share the same subtree indices.
     inline std::vector<CommandNode> builtin_command_tree(std::int32_t item_stack_parser,
-        std::int32_t integer_parser) {
-        std::vector<CommandNode> nodes(4);
+        std::int32_t integer_parser, std::int32_t entity_parser) {
+        std::vector<CommandNode> nodes(7);
 
         // The client casts the resolved root to RootCommandNode, so node 0 must be the
         // stub-less root type; as a literal the cast fails after a successful decode.
@@ -93,8 +104,9 @@ namespace terila::protocol {
 
         nodes[1].kind = CommandNode::Literal;
         nodes[1].name = "give";
-        nodes[1].children = { 2 };
+        nodes[1].children = { 2, 4 };
 
+        // /give <item> [count]
         nodes[2].kind = CommandNode::Argument;
         nodes[2].name = "item";
         nodes[2].parser = item_stack_parser;
@@ -106,6 +118,25 @@ namespace terila::protocol {
         nodes[3].parser = integer_parser;
         nodes[3].properties = integer_properties(1, false, 0);
         nodes[3].executable = true;
+
+        // /give <targets> <item> [count]
+        nodes[4].kind = CommandNode::Argument;
+        nodes[4].name = "targets";
+        nodes[4].parser = entity_parser;
+        nodes[4].properties = players_only_properties();
+        nodes[4].children = { 5 };
+
+        nodes[5].kind = CommandNode::Argument;
+        nodes[5].name = "item";
+        nodes[5].parser = item_stack_parser;
+        nodes[5].children = { 6 };
+        nodes[5].executable = true;
+
+        nodes[6].kind = CommandNode::Argument;
+        nodes[6].name = "count";
+        nodes[6].parser = integer_parser;
+        nodes[6].properties = integer_properties(1, false, 0);
+        nodes[6].executable = true;
 
         return nodes;
     }

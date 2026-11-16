@@ -7,6 +7,7 @@
 #include "protocol/player_info.hpp"
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <functional>
@@ -109,12 +110,22 @@ namespace terila::network {
         }
 
         // Every player in the world, self included. Returns how many were served.
+        //
+        // Handing an item over can end a connection (a full send fails and the peer is
+        // dropped), so the ids are collected first and the map is looked into again for
+        // each of them; iterating the map itself would be walking freed nodes.
         std::size_t give_to_all(std::int32_t item_id, std::int32_t count,
             const terila::item::ComponentsPtr& components)
         {
-            std::size_t delivered = 0;
+            std::vector<std::int32_t> ids;
+            ids.reserve(players_.size());
             for (const auto& [id, member] : players_) {
-                if (member.give && member.give(item_id, count, components)) {
+                ids.push_back(id);
+            }
+
+            std::size_t delivered = 0;
+            for (const auto id : ids) {
+                if (give_to(id, item_id, count, components)) {
                     ++delivered;
                 }
             }
@@ -146,20 +157,19 @@ namespace terila::network {
             return best;
         }
 
-        // One random player, which is what @r means. -1 when nobody is online.
+        // One player picked at random, which is what @r means. -1 when nobody is online.
         std::int32_t random_member() const
         {
             if (players_.empty()) {
                 return -1;
             }
-            const auto wanted = picked_++ % players_.size();
-            std::size_t index = 0;
+
+            std::vector<std::int32_t> ids;
+            ids.reserve(players_.size());
             for (const auto& [id, member] : players_) {
-                if (index++ == wanted) {
-                    return id;
-                }
+                ids.push_back(id);
             }
-            return -1;
+            return ids[random() % ids.size()];
         }
 
         void leave(std::int32_t entity_id)
@@ -322,10 +332,21 @@ namespace terila::network {
             seen_it->second = pos;
         }
 
+        // xorshift: /give @r decides who gets an item, and a rotation would hand it to the
+        // same players in the same order every time.
+        static std::uint64_t random()
+        {
+            static thread_local std::uint64_t state =
+                static_cast<std::uint64_t>(std::chrono::steady_clock::now()
+                    .time_since_epoch().count()) | 1u;
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            return state;
+        }
+
         int view_distance_ = 10;
         std::int32_t player_type_id_ = 159;   // registry id of minecraft:player
-        // Rotates through the members so a repeated @r does not pick the same player.
-        mutable std::size_t picked_ = 0;
         std::unordered_map<std::int32_t, Member> players_;
         // viewer -> target -> last position this viewer was told about
         std::unordered_map<std::int32_t, std::unordered_map<std::int32_t, Position>> known_;

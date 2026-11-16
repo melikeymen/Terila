@@ -50,6 +50,15 @@ namespace terila::network {
         // so it is read from the raw text instead of a whitespace split: spaces inside
         // quotes or brackets belong to the argument.
         std::string_view read_item_token(std::string_view text, std::string_view& rest) {
+            // The caller usually hands over the rest of the line, which starts with the
+            // separator that ended the previous argument.
+            std::size_t lead = 0;
+            while (lead < text.size() &&
+                std::isspace(static_cast<unsigned char>(text[lead])) != 0) {
+                ++lead;
+            }
+            text.remove_prefix(lead);
+
             int depth = 0;
             char quote = 0;
             std::size_t i = 0;
@@ -193,6 +202,11 @@ namespace terila::network {
                 std::string_view tail;
                 item_token = read_item_token(after_item, tail);
                 after_item = tail;
+                if (item_token.empty()) {
+                    send_system_message("Usage: /give " + selector +
+                        " <item>[<component>=<value>,...] [count]");
+                    return;
+                }
             }
             const std::string_view count_text = trim(after_item);
 
