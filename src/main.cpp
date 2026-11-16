@@ -513,7 +513,9 @@ int main() {
             for (auto it = players.begin(); it != players.end();) {
                 if (const auto conn = it->lock()) {
                     conn->tick_entities();
-                    conn->flush_pending_saves(24);
+                    // Region writes block the io thread for everyone, so a connection
+                    // drains a handful per tick instead of a whole burst.
+                    conn->flush_pending_saves(8);
                     ++it;
                 }
                 else {

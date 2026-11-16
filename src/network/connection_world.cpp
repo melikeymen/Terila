@@ -1,4 +1,4 @@
-﻿#include "network/connection.hpp"
+#include "network/connection.hpp"
 
 #include "protocol/block.hpp"
 #include "protocol/item.hpp"

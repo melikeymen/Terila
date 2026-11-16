@@ -28,7 +28,8 @@ namespace terila::network {
         const double range = static_cast<double>(view_distance_) * 16.0;
         const double range_sq = range * range;
 
-        std::unordered_set<std::int32_t> alive;
+        auto& alive = alive_scratch_;
+        alive.clear();
         alive.reserve(mobs.size());
 
         std::vector<std::uint8_t> out;
@@ -162,7 +163,8 @@ namespace terila::network {
         const double range = static_cast<double>(view_distance_) * 16.0;
         const double range_sq = range * range;
 
-        std::unordered_set<std::int32_t> alive;
+        auto& alive = alive_scratch_;
+        alive.clear();
         std::vector<std::uint8_t> out;
 
         for (const auto& drop : drops_->drops()) {
@@ -217,7 +219,7 @@ namespace terila::network {
                 if (drop.collected_by > 0 &&
                     terila::protocol::write_take_item_entity(out, drop.id, drop.collected_by,
                         drop.count)) {
-                    send(out);
+                    send(std::move(out));
                     out.clear();
                 }
                 std::vector<std::uint8_t> remove;

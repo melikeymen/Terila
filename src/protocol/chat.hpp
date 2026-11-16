@@ -28,11 +28,17 @@ namespace terila::protocol {
         LOG_DEBUG(Protocol, "write_system_chat: msg='{}' size={}", message, message.size());
         std::vector<std::uint8_t> payload;
         auto component = terila::nbt::text_component_nbt(message);
-        std::string hex;
-        for (auto b : component) {
-            hex += std::format("{:02X} ", b);
+        // Only build the dump when it is going to be printed: formatting every byte of
+        // every message costs more than writing the packet.
+        if (terila::log::is_enabled(terila::log::Level::Debug, terila::log::Scope::Protocol)) {
+            std::string hex;
+            hex.reserve(component.size() * 3);
+            for (auto b : component) {
+                hex += std::format("{:02X} ", b);
+            }
+            LOG_DEBUG(Protocol, "write_system_chat: component size={} hex={}", component.size(),
+                hex);
         }
-        LOG_DEBUG(Protocol, "write_system_chat: component size={} hex={}", component.size(), hex);
         payload.insert(payload.end(), component.begin(), component.end());
         payload.push_back(0);   // overlay: shown in chat, not above the hotbar
 

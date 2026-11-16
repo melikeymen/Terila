@@ -12,6 +12,7 @@
 #include "network/player_hub.hpp"
 #include "protocol/block.hpp"
 #include "world/block_world.hpp"
+#include "world/world_context.hpp"
 #include "world/world_generator.hpp"
 #include "world/trf/trf_store.hpp"
 
@@ -55,7 +56,8 @@ namespace terila::network {
               block_state_item_(block_state_item), item_entity_type_(item_entity_type),
               recipes_(recipes), menu_blocks_(menu_blocks), furnace_states_(furnace_states),
               furnace_item_id_(furnace_item_id), world_seed_(world_seed),
-              world_type_(world_type), spawn_x_(spawn_x), spawn_z_(spawn_z),
+              world_type_(world_type),               spawn_x_(spawn_x), spawn_z_(spawn_z),
+              terrain_(terila::world::WorldContext::shared().generator()),
               view_distance_(view_distance), simulation_distance_(simulation_distance),
               max_players_(max_players), entity_id_(entity_id), gamemode_(gamemode)
         {}
@@ -63,6 +65,8 @@ namespace terila::network {
         void start();
 
         void send(const std::vector<std::uint8_t>& data);
+        // A caller that is done with its buffer hands it over instead of paying for a copy.
+        void send(std::vector<std::uint8_t>&& data);
 
         // Called by the server tick for every connected player.
         void tick_entities();
@@ -83,9 +87,14 @@ namespace terila::network {
 
         // Chunks per batch; the next batch waits until the previous one is on the wire.
         static constexpr int kChunksPerBatch = 32;
+        // Chunk packets are already framed, so a few of them share one write.
+        static constexpr std::size_t kChunkGroupBytes = 64 * 1024;
 
         // Keep a few packets in flight instead of stalling on every single write.
         static constexpr std::size_t kMaxWriteQueue = 4;
+        // Saves drain a few per tick, so a player who explores faster than the region file
+        // accepts would otherwise queue the whole world in memory.
+        static constexpr std::size_t kMaxPendingSaves = 512;
 
         static constexpr std::int32_t kPlayerAttackDamage = 4;
 
@@ -168,7 +177,10 @@ namespace terila::network {
 
         // Served from TRF when the region holds the chunk, generated and persisted otherwise.
         std::vector<std::uint8_t> chunk_at(std::int32_t cx, std::int32_t cz);
-        void apply_loaded_chunk(const terila::world::Chunk& chunk);
+        // The baseline is passed in because the caller may already hold the generated
+        // chunk, and generating it twice per load is the expensive part.
+        void apply_loaded_chunk(const terila::world::Chunk& chunk,
+            const terila::world::Chunk& generated);
         void persist_chunk(std::int32_t cx, std::int32_t cz,
             const std::vector<std::uint8_t>& encoded, bool edited);
         // Chunks generated while streaming are written back on later ticks.
@@ -286,7 +298,8 @@ namespace terila::network {
         // Block column every player starts at, chosen by the world generator.
         std::int32_t spawn_x_ = 8;
         std::int32_t spawn_z_ = 8;
-        terila::world::WorldGenerator terrain_;
+        		// Shared by every connection: the terrain of a column is the same for all of them.
+		terila::world::WorldGenerator& terrain_;
         std::deque<ChunkPos> pending_chunks_;
         // Keeps the coroutine frame of the chunk stream, so an unfinished batch survives a
         // full write queue.
@@ -299,6 +312,9 @@ namespace terila::network {
         std::deque<PendingSave> pending_saves_;
         std::unordered_set<std::uint64_t> sent_chunks_;
         std::unordered_map<std::int32_t, KnownEntity> known_entities_;
+        // Reused every tick: the entity and drop streams both need a set of the ids that
+        // are still around, and rebuilding it twenty times a second churns the allocator.
+        std::unordered_set<std::int32_t> alive_scratch_;
         double player_x_ = 8.5;
         double player_y_ = 0.0;
         double player_z_ = 8.5;

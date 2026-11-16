@@ -32,6 +32,16 @@ namespace terila::network {
         }
     }
 
+    void Connection::send(std::vector<std::uint8_t>&& data) {
+        if (closed_) {
+            return;
+        }
+        write_queue_.push_back(std::move(data));
+        if (!writing_) {
+            do_write();
+        }
+    }
+
     void Connection::tick_entities() {
         send_entity_updates(mobs_.mobs());
         send_drop_updates();
@@ -50,15 +60,20 @@ namespace terila::network {
     }
 
     void Connection::process_packets() {
+        // One packet at a time, erased before the next is read: the handshake, login and
+        // configuration handlers parse the buffer from its start instead of from a framed
+        // payload, so a window offset cannot be handed to them.
         while (true) {
             auto packet = terila::protocol::read_packet(read_accum_.data(), read_accum_.size());
             if (!packet.has_value()) {
                 return;
             }
 
+            // The raw handlers below read the buffer itself while they run, so the packet
+            // is dropped only after it has been handled.
             handle_packet(packet->id, packet->payload);
             read_accum_.erase(read_accum_.begin(),
-                read_accum_.begin() + packet->consumed);
+                read_accum_.begin() + static_cast<std::ptrdiff_t>(packet->consumed));
         }
     }
 

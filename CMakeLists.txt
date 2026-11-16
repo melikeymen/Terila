@@ -45,6 +45,8 @@ target_sources(terila PRIVATE
     "src/async/task.hpp"
     "src/nbt/nbt.hpp"
     "src/nbt/nbt_value.hpp"
+    "src/world/chunk_cache.hpp"
+    "src/world/world_context.hpp"
     "src/nbt/nbt_budget.hpp"
     "src/nbt/nbt_codec.hpp"
     "src/item/components.hpp"
@@ -257,6 +259,7 @@ terila_copy_runtime(protocol_tests)
 terila_copy_runtime(nbt_tests)
 
 add_executable(chunk_tests
+    "tests/world/chunk_cache_test.cpp"
     "tests/world/chunk_decoder_test.cpp"
     "tests/world/terrain_generator_test.cpp"
     "tests/world/chunk_encoder_test.cpp"

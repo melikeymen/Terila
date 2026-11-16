@@ -15,6 +15,10 @@ namespace terila::network {
     }
 
     void Connection::init_terrain() {
+        // The overlay needs the air id even when another connection already prepared the
+        // shared generator.
+        air_state_ = block_state("minecraft:air").value_or(0);
+
         if (terrain_.ready()) {
             return;
         }
@@ -30,7 +34,6 @@ namespace terila::network {
             return;
         }
 
-        air_state_ = block_state("minecraft:air").value_or(0);
         LOG_INFO(Chunk, "{} world ready: {} sections from y={}, sea level {}, seed {}",
             terila::world::world_type_name(terrain_.type()), terrain_.section_count(),
             terrain_.min_y(), terrain_.sea_level(), terrain_.seed());
@@ -41,8 +44,8 @@ namespace terila::network {
     // comparing the two section arrays is what makes that cheap: state_at resolves a
     // whole column (plus its tree neighbourhood) for every single block, roughly 700x
     // more work than one generate() call for the same chunk.
-    void Connection::apply_loaded_chunk(const terila::world::Chunk& chunk) {
-        const auto generated = terrain_.generate(chunk.x, chunk.z);
+    void Connection::apply_loaded_chunk(const terila::world::Chunk& chunk,
+        const terila::world::Chunk& generated) {
         const int sections = std::min(static_cast<int>(chunk.sections.size()),
             static_cast<int>(generated.sections.size()));
 
@@ -73,14 +76,22 @@ namespace terila::network {
     std::vector<std::uint8_t> Connection::chunk_at(std::int32_t cx, std::int32_t cz) {
         init_terrain();
 
+        auto& cache = terila::world::WorldContext::shared().chunks();
+
         if (world_.chunk_modified(cx, cz)) {
             auto chunk = terrain_.generate(cx, cz);
             world_.apply(chunk, air_state_);
             auto out = terila::world::encode::encode(chunk);
             LOG_DEBUG(Chunk, "chunk ({}, {}) served from {} in-memory edits", cx, cz,
                 world_.modified_count(cx, cz));
-            persist_chunk(cx, cz, out, true);
+            queue_persist(cx, cz, out);
             return out;
+        }
+
+        // Nobody has edited this column, so the cached copy is what a fresh generation
+        // would produce and it can go straight out.
+        if (const auto* cached = cache.find(cx, cz); cached != nullptr) {
+            return cached->encoded;
         }
 
         if (store_ != nullptr) {
@@ -105,12 +116,17 @@ namespace terila::network {
                     reinterpret_cast<const std::uint8_t*>(stored.data()),
                     stored.size(), terrain_.section_count());
                 if (decoded) {
-                    apply_loaded_chunk(*decoded);
+                    // The baseline is the generated chunk the overlay is diffed against;
+                    // it is needed again below for the cache, so it is generated once.
+                    auto generated = terrain_.generate(cx, cz);
+                    apply_loaded_chunk(*decoded, generated);
                     // The stored slot already holds the wire-ready payload, so stream it
                     // back verbatim instead of decoding and re-encoding the same chunk.
-                    return std::vector<std::uint8_t>(reinterpret_cast<const std::uint8_t*>(
-                        stored.data()), reinterpret_cast<const std::uint8_t*>(stored.data()) +
-                        stored.size());
+                    auto out = std::vector<std::uint8_t>(
+                        reinterpret_cast<const std::uint8_t*>(stored.data()),
+                        reinterpret_cast<const std::uint8_t*>(stored.data()) + stored.size());
+                    cache.put(std::move(generated), out);
+                    return out;
                 }
                 LOG_WARN(Chunk, "trf decode ({}, {}) failed, regenerating", cx, cz);
             }
@@ -118,6 +134,7 @@ namespace terila::network {
 
         auto chunk = terrain_.generate(cx, cz);
         auto out = terila::world::encode::encode(chunk);
+        cache.put(chunk, out);
         queue_persist(cx, cz, out);
         return out;
     }
@@ -128,6 +145,12 @@ namespace terila::network {
         const std::vector<std::uint8_t>& encoded) {
         if (store_ == nullptr || encoded.empty()) {
             return;
+        }
+        // A save queue that cannot keep up with exploration would hold the whole world in
+        // memory; the newest copy of a column is the one worth writing, so the oldest
+        // entries give way.
+        while (pending_saves_.size() >= kMaxPendingSaves) {
+            pending_saves_.pop_front();
         }
         pending_saves_.push_back(PendingSave{ cx, cz, encoded });
     }
@@ -158,18 +181,23 @@ namespace terila::network {
     // An edit only exists in BlockWorld until the affected chunk is re-encoded and
     // written back, so every block change persists its chunk immediately.
     void Connection::persist_block_change(const terila::world::BlockPos& target) {
+        const std::int32_t cx = chunk_coordinate(target.x);
+        const std::int32_t cz = chunk_coordinate(target.z);
+
+        // The column changed, so the shared copy no longer matches what this player holds.
+        terila::world::WorldContext::shared().chunks().erase(cx, cz);
         if (store_ == nullptr) {
             return;
         }
 
-        const std::int32_t cx = target.x >> 4;
-        const std::int32_t cz = target.z >> 4;
         init_terrain();
         auto chunk = terrain_.generate(cx, cz);
         world_.apply(chunk, air_state_);
-        LOG_DEBUG(Chunk, "persisting chunk ({}, {}) with {} edits total", cx, cz,
+        LOG_DEBUG(Chunk, "queued chunk ({}, {}) with {} edits total", cx, cz,
             world_.modified_count(cx, cz));
-        persist_chunk(cx, cz, terila::world::encode::encode(chunk), true);
+        // Queued instead of written here: a region write inside the click handler stalls
+        // every other player on the io thread.
+        queue_persist(cx, cz, terila::world::encode::encode(chunk));
     }
 
     void Connection::queue_chunk_area(std::int32_t center_cx, std::int32_t center_cz) {
@@ -221,32 +249,42 @@ namespace terila::network {
             if (!terila::protocol::write_chunk_batch_start(out)) {
                 co_return;
             }
-            send(out);
+            send(std::move(out));
 
+            // Several chunk packets share one write: each one is already framed, so they
+            // can sit in the same buffer and cost a single syscall instead of one per
+            // chunk.
+            std::vector<std::uint8_t> group;
             int count = 0;
             while (!pending_chunks_.empty() && count < kChunksPerBatch) {
                 const auto pos = pending_chunks_.front();
                 pending_chunks_.pop_front();
 
-                out.clear();
-                if (!terila::protocol::write_chunk_data(out, chunk_at(pos.x, pos.z))) {
+                if (!terila::protocol::write_chunk_data(group, chunk_at(pos.x, pos.z))) {
                     co_return;
                 }
-                send(out);
                 ++count;
 
-                // One chunk is in flight per write, so a busy socket is the moment to
-                // hand the frame back and let the write completion drive the rest.
+                if (group.size() >= kChunkGroupBytes || write_queue_.size() >= kMaxWriteQueue) {
+                    send(std::move(group));
+                    group.clear();
+                }
+
+                // A busy socket is the moment to hand the frame back and let the write
+                // completion drive the rest.
                 if (write_queue_.size() >= kMaxWriteQueue) {
                     co_await terila::async::Yield{};
                 }
             }
+            if (!group.empty()) {
+                send(std::move(group));
+            }
 
-            out.clear();
-            if (!terila::protocol::write_chunk_batch_finished(out, count)) {
+            std::vector<std::uint8_t> finished;
+            if (!terila::protocol::write_chunk_batch_finished(finished, count)) {
                 co_return;
             }
-            send(out);
+            send(std::move(finished));
 
             LOG_DEBUG(Chunk, "chunk batch sent: {} chunks, {} waiting", count,
                 pending_chunks_.size());

@@ -68,6 +68,7 @@ namespace terila::network {
             member.position = position;
             member.send = std::move(sender);
             players_.emplace(entity_id, std::move(member));
+            ids_dirty_ = true;
 
             // The player list is sent once, for everyone, regardless of distance:
             // the tab list is not view dependent.
@@ -117,12 +118,7 @@ namespace terila::network {
         std::size_t give_to_all(std::int32_t item_id, std::int32_t count,
             const terila::item::ComponentsPtr& components)
         {
-            std::vector<std::int32_t> ids;
-            ids.reserve(players_.size());
-            for (const auto& [id, member] : players_) {
-                ids.push_back(id);
-            }
-
+            const auto ids = member_list();
             std::size_t delivered = 0;
             for (const auto id : ids) {
                 if (give_to(id, item_id, count, components)) {
@@ -164,11 +160,7 @@ namespace terila::network {
                 return -1;
             }
 
-            std::vector<std::int32_t> ids;
-            ids.reserve(players_.size());
-            for (const auto& [id, member] : players_) {
-                ids.push_back(id);
-            }
+            const auto ids = member_list();
             return ids[random() % ids.size()];
         }
 
@@ -182,6 +174,7 @@ namespace terila::network {
             const auto uuid = it->second.uuid;
             players_.erase(it);
             known_.erase(entity_id);
+            ids_dirty_ = true;
 
             const auto others = member_ids(entity_id);
             for (const auto other_id : others) {
@@ -208,8 +201,14 @@ namespace terila::network {
             }
             it->second.position = position;
 
-            const auto others = member_ids(entity_id);
-            for (const auto other_id : others) {
+            // The list is walked in place: this runs for every movement packet, and the
+            // copy of the member list cost an allocation each time. A send inside
+            // sync_pair may drop a connection, which only marks the list dirty; the
+            // vector itself is rebuilt lazily by the next call.
+            for (const auto other_id : member_list()) {
+                if (other_id == entity_id) {
+                    continue;
+                }
                 sync_pair(other_id, entity_id);   // the others see the mover
                 sync_pair(entity_id, other_id);   // the mover sees them from here
             }
@@ -226,16 +225,31 @@ namespace terila::network {
             Giver give;
         };
 
+        // The member list changes only on join and leave, but it is needed on every move
+        // packet; rebuilding it from the map each time allocated a vector per packet.
+        const std::vector<std::int32_t>& member_list() const
+        {
+            if (ids_dirty_) {
+                ids_.clear();
+                ids_.reserve(players_.size());
+                for (const auto& [id, member] : players_) {
+                    ids_.push_back(id);
+                }
+                ids_dirty_ = false;
+            }
+            return ids_;
+        }
+
         std::vector<std::int32_t> member_ids(std::int32_t except) const
         {
-            std::vector<std::int32_t> ids;
-            ids.reserve(players_.size());
-            for (const auto& [id, member] : players_) {
+            std::vector<std::int32_t> others;
+            others.reserve(players_.size());
+            for (const auto id : member_list()) {
                 if (id != except) {
-                    ids.push_back(id);
+                    others.push_back(id);
                 }
             }
-            return ids;
+            return others;
         }
 
         void send_to(std::int32_t entity_id, const std::vector<std::uint8_t>& packet)
@@ -348,6 +362,8 @@ namespace terila::network {
         int view_distance_ = 10;
         std::int32_t player_type_id_ = 159;   // registry id of minecraft:player
         std::unordered_map<std::int32_t, Member> players_;
+        mutable std::vector<std::int32_t> ids_;
+        mutable bool ids_dirty_ = true;
         // viewer -> target -> last position this viewer was told about
         std::unordered_map<std::int32_t, std::unordered_map<std::int32_t, Position>> known_;
     };
