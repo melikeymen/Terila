@@ -67,6 +67,13 @@ namespace terila::protocol {
         std::string result(reinterpret_cast<const char*>(data + header_size),
             static_cast<std::size_t>(string_length));
 
+        // A NUL never belongs in a Minecraft string, and every reader downstream would stop
+        // at it while the rest of the buffer looked like data.
+        if (result.find('\0') != std::string::npos) {
+            LOG_WARN(Protocol, "read_string: string contains a NUL byte");
+            return std::nullopt;
+        }
+
         return StringResult{ result, header_size + string_length };
 
     }

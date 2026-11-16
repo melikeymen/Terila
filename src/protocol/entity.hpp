@@ -7,6 +7,7 @@
 #include "protocol/varint.hpp"
 
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -14,6 +15,10 @@ namespace terila::protocol {
 
     // Rotations travel as one byte: 256 steps over 360 degrees.
     inline std::uint8_t angle_to_byte(float degrees) {
+        // A NaN or infinite angle has no integer step, and the cast would be undefined.
+        if (!std::isfinite(degrees)) {
+            return 0;
+        }
         return static_cast<std::uint8_t>(static_cast<std::int8_t>(degrees * 256.0f / 360.0f));
     }
 

@@ -26,6 +26,15 @@ namespace terila::protocol {
 
     inline bool write_system_chat(std::vector<std::uint8_t>& output, std::string_view message) {
         LOG_DEBUG(Protocol, "write_system_chat: msg='{}' size={}", message, message.size());
+
+        // A message longer than a protocol string never becomes a packet; saying so here is
+        // clearer than failing after the component has been built and hex-dumped.
+        if (message.size() > 32767) {
+            LOG_WARN(Protocol, "write_system_chat: message is {} bytes, the limit is 32767",
+                message.size());
+            return false;
+        }
+
         std::vector<std::uint8_t> payload;
         auto component = terila::nbt::text_component_nbt(message);
         // Only build the dump when it is going to be printed: formatting every byte of

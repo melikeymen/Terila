@@ -6,6 +6,7 @@
 
 #include <cstring>
 #include <fstream>
+#include <random>
 #include <string>
 
 namespace terila::world::trf {
@@ -14,13 +15,26 @@ namespace terila::world::trf {
 
         constexpr std::size_t max_open_regions = 64;
 
-        std::array<std::byte, 16> derive_uuid(std::string_view text) {
-            const auto digest = sha256(std::span<const std::byte>(
-                reinterpret_cast<const std::byte*>(text.data()), text.size()));
-
+        // A world identity has to differ between worlds: two worlds sharing a UUID would
+        // accept each other's region files instead of reporting a mismatch (§10). A digest of
+        // a constant gives every world on every machine the same value, so the bytes are
+        // random and shaped like a V4 UUID.
+        std::array<std::byte, 16> random_uuid() {
             std::array<std::byte, 16> uuid{};
-            std::memcpy(uuid.data(), digest.data(), uuid.size());
-            // RFC 4122 variant and version bits, so the value is a well-formed V4-shaped id.
+
+            std::random_device device;
+            const std::uint64_t mixed = (static_cast<std::uint64_t>(device()) << 32) ^
+                static_cast<std::uint64_t>(device()) ^ now_ms();
+            std::mt19937_64 engine(mixed);
+
+            for (std::size_t i = 0; i < uuid.size(); i += 8) {
+                const auto word = engine();
+                for (std::size_t b = 0; b < 8 && i + b < uuid.size(); ++b) {
+                    uuid[i + b] = static_cast<std::byte>((word >> (b * 8)) & 0xFFu);
+                }
+            }
+
+            // RFC 4122 variant and version bits, so the value is a well-formed V4 id.
             uuid[6] = static_cast<std::byte>((static_cast<std::uint8_t>(uuid[6]) & 0x0F) | 0x40);
             uuid[8] = static_cast<std::byte>((static_cast<std::uint8_t>(uuid[8]) & 0x3F) | 0x80);
             return uuid;
@@ -114,7 +128,7 @@ namespace terila::world::trf {
         identity.generator_id = static_cast<std::uint32_t>(crc32c(std::span<const std::byte>(
             reinterpret_cast<const std::byte*>("terila.flat.v1"), 14)));
         identity.generator_version = 1;
-        identity.world_uuid = derive_uuid("terila.world.v1");
+        identity.world_uuid = random_uuid();
         return write_descriptor(path, identity);
     }
 

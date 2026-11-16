@@ -95,8 +95,10 @@ namespace terila::protocol {
             return std::nullopt;
         }
 
-        if (result->id != packet_ids().ping) {
-            LOG_WARN(Protocol, "read_pong: unexpected packet id=0x{:02X} (expected 0x{:02X})", result->id, packet_ids().ping);
+        // The reply carries its own id; ping and pong happen to share 0x01 today, which is
+        // exactly why the check has to name the direction it expects.
+        if (result->id != packet_ids().status_pong) {
+            LOG_WARN(Protocol, "read_pong: unexpected packet id=0x{:02X} (expected 0x{:02X})", result->id, packet_ids().status_pong);
             return std::nullopt;
         }
 

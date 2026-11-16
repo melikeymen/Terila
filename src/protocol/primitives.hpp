@@ -63,7 +63,9 @@ namespace terila::protocol {
 	}
 
 	inline std::optional<double> read_double(const std::uint8_t* data, std::size_t length, std::size_t offset = 0) {
-		if (data == nullptr || length < offset + 8) {
+		// Written as a subtraction: offset + 8 wraps for an offset near the end of the address
+		// space and the check would then pass.
+		if (data == nullptr || offset > length || length - offset < 8) {
 			LOG_TRACE(Protocol, "read_double: insufficient data (length={}, offset={})", length, offset);
 			return std::nullopt;
 		}

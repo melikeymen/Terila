@@ -15,14 +15,17 @@ namespace terila::protocol {
     namespace detail {
 
         // OpenSSL provides the digest; the server carries no crypto implementation of its own.
-        inline std::array<std::uint8_t, 16> md5(const std::string& input) {
+        // OpenSSL can refuse MD5 (a FIPS provider has none), and returning an all-zero
+        // digest would give every player the same identity, so the failure is reported
+        // instead of disguised as a UUID.
+        inline std::optional<std::array<std::uint8_t, 16>> md5(const std::string& input) {
             std::array<std::uint8_t, 16> digest{};
             unsigned int length = 0;
 
             if (EVP_Digest(input.data(), input.size(), digest.data(), &length, EVP_md5(), nullptr) != 1 ||
                 length != digest.size()) {
                 LOG_WARN(Protocol, "md5: EVP_Digest failed");
-                return {};
+                return std::nullopt;
             }
 
             return digest;
@@ -30,11 +33,17 @@ namespace terila::protocol {
 
     }
 
-    // Vanilla offline mode: UUID v3 of "OfflinePlayer:<name>".
-    inline std::array<std::uint8_t, 16> offline_uuid(const std::string& username) {
+    // Vanilla offline mode: UUID v3 of "OfflinePlayer:<name>". Empty when the digest is
+    // unavailable, so the caller refuses the login rather than handing out a shared UUID.
+    inline std::optional<std::array<std::uint8_t, 16>> offline_uuid(const std::string& username) {
         auto digest = detail::md5("OfflinePlayer:" + username);
-        digest[6] = static_cast<std::uint8_t>((digest[6] & 0x0F) | 0x30);
-        digest[8] = static_cast<std::uint8_t>((digest[8] & 0x3F) | 0x80);
+        if (!digest) {
+            LOG_CRITICAL(Protocol, "offline UUID unavailable: MD5 is not provided by this "
+                "OpenSSL build");
+            return std::nullopt;
+        }
+        (*digest)[6] = static_cast<std::uint8_t>(((*digest)[6] & 0x0F) | 0x30);
+        (*digest)[8] = static_cast<std::uint8_t>(((*digest)[8] & 0x3F) | 0x80);
         return digest;
     }
 

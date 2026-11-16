@@ -113,6 +113,8 @@ target_sources(terila PRIVATE
     "src/world/trf/trf_store.cpp"
     "src/protocol/packet_ids.hpp"
     "src/protocol/packet_ids_loader.hpp"
+    "src/data/input_store.hpp"
+    "src/data/input_store.cpp"
     "src/protocol/uuid.hpp"
     "src/config/server_config.hpp"
     "src/world/chunk.hpp"
@@ -122,6 +124,118 @@ target_sources(terila PRIVATE
     "src/world/terrain_generator.hpp"
     "src/world/world_generator.hpp"
 )
+
+# Compiling the data into the binary. The server reads its files through
+# src/data/input_store.cpp, so with this on it starts without an input/ directory at all;
+# with it off (the default) the same code reads the directory at run time.
+option(TERILA_EMBED_INPUT "Compile the data files the server reads into the binary" OFF)
+set(TERILA_INPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/input" CACHE PATH
+    "Data directory read at run time, or embedded when TERILA_EMBED_INPUT is on")
+
+if(TERILA_EMBED_INPUT)
+    # Exactly the files the server loads at startup. A new read through input_store belongs
+    # here too, otherwise the embedded build reports it as not compiled in.
+    set(TERILA_EMBED_FILES
+        "packets/ids.json"
+        "registries/index.json"
+        "registries/dump/minecraft/data_component_type.json"
+        "registries/dump/minecraft/command_argument_type.json"
+        "registries/dump/minecraft/enchantment.json"
+        "tags/client_tags.bin"
+        "tags/items.json"
+        "recipes/minecraft.nbt"
+        "recipes/minecraft.json"
+        "loot/minecraft.nbt"
+        "advancements/minecraft.nbt"
+        "commands/tree.nbt"
+        "blocks/state_ids.json"
+        "worldgen/biomes.json"
+        "worldgen/dimensions.json"
+        "entities/minecraft.json"
+        "items/minecraft.json"
+    )
+    file(GLOB_RECURSE TERILA_EMBED_REGISTRY_PAYLOADS CONFIGURE_DEPENDS
+        RELATIVE "${TERILA_INPUT_DIR}" "${TERILA_INPUT_DIR}/registries/nbt/*.nbt")
+    list(APPEND TERILA_EMBED_FILES ${TERILA_EMBED_REGISTRY_PAYLOADS})
+    list(SORT TERILA_EMBED_FILES)
+
+    set(TERILA_EMBED_DIR "${CMAKE_CURRENT_BINARY_DIR}/embedded")
+    file(MAKE_DIRECTORY "${TERILA_EMBED_DIR}")
+
+    # A chunk is 512 KiB of raw data, which becomes a few megabytes of C++ at most: no single
+    # translation unit should carry a whole multi-megabyte data file.
+    set(TERILA_EMBED_CHUNK_BYTES 524288)
+    set(terila_embed_manifest "")
+    string(APPEND terila_embed_manifest "input_dir ${TERILA_INPUT_DIR}\n")
+    string(APPEND terila_embed_manifest "chunk_bytes ${TERILA_EMBED_CHUNK_BYTES}\n")
+    set(terila_embed_deps "")
+    set(terila_embed_chunks 0)
+    set(terila_embed_index 0)
+
+    foreach(relative IN LISTS TERILA_EMBED_FILES)
+        set(full "${TERILA_INPUT_DIR}/${relative}")
+        if(NOT EXISTS "${full}")
+            message(FATAL_ERROR
+                "TERILA_EMBED_INPUT needs ${relative}, which is missing from ${TERILA_INPUT_DIR}")
+        endif()
+
+        file(SIZE "${full}" size)
+        if(size EQUAL 0)
+            message(FATAL_ERROR "TERILA_EMBED_INPUT cannot embed the empty file ${relative}")
+        endif()
+
+        math(EXPR chunk_count "((${size} - 1) / ${TERILA_EMBED_CHUNK_BYTES}) + 1")
+        string(APPEND terila_embed_manifest
+            "entry ${terila_embed_index} ${size} ${terila_embed_chunks} ${chunk_count} ${relative}\n")
+
+        set(offset 0)
+        foreach(unused RANGE 1 ${chunk_count})
+            math(EXPR remaining "${size} - ${offset}")
+            set(length ${TERILA_EMBED_CHUNK_BYTES})
+            if(remaining LESS length)
+                set(length ${remaining})
+            endif()
+            string(APPEND terila_embed_manifest
+                "chunk ${terila_embed_chunks} ${offset} ${length} ${relative}\n")
+            math(EXPR offset "${offset} + ${length}")
+            math(EXPR terila_embed_chunks "${terila_embed_chunks} + 1")
+        endforeach()
+
+        math(EXPR terila_embed_index "${terila_embed_index} + 1")
+        list(APPEND terila_embed_deps "${full}")
+    endforeach()
+
+    set(TERILA_EMBED_MANIFEST "${TERILA_EMBED_DIR}/manifest.txt")
+    file(WRITE "${TERILA_EMBED_MANIFEST}" "${terila_embed_manifest}")
+
+    set(TERILA_EMBED_SOURCES
+        "${TERILA_EMBED_DIR}/embedded_input.hpp"
+        "${TERILA_EMBED_DIR}/embedded_input_table.cpp")
+    math(EXPR terila_embed_last_chunk "${terila_embed_chunks} - 1")
+    foreach(index RANGE 0 ${terila_embed_last_chunk})
+        list(APPEND TERILA_EMBED_SOURCES "${TERILA_EMBED_DIR}/embedded_${index}.cpp")
+    endforeach()
+
+    add_executable(terila_embed_input "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_input.cpp")
+    if(MSVC)
+        target_compile_options(terila_embed_input PRIVATE /utf-8)
+    endif()
+
+    add_custom_command(
+        OUTPUT ${TERILA_EMBED_SOURCES}
+        COMMAND terila_embed_input "${TERILA_EMBED_MANIFEST}" "${TERILA_EMBED_DIR}"
+        DEPENDS terila_embed_input "${TERILA_EMBED_MANIFEST}" ${terila_embed_deps}
+        COMMENT "Embedding ${terila_embed_index} data files into the binary"
+        VERBATIM)
+
+    target_sources(terila PRIVATE ${TERILA_EMBED_SOURCES})
+    target_include_directories(terila PRIVATE "${TERILA_EMBED_DIR}")
+    target_compile_definitions(terila PRIVATE TERILA_EMBEDDED_INPUT=1)
+    message(STATUS
+        "TERILA_EMBED_INPUT: ${terila_embed_index} files, ${terila_embed_chunks} chunks")
+else()
+    message(STATUS "TERILA_EMBED_INPUT: off, the server reads ${TERILA_INPUT_DIR} at run time")
+endif()
 
 # Dependencies
 include(FetchContent)
@@ -246,8 +360,10 @@ add_executable(protocol_tests
     "tests/protocol/command_tree_test.cpp"
     "tests/protocol/snbt_test.cpp"
     "tests/protocol/item_parser_test.cpp"
+    "tests/protocol/input_store_test.cpp"
     "src/item/components.cpp"
     "src/item/item_parser.cpp"
+    "src/data/input_store.cpp"
     "src/log/logger.cpp"
 )
 

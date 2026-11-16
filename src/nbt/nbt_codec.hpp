@@ -22,6 +22,11 @@ namespace terila::nbt {
     // component value start straight at the type, so the difference has to be explicit.
     enum class Layout { Unnamed, Named };
 
+    // What one container element costs once it exists in memory, whatever its size on the
+    // wire. Charging a list or map per byte received would let two megabytes of single-byte
+    // elements ask for hundreds of megabytes of variants.
+    inline constexpr std::int64_t kElementCost = 96;
+
     namespace codec {
 
         // Names are Java's "modified" UTF-8 — 16 bit units, so a character outside the BMP
@@ -375,7 +380,7 @@ namespace terila::nbt {
                 if (static_cast<std::size_t>(count) > data_.size() - position_ + 1) {
                     throw BudgetExceeded("list length does not fit the payload");
                 }
-                budget_.spend(count);
+                budget_.spend(static_cast<std::int64_t>(count) * kElementCost);
                 NbtList values;
                 values.reserve(static_cast<std::size_t>(count));
                 for (std::int32_t i = 0; i < count; ++i) {
@@ -399,6 +404,7 @@ namespace terila::nbt {
                         return NbtValue(std::move(children));
                     }
                     auto name = read_name();
+                    budget_.spend(kElementCost);   // the map node the entry will occupy
                     auto child = body(child_kind);
                     if (!child.has_value()) {
                         throw BudgetExceeded("map entry could not be read");
@@ -444,6 +450,9 @@ namespace terila::nbt {
         }
 
         void put(std::string_view name, const NbtValue& value) {
+            if (!name_fits(name)) {
+                return;
+            }
             if (!writable(value)) {
                 failed_ = true;
                 LOG_WARN(Data, "tag '{}' cannot be written: a list must keep one element type", name);
@@ -455,18 +464,27 @@ namespace terila::nbt {
         }
 
         void put_text(std::string_view name, std::string_view text) {
+            if (!name_fits(name) || !name_fits(text)) {
+                return;
+            }
             out_.push_back(static_cast<std::uint8_t>(Tag::Text));
             write_name(name);
             write_name(text);
         }
 
         void put_int(std::string_view name, std::int32_t value) {
+            if (!name_fits(name)) {
+                return;
+            }
             out_.push_back(static_cast<std::uint8_t>(Tag::Int));
             write_name(name);
             write_number<std::int32_t>(value);
         }
 
         void put_boolean(std::string_view name, bool value) {
+            if (!name_fits(name)) {
+                return;
+            }
             out_.push_back(static_cast<std::uint8_t>(Tag::Byte));
             write_name(name);
             out_.push_back(value ? 1 : 0);
@@ -517,6 +535,18 @@ namespace terila::nbt {
             }
             write_number<std::uint16_t>(static_cast<std::uint16_t>(wire.size()));
             out_.insert(out_.end(), wire.begin(), wire.end());
+        }
+
+        // A name longer than a 16 bit count cannot be written at all: write_name would drop
+        // it to an empty name and the caller would never learn the payload lost it, so the
+        // whole write is refused instead.
+        bool name_fits(std::string_view name) {
+            if (codec::to_wire_text(name).size() <= 0xFFFF) {
+                return true;
+            }
+            failed_ = true;
+            LOG_WARN(Data, "tag name is longer than 65535 bytes, the payload is refused");
+            return false;
         }
 
         bool writable(const NbtValue& value) const {

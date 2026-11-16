@@ -47,6 +47,7 @@ namespace terila::data {
     // The crafting table and furnace recipes from input/recipes, keyed by item ids.
     class RecipeBook {
     public:
+        // Both paths are relative to the input root and are read through the input store.
         bool load(const std::string& recipes_path, const std::string& item_tags_path,
             const std::unordered_map<std::string, std::int32_t>& item_ids,
             const std::unordered_map<std::string, std::int32_t>& block_state_ids);

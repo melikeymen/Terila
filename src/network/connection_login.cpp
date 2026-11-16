@@ -11,6 +11,8 @@
 #include "protocol/primitives.hpp"
 #include "protocol/uuid.hpp"
 
+#include <array>
+
 #include "version/features.hpp"
 #include "version/mc_version.hpp"
 
@@ -32,9 +34,21 @@ namespace terila::network {
             // The real UUID of an account cannot be derived from its name, so it is asked
             // for; the offline UUID only stands in when there is no account to ask about.
             const auto profile = terila::network::lookup_mojang_profile(result->username);
-            const auto uuid = profile.found
-                ? profile.uuid
-                : terila::protocol::offline_uuid(result->username);
+            std::array<std::uint8_t, 16> uuid{};
+            if (profile.found) {
+                uuid = profile.uuid;
+            }
+            else if (const auto offline = terila::protocol::offline_uuid(result->username)) {
+                uuid = *offline;
+            }
+            else {
+                // Without a digest every player would share one identity, so the login stops
+                // here instead of joining with an invented UUID.
+                LOG_ERROR(Network, "no UUID available for {}, refusing the login",
+                    result->username);
+                close();
+                return;
+            }
             uuid_ = uuid;
             profile_properties_ = profile.properties;
             std::array<std::uint8_t, 16> session_id{};

@@ -75,3 +75,12 @@ TEST(StringTest, RejectsInvalidInput) {
     std::uint8_t data4[] = { 0x80, 0x80, 0x02 };
     EXPECT_FALSE(terila::protocol::read_string(data4, 3).has_value());
 }
+TEST(StringTest, RejectsEmbeddedNul) {
+    // A string that carries a NUL would be cut short by every reader downstream while the
+    // rest of the bytes still looked like data.
+    std::vector<std::uint8_t> buffer;
+    const std::string text("give\0op", 7);
+    ASSERT_TRUE(terila::protocol::write_string(buffer, text));
+
+    EXPECT_FALSE(terila::protocol::read_string(buffer.data(), buffer.size()).has_value());
+}

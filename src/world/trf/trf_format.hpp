@@ -178,7 +178,11 @@ namespace terila::world::trf {
     // Region coordinates are block coordinates / 512, i.e. chunk coordinates / 32, and
     // they must floor toward negative infinity rather than toward zero.
     inline std::int32_t region_coordinate(std::int32_t chunk_coordinate) noexcept {
-        return chunk_coordinate >= 0 ? chunk_coordinate / 32 : -(((-chunk_coordinate) + 31) / 32);
+        // Negating INT32_MIN is not representable, so the arithmetic happens in 64 bits and
+        // only the (small) result comes back down.
+        const std::int64_t wide = chunk_coordinate;
+        const std::int64_t region = wide >= 0 ? wide / 32 : -((-wide + 31) / 32);
+        return static_cast<std::int32_t>(region);
     }
 
     inline std::uint64_t now_ms() noexcept {

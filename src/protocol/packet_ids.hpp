@@ -89,6 +89,9 @@ namespace terila::protocol {
         std::int32_t play_section_blocks_update = -1;
     };
 
+    // Filled once by load_packet_ids before any handler runs. The table is a plain global, so
+    // it must stay a startup step: everything that reads it (packet writers, connections)
+    // assumes it is complete and never written again.
     inline PacketIds& packet_ids() {
         static PacketIds ids;
         return ids;

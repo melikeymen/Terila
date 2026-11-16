@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+#include <limits>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -244,4 +246,68 @@ TEST(TagText, RejectsNestingDeeperThanTheGrammarAllows) {
         text += "}";
     }
     EXPECT_FALSE(parse_snbt(text).has_value());
+}
+
+// ---- limits reported by the audit -----------------------------------------------------
+
+TEST(TagBudget, ChargesAListForTheNodesItAllocates) {
+    // 4000 single-byte elements: 4 KB on the wire, but every one of them becomes a variant
+    // in memory. A budget that only counted wire bytes would let a small payload ask for
+    // hundreds of kilobytes.
+    std::vector<std::uint8_t> bytes{ 0x07, 0x01 };   // list of bytes
+    const std::size_t count = 4000;
+    bytes.push_back(static_cast<std::uint8_t>((count >> 24) & 0xFF));
+    bytes.push_back(static_cast<std::uint8_t>((count >> 16) & 0xFF));
+    bytes.push_back(static_cast<std::uint8_t>((count >> 8) & 0xFF));
+    bytes.push_back(static_cast<std::uint8_t>(count & 0xFF));
+    bytes.resize(bytes.size() + count, 0x00);
+
+    // Generous for the bytes on the wire, far too small for 4000 nodes.
+    const ReadBudget budget(64 * 1024, 16);
+    NbtReader reader(bytes, Layout::Unnamed, budget);
+    EXPECT_FALSE(reader.root().has_value());
+}
+
+TEST(TagText, JoinsSurrogatePairsIntoOneCharacter) {
+    // Raw strings keep the escapes as text, which is what the parser has to read.
+    const auto value = parse_snbt(R"("\uD83D\uDE00")");
+    ASSERT_TRUE(value.has_value());
+    const auto* text = value->get_if<std::string>();
+    ASSERT_NE(text, nullptr);
+    EXPECT_EQ(*text, std::string("\xF0\x9F\x98\x80"));
+}
+
+TEST(TagText, RejectsLoneSurrogates) {
+    EXPECT_FALSE(parse_snbt(R"("\uD83D")").has_value());
+    EXPECT_FALSE(parse_snbt(R"("\uDE00")").has_value());
+}
+
+TEST(TagText, WritesAndReadsNaNAndInfinity) {
+    const auto nan = parse_snbt(to_snbt(NbtValue(std::numeric_limits<double>::quiet_NaN())));
+    ASSERT_TRUE(nan.has_value());
+    const auto* nan_value = nan->get_if<double>();
+    ASSERT_NE(nan_value, nullptr);
+    EXPECT_TRUE(std::isnan(*nan_value));
+
+    const auto infinity = parse_snbt(to_snbt(NbtValue(-std::numeric_limits<double>::infinity())));
+    ASSERT_TRUE(infinity.has_value());
+    const auto* infinity_value = infinity->get_if<double>();
+    ASSERT_NE(infinity_value, nullptr);
+    EXPECT_TRUE(std::isinf(*infinity_value));
+    EXPECT_LT(*infinity_value, 0.0);
+}
+
+TEST(TagText, KeepsByteArraysSigned) {
+    const auto value = parse_snbt("[B;-56B,7B]");
+    ASSERT_TRUE(value.has_value());
+    EXPECT_EQ(to_snbt(*value), "[B;-56B,7B]");
+
+    // 200 is not a byte; the writer used to print it as one, which read back as -56.
+    EXPECT_FALSE(parse_snbt("[B;200B]").has_value());
+}
+
+TEST(TagText, RejectsNumbersThatDoNotFit) {
+    EXPECT_FALSE(parse_snbt("99999999999999999999").has_value());
+    EXPECT_FALSE(parse_snbt("99999999999999999999L").has_value());
+    EXPECT_FALSE(parse_snbt("200b").has_value());
 }

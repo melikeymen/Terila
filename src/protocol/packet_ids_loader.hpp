@@ -1,22 +1,24 @@
 ﻿#pragma once
 
 #include "protocol/packet_ids.hpp"
+#include "data/input_store.hpp"
 #include "log/logger.hpp"
 #include "version/features.hpp"
 #include <nlohmann/json.hpp>
-#include <fstream>
 #include <string>
 
 namespace terila::protocol {
 
+    // The path is relative to the input root, so the embedded and the disk build read the same
+    // file through the same call.
     inline bool load_packet_ids(const std::string& path) {
-        std::ifstream f(path);
-        if (!f) {
+        std::string text;
+        if (!terila::data::input::read_text(path, text)) {
             LOG_WARN(Protocol, "packet ids not found: {}", path);
             return false;
         }
 
-        auto j = nlohmann::json::parse(f, nullptr, false);
+        auto j = nlohmann::json::parse(text, nullptr, false);
         if (j.is_discarded() || !j.contains("states")) {
             LOG_WARN(Protocol, "invalid packet ids json: {}", path);
             return false;
@@ -24,11 +26,15 @@ namespace terila::protocol {
 
         auto& ids = packet_ids();
 
-        // Which release the dump was extracted from; main compares it with the build.
+        // Which release the dump was extracted from; main compares it with the build. A dump
+        // without the block cannot be checked at all, which is worth saying out loud.
         if (j.contains("_meta")) {
             const auto& meta = j["_meta"];
             packet_id_source().version = meta.value("minecraft_version", std::string{});
             packet_id_source().protocol = meta.value("protocol_version", -1);
+        }
+        else {
+            LOG_WARN(Protocol, "packet ids have no _meta block: the release cannot be verified");
         }
 
         auto find = [&](const std::string& state, const std::string& direction,

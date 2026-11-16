@@ -10,10 +10,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -105,13 +108,27 @@ namespace terila::nbt {
             }
         }
 
+        // %g has no digits to print for these, and "nan"/"inf" would read back as text, so
+        // the three special values are spelled the way the reader accepts them.
         inline std::string real(float value) {
+            if (std::isnan(value)) {
+                return "NaN";
+            }
+            if (std::isinf(value)) {
+                return value < 0.0f ? "-Infinity" : "Infinity";
+            }
             char buffer[32];
             std::snprintf(buffer, sizeof(buffer), "%g", static_cast<double>(value));
             return buffer;
         }
 
         inline std::string real(double value) {
+            if (std::isnan(value)) {
+                return "NaN";
+            }
+            if (std::isinf(value)) {
+                return value < 0.0 ? "-Infinity" : "Infinity";
+            }
             char buffer[32];
             std::snprintf(buffer, sizeof(buffer), "%g", value);
             return buffer;
@@ -157,7 +174,10 @@ namespace terila::nbt {
                 for (std::size_t i = 0; i < v->size(); ++i) {
                     if (i != 0) out.push_back(',');
                     if (indented) out.push_back(' ');
-                    out += std::to_string(static_cast<int>((*v)[i]));
+                    // Bytes are printed signed, which is what the reader accepts and what
+                    // the game's own dump writes.
+                    out += std::to_string(static_cast<int>(
+                        static_cast<std::int8_t>((*v)[i])));
                     out.push_back('B');
                 }
                 out.push_back(']');
@@ -263,7 +283,12 @@ namespace terila::nbt {
 
     class SnbtReader {
     public:
-        explicit SnbtReader(std::string_view input) : input_(input) {}
+        // Text carries no length in front of each value, so the budget is charged per node
+        // instead of per byte: a megabyte of "{}" would otherwise expand many times its own
+        // size in variants, exactly like the binary form.
+        explicit SnbtReader(std::string_view input,
+            ReadBudget budget = ReadBudget::from_client())
+            : input_(input), budget_(std::move(budget)) {}
 
         // Nesting is recursion here too, so the same depth ceiling applies as in the
         // binary reader; text written by a player is not trustworthy either.
@@ -281,6 +306,7 @@ namespace terila::nbt {
 
     private:
         std::string_view input_;
+        ReadBudget budget_;
         std::size_t cursor_ = 0;
         std::size_t depth_ = 0;
 
@@ -323,6 +349,7 @@ namespace terila::nbt {
             if (cursor_ >= input_.size()) {
                 fail("expected a value");
             }
+            budget_.spend(kElementCost);
             const char c = input_[cursor_];
             if (c == '{') {
                 return read_map();
@@ -428,12 +455,17 @@ namespace terila::nbt {
                     fail("arrays hold numbers");
                 }
                 if (kind == 'B') {
-                    if (*number < -128 || *number > 255) {
+                    // A byte array holds signed bytes; the writer prints them the same way,
+                    // so a value survives the round trip instead of changing meaning.
+                    if (*number < -128 || *number > 127) {
                         fail("byte out of range");
                     }
                     bytes.push_back(static_cast<std::uint8_t>(*number & 0xFF));
                 }
                 else if (kind == 'I') {
+                    if (*number < INT32_MIN || *number > INT32_MAX) {
+                        fail("int out of range");
+                    }
                     ints.push_back(static_cast<std::int32_t>(*number));
                 }
                 else {
@@ -478,7 +510,7 @@ namespace terila::nbt {
                 case '"': out.push_back('"'); break;
                 case '\'': out.push_back('\''); break;
                 case 'x': out.push_back(static_cast<char>(read_hex(2))); break;
-                case 'u': append_code_point(out, read_hex(4)); break;
+                case 'u': read_unicode_escape(out); break;
                 default: out.push_back(escaped); break;
                 }
             }
@@ -487,6 +519,31 @@ namespace terila::nbt {
 
         static void append_code_point(std::string& out, std::uint32_t code_point) {
             codec::append_utf8(out, code_point);
+        }
+
+        // "\uD83D\uDE00" is one character in two escapes: a high surrogate only means
+        // something together with the low surrogate behind it, and encoding each half on its
+        // own would write two invalid UTF-8 sequences instead of one emoji.
+        void read_unicode_escape(std::string& out) {
+            std::uint32_t code_point = read_hex(4);
+
+            if (code_point >= 0xD800 && code_point <= 0xDBFF) {
+                if (cursor_ + 1 >= input_.size() || input_[cursor_] != '\\' ||
+                    input_[cursor_ + 1] != 'u') {
+                    fail("a high surrogate has to be followed by a low surrogate");
+                }
+                cursor_ += 2;
+                const std::uint32_t low = read_hex(4);
+                if (low < 0xDC00 || low > 0xDFFF) {
+                    fail("not a low surrogate");
+                }
+                code_point = 0x10000 + ((code_point - 0xD800) << 10) + (low - 0xDC00);
+            }
+            else if (code_point >= 0xDC00 && code_point <= 0xDFFF) {
+                fail("a low surrogate cannot start a character");
+            }
+
+            append_code_point(out, code_point);
         }
 
         std::uint32_t read_hex(int digits) {
@@ -540,7 +597,7 @@ namespace terila::nbt {
             return NbtValue(word);
         }
 
-        static std::optional<NbtValue> as_number(const std::string& word) {
+        std::optional<NbtValue> as_number(const std::string& word) {
             if (word.empty()) {
                 return std::nullopt;
             }
@@ -557,6 +614,10 @@ namespace terila::nbt {
                 return std::nullopt;
             }
 
+            if (auto special = as_special_real(digits, suffix)) {
+                return special;
+            }
+
             const bool integer = is_integer(digits);
             const bool real = is_real(digits);
             if (!integer && !real) {
@@ -567,36 +628,110 @@ namespace terila::nbt {
             switch (suffix) {
             case 'b': {
                 if (!integer) return std::nullopt;
-                return NbtValue(static_cast<std::int8_t>(
-                    std::strtoll(text.c_str(), nullptr, 10) & 0xFF));
+                const auto value = parse_integer(text);
+                if (value < -128 || value > 127) {
+                    fail("byte out of range");
+                }
+                return NbtValue(static_cast<std::int8_t>(value));
             }
             case 's': {
                 if (!integer) return std::nullopt;
-                return NbtValue(static_cast<std::int16_t>(
-                    std::strtoll(text.c_str(), nullptr, 10)));
+                const auto value = parse_integer(text);
+                if (value < -32768 || value > 32767) {
+                    fail("short out of range");
+                }
+                return NbtValue(static_cast<std::int16_t>(value));
             }
             case 'l': {
                 if (!integer) return std::nullopt;
-                return NbtValue(static_cast<std::int64_t>(std::strtoll(text.c_str(), nullptr, 10)));
+                return NbtValue(static_cast<std::int64_t>(parse_integer(text)));
             }
             case 'f': {
-                return NbtValue(std::strtof(text.c_str(), nullptr));
+                if (integer) {
+                    return NbtValue(static_cast<float>(parse_integer(text)));
+                }
+                return NbtValue(static_cast<float>(parse_real(text)));
             }
             case 'd': {
-                return NbtValue(std::strtod(text.c_str(), nullptr));
+                if (integer) {
+                    return NbtValue(static_cast<double>(parse_integer(text)));
+                }
+                return NbtValue(parse_real(text));
             }
             default:
                 break;
             }
 
             if (integer) {
-                const auto value = std::strtoll(text.c_str(), nullptr, 10);
+                const auto value = parse_integer(text);
                 if (value >= INT32_MIN && value <= INT32_MAX) {
                     return NbtValue(static_cast<std::int32_t>(value));
                 }
                 return NbtValue(static_cast<std::int64_t>(value));
             }
-            return NbtValue(std::strtod(text.c_str(), nullptr));
+            return NbtValue(parse_real(text));
+        }
+
+        // A literal the text cannot hold is malformed input, not a value to clamp to the
+        // largest one that fits: strtoll/strtod report it through ERANGE.
+        long long parse_integer(const std::string& text) {
+            errno = 0;
+            char* end = nullptr;
+            const auto value = std::strtoll(text.c_str(), &end, 10);
+            if (errno == ERANGE) {
+                fail("number does not fit in 64 bits");
+            }
+            if (end != text.c_str() + text.size()) {
+                fail("not a complete number");
+            }
+            return value;
+        }
+
+        double parse_real(const std::string& text) {
+            errno = 0;
+            char* end = nullptr;
+            const auto value = std::strtod(text.c_str(), &end);
+            if (errno == ERANGE) {
+                fail("number does not fit in a double");
+            }
+            if (end != text.c_str() + text.size()) {
+                fail("not a complete number");
+            }
+            return value;
+        }
+
+        // "NaN", "Infinity" and "-Infinity", the three values the writer prints without
+        // digits. Anything else goes through the numeric grammar.
+        std::optional<NbtValue> as_special_real(std::string_view digits, char suffix) const {
+            bool negative = false;
+            if (!digits.empty() && (digits.front() == '-' || digits.front() == '+')) {
+                negative = digits.front() == '-';
+                digits = digits.substr(1);
+            }
+
+            std::string lower(digits);
+            for (char& c : lower) {
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            }
+
+            double value = 0.0;
+            if (lower == "nan") {
+                value = std::numeric_limits<double>::quiet_NaN();
+            }
+            else if (lower == "inf" || lower == "infinity") {
+                value = std::numeric_limits<double>::infinity();
+            }
+            else {
+                return std::nullopt;
+            }
+
+            if (negative) {
+                value = -value;
+            }
+            if (suffix == 'f') {
+                return NbtValue(static_cast<float>(value));
+            }
+            return NbtValue(value);
         }
 
         static bool is_integer(std::string_view text) {

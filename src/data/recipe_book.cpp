@@ -1,11 +1,11 @@
 #include "data/recipe_book.hpp"
 
+#include "data/input_store.hpp"
 #include "log/logger.hpp"
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
-#include <fstream>
 #include <map>
 
 namespace terila::data {
@@ -87,10 +87,12 @@ namespace terila::data {
         // Item tags first: recipes refer to "#minecraft:planks" and friends.
         std::unordered_map<std::string, std::vector<std::string>> raw_tags;
 
-        std::ifstream tag_file(item_tags_path);
-        if (tag_file) {
+        // Both paths are relative to the input root, so an embedded build reads them from the
+        // generated table instead of the filesystem.
+        std::string tags_text;
+        if (input::read_text(item_tags_path, tags_text)) {
             try {
-                const auto tags = json::parse(tag_file);
+                const auto tags = json::parse(tags_text);
                 for (const auto& row : tags["data"]) {
                     std::vector<std::string> values;
                     for (const auto& value : row["values"]) {
@@ -137,14 +139,14 @@ namespace terila::data {
             tags[name] = std::move(items);
         }
 
-        std::ifstream file(recipes_path);
-        if (!file) {
+        std::string recipes_text;
+        if (!input::read_text(recipes_path, recipes_text)) {
             LOG_ERROR(Data, "cannot open recipes '{}'", recipes_path);
             return false;
         }
 
         try {
-            const auto root = json::parse(file);
+            const auto root = json::parse(recipes_text);
             for (const auto& row : root["data"]) {
                 const std::string type = row.value("type", "");
                 const auto& recipe = row["recipe"];

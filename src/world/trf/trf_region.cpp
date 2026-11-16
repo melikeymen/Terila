@@ -145,9 +145,11 @@ namespace terila::world::trf {
     }
 
     std::expected<void, TrfError> TrfRegion::read_metadata(const RegionOptions& options) {
-        if (file_size_ < header_size + footer_size) {
+        // The index between them is part of the layout: a file shorter than the full
+        // metadata would fail later as a read error instead of the corruption it is.
+        if (file_size_ < data_start + footer_size) {
             return std::unexpected(make_error(TrfErrorCode::CorruptHeader,
-                "file is smaller than one header plus one footer"));
+                "file is smaller than one header, one index and one footer"));
         }
 
         auto temporary = path_;
@@ -250,6 +252,13 @@ namespace terila::world::trf {
         std::vector<std::byte> index_bytes(index_size);
         if (auto read = file_.read_at(header_size, index_bytes); !read) {
             return std::unexpected(read.error());
+        }
+
+        // A sealed index is covered by the footer checksum; without this check a rewritten
+        // index would only show up much later as chunks that fail to decode.
+        if (header_.sealed() && footer && footer->index_crc32c != crc32c(index_bytes)) {
+            return std::unexpected(make_error(TrfErrorCode::CorruptHeader,
+                "sealed index does not match its footer checksum"));
         }
 
         for (std::uint32_t id = 0; id < index_capacity; ++id) {
@@ -836,6 +845,11 @@ namespace terila::world::trf {
         if (!reopened) {
             return std::unexpected(reopened.error());
         }
+        // The replacement is a new handle: without taking the lock again, another process
+        // could open the same file while this region keeps writing to it.
+        if (auto locked = reopened->lock_exclusive(); !locked) {
+            return std::unexpected(locked.error());
+        }
 
         file_ = std::move(*reopened);
         header_ = next;
@@ -871,10 +885,16 @@ namespace terila::world::trf {
         covered.insert(covered.end(), header_bytes.begin() + header_reserved_offset, header_bytes.end());
         covered.insert(covered.end(), index_bytes.begin(), index_bytes.end());
 
-        const Sha256Digest digest = sha256(covered);
+        const auto digest = sha256(covered);
+        if (!digest) {
+            header_.flags &= ~header_flags::sealed;
+            header_.generation -= 1;
+            return std::unexpected(make_error(TrfErrorCode::Io,
+                "cannot compute the seal digest"));
+        }
 
         Footer footer = Footer::from_header(header_);
-        footer.sha256 = digest;
+        footer.sha256 = *digest;
         footer.index_crc32c = crc32c(index_bytes);
         std::array<std::byte, footer_size> footer_bytes{};
         footer.encode(footer_bytes);
@@ -888,12 +908,22 @@ namespace terila::world::trf {
             return std::unexpected(barrier.error());
         }
 
-        header_.sha256 = digest;
+        header_.sha256 = *digest;
         if (auto written = write_header(); !written) {
             return std::unexpected(written.error());
         }
         footer_dirty_ = false;
-        return file_.barrier();
+
+        if (auto barrier = file_.barrier(); !barrier) {
+            // Neither write was confirmed, so the region must not keep claiming to be sealed:
+            // the next save would otherwise append to a file the header says is finished.
+            header_.flags &= ~header_flags::sealed;
+            header_.generation -= 1;
+            header_.sha256 = Sha256Digest{};
+            header_dirty_ = true;
+            return std::unexpected(barrier.error());
+        }
+        return {};
     }
 
     std::expected<void, TrfError> TrfRegion::flush() {

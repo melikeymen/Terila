@@ -19,6 +19,22 @@ cmake --build build --config Release
 
 Requires an `input/` folder next to the executable (or in a parent directory). Listens on `0.0.0.0:25565`.
 
+## Embedding the data
+
+Every file the server loads goes through one input store, so a build can carry the data
+instead of shipping the directory:
+
+```bash
+cmake -B build -DTERILA_EMBED_INPUT=ON
+```
+
+The binary then starts without an `input/` folder — `input data: embedded, 172 files, 18.1 MB`
+in the log — while the rest of the code reads exactly as before. The embedded set is
+`TERILA_EMBED_FILES` in `CMakeLists.txt` plus `registries/nbt/*.nbt`; a read of a file that is
+not in it fails with `not compiled in: <path>` instead of silently returning nothing. Data is
+split into 512 KiB chunks so no single translation unit carries a whole multi-megabyte file.
+Off by default; `TERILA_INPUT_DIR` picks which directory is embedded or read at run time.
+
 ## Minecraft versions
 
 The tree carries the supported protocol releases side by side and compiles one of them:

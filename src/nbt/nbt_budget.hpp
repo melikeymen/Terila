@@ -35,11 +35,13 @@ namespace terila::nbt {
             if (bytes < 0) {
                 throw BudgetExceeded("tag read asked for a negative allocation");
             }
-            if (spent_ + bytes > allowance_) {
+            // Compared as a difference: spent_ + bytes could wrap for a no-limit budget and
+            // let the check pass with a negative total.
+            if (bytes > allowance_ - spent_) {
                 LOG_WARN(Data, "tag payload over budget: {} + {} > {} bytes", spent_, bytes,
                     allowance_);
-                throw BudgetExceeded("tag payload is too big: " + std::to_string(spent_ + bytes) +
-                    " bytes where " + std::to_string(allowance_) + " are allowed");
+                throw BudgetExceeded("tag payload is too big: " + std::to_string(bytes) +
+                    " more bytes where " + std::to_string(allowance_ - spent_) + " remain");
             }
             spent_ += bytes;
         }

@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include "data/input_store.hpp"
 #include "data/registry_data.hpp"
 #include "protocol/varint.hpp"
 #include "protocol/string.hpp"
@@ -18,15 +19,13 @@
 
 namespace terila::data {
 
+	// Paths here are relative to the input root: the store decides whether that is a directory
+	// or the table compiled into the binary.
 	inline bool load_binary(std::vector<std::uint8_t>& out, const std::string& path) {
-		std::ifstream file(path, std::ios::binary);
-
-		if (!file) {
+		if (!input::read(path, out)) {
 			LOG_WARN(Data, "cannot open file: {}", path);
 			return false;
 		}
-
-		out.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
 
 		if (out.empty()) {
 			LOG_WARN(Data, "empty file: {}", path);
@@ -64,14 +63,14 @@ namespace terila::data {
 	// registries/dump/minecraft/data_component_type.json format:
 	//   { registries: { entries: [ { id: "minecraft:enchantments", protocol_id: N } ] } }
 	inline void load_data_component_ids(std::unordered_map<std::string, std::int32_t>& out, const std::string& path) {
-		std::ifstream f(path);
-		if (!f) {
+		std::string text;
+		if (!input::read_text(path, text)) {
 			LOG_WARN(Data, "cannot open {}", path);
 			return;
 		}
 
 		try {
-			auto j = nlohmann::json::parse(f);
+			auto j = nlohmann::json::parse(text);
 			if (!j.contains("registries") || !j["registries"].contains("entries")) {
 				LOG_WARN(Data, "unexpected format in {} (no registries.entries)", path);
 				return;
@@ -96,14 +95,14 @@ namespace terila::data {
 	}
 
 	inline void load_enchantment_ids(std::unordered_map<std::string, std::int32_t>& out, const std::string& path) {
-		std::ifstream f(path);
-		if (!f) {
+		std::string text;
+		if (!input::read_text(path, text)) {
 			LOG_WARN(Data, "cannot open {}", path);
 			return;
 		}
 
 		try {
-			auto j = nlohmann::json::parse(f);
+			auto j = nlohmann::json::parse(text);
 			if (!j.contains("registries") || !j["registries"].contains("entries")) {
 				LOG_WARN(Data, "unexpected format in {} (no registries.entries)", path);
 				return;
@@ -126,11 +125,12 @@ namespace terila::data {
 	// variant of the block sit in the same array entry.
 	//   { data: [ { id, default_state_id, min_state_id, max_state_id, states: [...] } ] }
 	inline void load_blocks(RegistryData& out, const std::string& path) {
-		simdjson::padded_string json;
-		if (simdjson::padded_string::load(path).get(json) != simdjson::SUCCESS) {
+		std::string text;
+		if (!input::read_text(path, text)) {
 			LOG_WARN(Data, "cannot open {}", path);
 			return;
 		}
+		simdjson::padded_string json{ std::string_view(text) };
 
 		simdjson::dom::parser parser;
 		simdjson::dom::element doc;
@@ -187,14 +187,14 @@ namespace terila::data {
 	// worldgen/biomes.json format:
 	//   { data: [ { id: "minecraft:badlands", protocol_id: N, data: {...} } ] }
 	inline void load_biome_ids(std::unordered_map<std::string, std::int32_t>& out, const std::string& path) {
-		std::ifstream f(path);
-		if (!f) {
+		std::string text;
+		if (!input::read_text(path, text)) {
 			LOG_WARN(Data, "cannot open {}", path);
 			return;
 		}
 
 		try {
-			auto j = nlohmann::json::parse(f);
+			auto j = nlohmann::json::parse(text);
 
 			if (!j.contains("data") || !j["data"].is_array()) {
 				LOG_WARN(Data, "unexpected format in {} (no 'data' array)", path);
@@ -220,14 +220,14 @@ namespace terila::data {
 	// entities/minecraft.json format:
 	//   { data: [ { id: "minecraft:allay", protocol_id: N, ... } ] }
 	inline void load_entity_type_ids(std::unordered_map<std::string, std::int32_t>& out, const std::string& path) {
-		std::ifstream f(path);
-		if (!f) {
+		std::string text;
+		if (!input::read_text(path, text)) {
 			LOG_WARN(Data, "cannot open {}", path);
 			return;
 		}
 
 		try {
-			auto j = nlohmann::json::parse(f);
+			auto j = nlohmann::json::parse(text);
 
 			if (!j.contains("data") || !j["data"].is_array()) {
 				LOG_WARN(Data, "unexpected format in {} (no 'data' array)", path);
@@ -251,14 +251,14 @@ namespace terila::data {
 	// items/minecraft.json format:
 	//   { data: [ { id: "minecraft:stone", protocol_id: N, ... } ] }
 	inline void load_item_ids(std::unordered_map<std::string, std::int32_t>& out, const std::string& path) {
-		std::ifstream f(path);
-		if (!f) {
+		std::string text;
+		if (!input::read_text(path, text)) {
 			LOG_WARN(Data, "cannot open {}", path);
 			return;
 		}
 
 		try {
-			auto j = nlohmann::json::parse(f);
+			auto j = nlohmann::json::parse(text);
 
 			if (!j.contains("data") || !j["data"].is_array()) {
 				LOG_WARN(Data, "unexpected format in {} (no 'data' array)", path);
@@ -281,14 +281,14 @@ namespace terila::data {
 
 	// Same file as the entity ids: category tells hostile mobs from passive ones.
 	inline void load_entity_categories(std::unordered_map<std::string, std::string>& out, const std::string& path) {
-		std::ifstream f(path);
-		if (!f) {
+		std::string text;
+		if (!input::read_text(path, text)) {
 			LOG_WARN(Data, "cannot open {}", path);
 			return;
 		}
 
 		try {
-			auto j = nlohmann::json::parse(f);
+			auto j = nlohmann::json::parse(text);
 
 			if (!j.contains("data") || !j["data"].is_array()) {
 				LOG_WARN(Data, "unexpected format in {} (no 'data' array)", path);
@@ -313,14 +313,14 @@ namespace terila::data {
 	//   - Array of { id: "minecraft:overworld", min_y, height, logical_height }
 	//   - OR object keyed by "minecraft:overworld" / "overworld"
 	inline void load_dimensions(DimensionInfo& out, const std::string& path) {
-		std::ifstream f(path);
-		if (!f) {
+		std::string text;
+		if (!input::read_text(path, text)) {
 			LOG_WARN(Data, "cannot open {}", path);
 			return;
 		}
 
 		try {
-			auto j = nlohmann::json::parse(f);
+			auto j = nlohmann::json::parse(text);
 			nlohmann::json ow;
 
 			if (j.contains("data") && j["data"].is_array()) {

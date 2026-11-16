@@ -49,6 +49,22 @@
       }
     },
     {
+      "name": "x64-release-embed",
+      "displayName": "x64 Release Embed — Release with input/ compiled into the binary",
+      "inherits": "x64-release",
+      "cacheVariables": {
+        "TERILA_EMBED_INPUT": "ON"
+      }
+    },
+    {
+      "name": "x64-debug-embed",
+      "displayName": "x64 Debug Embed — Debug with input/ compiled into the binary",
+      "inherits": "x64-debug",
+      "cacheVariables": {
+        "TERILA_EMBED_INPUT": "ON"
+      }
+    },
+    {
       "name": "x64-fuzz",
       "displayName": "x64 Fuzz — ASan + libFuzzer (NBT, trf, protocol, chunk)",
       "inherits": "x64-debug",
@@ -98,6 +114,14 @@
     {
       "name": "x64-release",
       "configurePreset": "x64-release"
+    },
+    {
+      "name": "x64-release-embed",
+      "configurePreset": "x64-release-embed"
+    },
+    {
+      "name": "x64-debug-embed",
+      "configurePreset": "x64-debug-embed"
     },
     {
       "name": "x64-fuzz",

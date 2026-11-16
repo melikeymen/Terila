@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 
 namespace terila::world::trf {
@@ -11,6 +12,9 @@ namespace terila::world::trf {
 
     // §9: the sealed digest covers metadata only and is computed at seal time, never on
     // the commit path.
-    Sha256Digest sha256(std::span<const std::byte> data) noexcept;
+    //
+    // Empty when OpenSSL cannot provide the digest: writing the all-zero fallback would seal
+    // a file whose header can never be verified again.
+    std::optional<Sha256Digest> sha256(std::span<const std::byte> data) noexcept;
 
 }

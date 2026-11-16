@@ -10,6 +10,7 @@
 #include "data/registry_loader.hpp"
 #include "config/server_config.hpp"
 #include "config/server_files.hpp"
+#include "data/input_store.hpp"
 #include "protocol/packet_ids_loader.hpp"
 #include "entity/mob.hpp"
 #include "world/block_world.hpp"
@@ -53,6 +54,7 @@ static fs::path executable_directory() {
     return fs::current_path();
 }
 
+#ifndef TERILA_EMBEDDED_INPUT
 static fs::path find_input_dir() {
     auto base = fs::current_path();
     while (true) {
@@ -63,14 +65,21 @@ static fs::path find_input_dir() {
         base = next;
     }
 }
+#endif
 
 int main() {
-    auto base = find_input_dir();
+#ifdef TERILA_EMBEDDED_INPUT
+    // The data travels in the binary, so there is no input/ directory to find; the executable's
+    // own directory anchors server.properties, eula.txt and the world.
+    const fs::path base = executable_directory();
+#else
+    const auto base = find_input_dir();
     if (base.empty()) {
         const std::string cwd = fs::current_path().string();
         std::fprintf(stderr, "input/ not found. cwd=%s\n", cwd.c_str());
         return 7;
     }
+#endif
 
     // A first run has neither file. Write them instead of failing, and read eula.txt back
     // so an explicit eula=false still refuses to start.
@@ -147,9 +156,15 @@ int main() {
         LOG_WARN(Main, "unknown level-type '{}', using normal", srv.level_type);
     }
 
-    const std::string in = (base / "input").string();
-    if (!terila::protocol::load_packet_ids(in + "/packets/ids.json")) {
-        LOG_FATAL(Protocol, "cannot load packet ids from {}/packets/ids.json", in);
+#ifndef TERILA_EMBEDDED_INPUT
+    // A build that carries its data has no directory to point at; everything goes through the
+    // input store from here on.
+    terila::data::input::mount((base / "input").string());
+#endif
+    LOG_INFO(Main, "input data: {}", terila::data::input::describe());
+
+    if (!terila::protocol::load_packet_ids("packets/ids.json")) {
+        LOG_FATAL(Protocol, "cannot load packet ids: packets/ids.json");
         return 7;
     }
 
@@ -168,33 +183,37 @@ int main() {
 
     terila::data::RegistryData data;
 
-    // Registry NBT payloads
-    try {
-        for (auto& entry : fs::recursive_directory_iterator(in + "/registries/nbt")) {
-            if (entry.path().extension() != ".nbt") continue;
-            auto rel = entry.path().lexically_relative(in + "/registries/nbt");
-            std::string id = rel.generic_string();
-            id = id.substr(0, id.size() - 4);
-            auto slash = id.find('/');
-            if (slash != std::string::npos) id[slash] = ':';
-            terila::data::load_binary(data.nbt_payloads[id], entry.path().string());
+    // Registry NBT payloads. The store lists them, so the same walk works against the
+    // generated table and against a directory.
+    static const std::string kNbtPrefix = "registries/nbt/";
+    std::size_t registry_payloads = 0;
+    for (const auto& file : terila::data::input::files_under(kNbtPrefix)) {
+        if (file.size() <= kNbtPrefix.size() + 4 ||
+            file.compare(file.size() - 4, 4, ".nbt") != 0) {
+            continue;
+        }
+        std::string id = file.substr(kNbtPrefix.size(), file.size() - kNbtPrefix.size() - 4);
+        const auto slash = id.find('/');
+        if (slash != std::string::npos) id[slash] = ':';
+        if (terila::data::load_binary(data.nbt_payloads[id], file)) {
+            ++registry_payloads;
         }
     }
-    catch (const fs::filesystem_error& e) {
-        LOG_FATAL(Registry, "cannot iterate nbt dir: {}", e.what());
+    if (registry_payloads == 0) {
+        LOG_FATAL(Registry, "no registry payloads under {}", kNbtPrefix);
         return 7;
     }
 
-    terila::data::load_binary(data.tag_payload, in + "/tags/client_tags.bin");
+    terila::data::load_binary(data.tag_payload, "tags/client_tags.bin");
 
     // Datapack registry filter
     {
-        std::ifstream idx_file(in + "/registries/index.json");
-        if (!idx_file) {
-            LOG_FATAL(Registry, "index.json not found: {}", in + "/registries/index.json");
+        std::string index_text;
+        if (!terila::data::input::read_text("registries/index.json", index_text)) {
+            LOG_FATAL(Registry, "index.json not found in the input data");
             return 7;
         }
-        auto idx = nlohmann::json::parse(idx_file);
+        auto idx = nlohmann::json::parse(index_text);
 
         static const std::vector<std::string> keep = {
             "minecraft:worldgen/biome", "minecraft:painting_variant", "minecraft:damage_type",
@@ -217,23 +236,23 @@ int main() {
         }
     }
 
-    terila::data::load_binary(data.recipe_payload, in + "/recipes/minecraft.nbt");
-    terila::data::load_binary(data.loot_payload, in + "/loot/minecraft.nbt");
-    terila::data::load_binary(data.advancement_payload, in + "/advancements/minecraft.nbt");
-    terila::data::load_command_tree(data.command_tree_payload, in + "/commands/tree.nbt");
+    terila::data::load_binary(data.recipe_payload, "recipes/minecraft.nbt");
+    terila::data::load_binary(data.loot_payload, "loot/minecraft.nbt");
+    terila::data::load_binary(data.advancement_payload, "advancements/minecraft.nbt");
+    terila::data::load_command_tree(data.command_tree_payload, "commands/tree.nbt");
 
-    terila::data::load_blocks(data, in + "/blocks/state_ids.json");
-    terila::data::load_biome_ids(data.biome_ids, in + "/worldgen/biomes.json");
-    terila::data::load_dimensions(data.overworld, in + "/worldgen/dimensions.json");
-    terila::data::load_entity_type_ids(data.entity_type_ids, in + "/entities/minecraft.json");
-    terila::data::load_entity_categories(data.entity_categories, in + "/entities/minecraft.json");
-    terila::data::load_item_ids(data.item_ids, in + "/items/minecraft.json");
+    terila::data::load_blocks(data, "blocks/state_ids.json");
+    terila::data::load_biome_ids(data.biome_ids, "worldgen/biomes.json");
+    terila::data::load_dimensions(data.overworld, "worldgen/dimensions.json");
+    terila::data::load_entity_type_ids(data.entity_type_ids, "entities/minecraft.json");
+    terila::data::load_entity_categories(data.entity_categories, "entities/minecraft.json");
+    terila::data::load_item_ids(data.item_ids, "items/minecraft.json");
     terila::data::load_data_component_ids(data.component_ids,
-        in + "/registries/dump/minecraft/data_component_type.json");
+        "registries/dump/minecraft/data_component_type.json");
     terila::data::load_command_argument_types(data.command_argument_types,
-        in + "/registries/dump/minecraft/command_argument_type.json");
+        "registries/dump/minecraft/command_argument_type.json");
     terila::data::load_enchantment_ids(data.enchantment_ids,
-        in + "/registries/dump/minecraft/enchantment.json");
+        "registries/dump/minecraft/enchantment.json");
 
     if (data.block_state_ids.empty()) { LOG_FATAL(Data, "block_state_ids empty"); return 7; }
     if (data.biome_ids.empty()) { LOG_FATAL(Data, "biome_ids empty");       return 7; }
@@ -371,7 +390,7 @@ int main() {
     terila::entity::ItemDropManager drops;
 
     terila::data::RecipeBook recipes;
-    if (!recipes.load(in + "/recipes/minecraft.json", in + "/tags/items.json",
+    if (!recipes.load("recipes/minecraft.json", "tags/items.json",
             data.item_ids, data.block_state_ids)) {
         LOG_CRITICAL(Data, "recipes failed to load — crafting tables and furnaces stay closed");
     }
