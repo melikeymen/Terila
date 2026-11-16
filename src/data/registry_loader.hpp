@@ -206,6 +206,7 @@ namespace terila::data {
 
 				const std::string name = entry["id"].get<std::string>();
 				BlockBreakInfo info;
+				info.block = name;
 				if (entry.contains("hardness")) {
 					info.hardness = entry["hardness"].get<float>();
 				}
@@ -231,6 +232,117 @@ namespace terila::data {
 		}
 
 		LOG_DEBUG(Data, "block break info: {} states", out.block_break_info.size());
+	}
+
+	inline void add_block_tag(RegistryData& out,
+		const std::unordered_map<std::string, std::vector<std::string>>& tags,
+		const std::string& id, std::unordered_set<std::string>& visiting) {
+		if (!visiting.insert(id).second) {
+			return;   // a tag that reaches itself, which the data does not do but should not hang
+		}
+		const auto tag = tags.find(id);
+		if (tag == tags.end()) {
+			visiting.erase(id);
+			return;
+		}
+
+		for (const auto& value : tag->second) {
+			if (value.size() > 1 && value.front() == '#') {
+				add_block_tag(out, tags, value.substr(1), visiting);
+			}
+			else {
+				out.block_tags[value].insert(id);
+			}
+		}
+		visiting.erase(id);
+	}
+
+	// tags/blocks.json: tool rules name tags, so breaking has to know which tags a block answers
+	// to. The data is flat, but nested tags are expanded if they ever appear.
+	inline void load_block_tags(RegistryData& out, const std::string& path) {
+		std::string text;
+		if (!input::read_text(path, text)) {
+			LOG_WARN(Data, "cannot open {}", path);
+			return;
+		}
+
+		std::unordered_map<std::string, std::vector<std::string>> tags;
+		try {
+			auto j = nlohmann::json::parse(text);
+			if (!j.contains("data") || !j["data"].is_array()) {
+				LOG_WARN(Data, "unexpected format in {} (no 'data' array)", path);
+				return;
+			}
+
+			for (const auto& entry : j["data"]) {
+				if (!entry.contains("id") || !entry["id"].is_string() || !entry.contains("values")) continue;
+				std::vector<std::string> values;
+				for (const auto& value : entry["values"]) {
+					if (value.is_string()) values.push_back(value.get<std::string>());
+				}
+				tags[entry["id"].get<std::string>()] = std::move(values);
+			}
+		}
+		catch (const std::exception& e) {
+			LOG_WARN(Data, "parse failed: {} ({})", path, e.what());
+			return;
+		}
+
+		std::unordered_set<std::string> visiting;
+		out.block_tags.reserve(tags.size() * 4);
+		for (const auto& tag : tags) {
+			visiting.clear();
+			add_block_tag(out, tags, tag.first, visiting);
+		}
+
+		LOG_DEBUG(Data, "block tags: {} tags, {} blocks", tags.size(), out.block_tags.size());
+	}
+
+	// items/minecraft.json: an item's `minecraft:tool` component says which blocks it speeds up
+	// and by how much, so breaking never has to guess a tool's worth from its name.
+	inline void load_tool_rules(RegistryData& out, const std::string& path) {
+		std::string text;
+		if (!input::read_text(path, text)) {
+			LOG_WARN(Data, "cannot open {}", path);
+			return;
+		}
+
+		try {
+			auto j = nlohmann::json::parse(text);
+			if (!j.contains("data") || !j["data"].is_array()) {
+				LOG_WARN(Data, "unexpected format in {} (no 'data' array)", path);
+				return;
+			}
+
+			for (const auto& entry : j["data"]) {
+				if (!entry.contains("protocol_id") || !entry.contains("components")) continue;
+
+				const auto& components = entry["components"];
+				const auto tool = components.find("minecraft:tool");
+				if (tool == components.end() || !tool->contains("rules") || !(*tool)["rules"].is_array()) {
+					continue;
+				}
+
+				std::vector<world::ToolRule> rules;
+				for (const auto& rule : (*tool)["rules"]) {
+					if (!rule.contains("blocks") || !rule["blocks"].is_string()) continue;
+					world::ToolRule parsed;
+					parsed.blocks = rule["blocks"].get<std::string>();
+					parsed.correct_for_drops = rule.value("correct_for_drops", false);
+					parsed.speed = rule.value("speed", 1.0f);
+					rules.push_back(std::move(parsed));
+				}
+
+				if (!rules.empty()) {
+					out.tool_rules[entry["protocol_id"].get<std::int32_t>()] = std::move(rules);
+				}
+			}
+		}
+		catch (const std::exception& e) {
+			LOG_WARN(Data, "parse failed: {} ({})", path, e.what());
+		}
+
+		LOG_DEBUG(Data, "tool rules: {} items", out.tool_rules.size());
 	}
 
 	// worldgen/biomes.json format:

@@ -1,8 +1,11 @@
 ﻿#pragma once
 
+#include "world/block_break.hpp"
+
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace terila::data {
@@ -23,6 +26,8 @@ namespace terila::data {
     struct BlockBreakInfo {
         float hardness = 0.0f;
         bool requires_correct_tool = false;
+        // The block kind behind the state, so a tool's tag rules can be answered.
+        std::string block;
     };
 
     struct RegistryData {
@@ -39,6 +44,9 @@ namespace terila::data {
         std::unordered_map<std::string, std::vector<BlockStateInfo>> block_states;
         // Keyed by state id because a dig names the block it hits, not the block kind.
         std::unordered_map<std::int32_t, BlockBreakInfo> block_break_info;
+        // Which tags each block answers to, and what each tool item is good at.
+        std::unordered_map<std::string, std::unordered_set<std::string>> block_tags;
+        std::unordered_map<std::int32_t, std::vector<world::ToolRule>> tool_rules;
         std::unordered_map<std::string, std::int32_t> biome_ids;
         std::unordered_map<std::string, std::int32_t> entity_type_ids;
         std::unordered_map<std::string, std::string>  entity_categories;

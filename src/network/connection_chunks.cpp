@@ -78,13 +78,22 @@ namespace terila::network {
 
         auto& cache = terila::world::WorldContext::shared().chunks();
 
+        // A save still waiting its turn is the newest copy of this column. Loading the
+        // region instead would hand back the version from before the last edit, and those
+        // old blocks would then be recorded as edits of their own.
+        for (const auto& save : pending_saves_) {
+            if (save.x == cx && save.z == cz) {
+                return save.bytes;
+            }
+        }
+
         if (world_.chunk_modified(cx, cz)) {
             auto chunk = terrain_.generate(cx, cz);
             world_.apply(chunk, air_state_);
             auto out = terila::world::encode::encode(chunk);
             LOG_DEBUG(Chunk, "chunk ({}, {}) served from {} in-memory edits", cx, cz,
                 world_.modified_count(cx, cz));
-            queue_persist(cx, cz, out);
+            queue_persist(cx, cz, out, true);
             return out;
         }
 
@@ -135,14 +144,14 @@ namespace terila::network {
         auto chunk = terrain_.generate(cx, cz);
         auto out = terila::world::encode::encode(chunk);
         cache.put(chunk, out);
-        queue_persist(cx, cz, out);
+        queue_persist(cx, cz, out, false);
         return out;
     }
 
     // A freshly generated chunk is deterministic, so it is safe to write it back after
     // it has been streamed: the tick drains this queue instead of the send path.
     void Connection::queue_persist(std::int32_t cx, std::int32_t cz,
-        const std::vector<std::uint8_t>& encoded) {
+        const std::vector<std::uint8_t>& encoded, bool edited) {
         if (store_ == nullptr || encoded.empty()) {
             return;
         }
@@ -152,14 +161,14 @@ namespace terila::network {
         while (pending_saves_.size() >= kMaxPendingSaves) {
             pending_saves_.pop_front();
         }
-        pending_saves_.push_back(PendingSave{ cx, cz, encoded });
+        pending_saves_.push_back(PendingSave{ cx, cz, encoded, edited });
     }
 
     void Connection::flush_pending_saves(std::size_t budget) {
         for (std::size_t i = 0; i < budget && !pending_saves_.empty(); ++i) {
             auto save = std::move(pending_saves_.front());
             pending_saves_.pop_front();
-            persist_chunk(save.x, save.z, save.bytes, false);
+            persist_chunk(save.x, save.z, save.bytes, save.edited);
         }
     }
 
@@ -197,7 +206,7 @@ namespace terila::network {
             world_.modified_count(cx, cz));
         // Queued instead of written here: a region write inside the click handler stalls
         // every other player on the io thread.
-        queue_persist(cx, cz, terila::world::encode::encode(chunk));
+        queue_persist(cx, cz, terila::world::encode::encode(chunk), true);
     }
 
     void Connection::queue_chunk_area(std::int32_t center_cx, std::int32_t center_cz) {

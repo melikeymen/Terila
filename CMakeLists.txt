@@ -340,6 +340,7 @@ endif()
 
 
 add_executable(protocol_tests
+    "tests/protocol/inbound_play_test.cpp"
     "tests/protocol/version_test.cpp"
     "tests/protocol/varint_test.cpp"
     "tests/protocol/string_test.cpp"

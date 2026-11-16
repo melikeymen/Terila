@@ -154,6 +154,10 @@ namespace terila::network {
             close_menu();
         }
 
+        // Edits made since the last flush live only in this queue, so writing it here is
+        // what stops a relog from restoring blocks the player had already broken.
+        flush_pending_saves(pending_saves_.size());
+
         if (hub_ && joined_) {
             hub_->leave(entity_id_);
         }

@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "log/logger.hpp"
+#include "protocol/block.hpp"
 #include "protocol/varint.hpp"
 #include "protocol/string.hpp"
 #include "protocol/packet.hpp"
@@ -174,6 +175,91 @@ namespace terila::protocol {
             return false;
         }
         return true;
+    }
+
+    // --- serverbound play packets ------------------------------------------------
+
+    // set_creative_mode_slot is the slot number followed by the stack itself: a count
+    // varint and, only when the count is not zero, the item id and its components. There
+    // is no button byte between them, so reading one byte late turns every pick into an
+    // empty slot.
+    struct CreativeSlotUpdate {
+        std::int32_t slot = 0;
+        std::int32_t count = 0;
+        std::int32_t item_id = 0;
+    };
+
+    inline std::optional<CreativeSlotUpdate> read_creative_slot(
+        const std::uint8_t* data, std::size_t length) {
+        if (length < 2) {
+            return std::nullopt;
+        }
+
+        CreativeSlotUpdate out;
+        out.slot = static_cast<std::int32_t>((data[0] << 8) | data[1]);
+        std::size_t offset = 2;
+
+        const auto count = read_varint(data + offset, length - offset);
+        if (!count) {
+            return std::nullopt;
+        }
+        offset += count->consumed;
+        if (count->value <= 0) {
+            // An empty slot stops here; an item id would be meaningless.
+            return out;
+        }
+
+        const auto item = read_varint(data + offset, length - offset);
+        if (!item) {
+            return std::nullopt;
+        }
+
+        out.item_id = item->value;
+        out.count = count->value;
+        return out;
+    }
+
+    struct UseItemOn {
+        BlockPosValue pos{};
+        std::int32_t face = 0;
+        std::int32_t sequence = 0;
+    };
+
+    // hand (varint), block position (long), face (varint), cursor x/y/z (three floats),
+    // inside-block flag (bool), sequence (varint).
+    inline std::optional<UseItemOn> read_use_item_on(const std::uint8_t* data, std::size_t length) {
+        std::size_t offset = 0;
+
+        const auto hand = read_varint(data, length);
+        if (!hand) {
+            return std::nullopt;
+        }
+        offset += hand->consumed;
+        if (length < offset + 8 + 1) {
+            return std::nullopt;
+        }
+
+        UseItemOn out;
+        out.pos = unpack_block_pos(data + offset, length - offset);
+        offset += 8;
+
+        const auto face = read_varint(data + offset, length - offset);
+        if (!face) {
+            return std::nullopt;
+        }
+        out.face = face->value;
+        offset += face->consumed;
+
+        // The cursor position and the inside-block flag sit between the face and the
+        // sequence; getting this length wrong only costs the ack its sequence number.
+        offset += 12 + 1;
+        if (length >= offset) {
+            if (const auto sequence = read_varint(data + offset, length - offset)) {
+                out.sequence = sequence->value;
+            }
+        }
+
+        return out;
     }
 
 }

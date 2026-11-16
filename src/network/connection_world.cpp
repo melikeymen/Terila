@@ -62,15 +62,25 @@ namespace terila::network {
         break_now(target, sequence);
     }
 
-    // How long this state resists a bare hand. Unknown states fall back to stone without the
-    // pickaxe that would make it quick, so a missing data entry never turns into a free dig.
+    // How long this state resists what the player is holding. Unknown states fall back to
+    // stone's bare-hand pace, so a missing data entry never turns into a free dig.
     int Connection::break_ticks_for(std::int32_t state) const {
         const auto info = data_.block_break_info.find(state);
         if (info == data_.block_break_info.end()) {
-            return terila::world::break_ticks(1.5f, true);
+            return terila::world::break_ticks(1.5f, false, 1.0f);
         }
-        return terila::world::break_ticks(info->second.hardness,
-            info->second.requires_correct_tool);
+
+        const auto& block = info->second;
+        const auto tool = data_.tool_rules.find(held_item_id_);
+        if (tool == data_.tool_rules.end()) {
+            // Empty hand, or something that is not a tool at all.
+            return terila::world::break_ticks(block.hardness, !block.requires_correct_tool, 1.0f);
+        }
+
+        const auto tags = data_.block_tags.find(block.block);
+        const auto against = terila::world::tool_against(tool->second, block.block,
+            tags == data_.block_tags.end() ? nullptr : &tags->second, block.requires_correct_tool);
+        return terila::world::break_ticks(block.hardness, against.can_harvest, against.speed);
     }
 
     void Connection::start_breaking(const terila::world::BlockPos& pos) {
@@ -113,25 +123,15 @@ namespace terila::network {
         break_progress_ = 0;
     }
 
-    void Connection::finish_breaking(const terila::world::BlockPos& pos, std::int32_t sequence) {
-        // The client says the block is gone. The server keeps its own clock: while the dig is
-        // still running the tick loop finishes it, so a client-side timer cannot shorten the
-        // work. Anything else means the dig was already over and there is nothing to do.
+    void Connection::finish_breaking(const terila::world::BlockPos& pos) {
+        // The client says the block is gone. The server keeps its own clock: while the dig on
+        // that block is still running the tick loop finishes it, so a client-side timer cannot
+        // shorten the work. Anything else means there is no dig here to end.
         const bool same_block = breaking_ && pos.x == breaking_pos_.x &&
             pos.y == breaking_pos_.y && pos.z == breaking_pos_.z;
-        if (same_block) {
-            return;
+        if (!same_block) {
+            abort_breaking();
         }
-
-        // A zero-resistance block is finished by the stop packet alone: the start packet
-        // already removed it, and a client that sends only stop still deserves the same.
-        if (!breaking_ && inside_world(pos.y) && state_at(pos) != air_state_ &&
-            break_ticks_for(state_at(pos)) == 0) {
-            break_now(pos, sequence);
-            return;
-        }
-
-        abort_breaking();
     }
 
     void Connection::tick_breaking() {
@@ -166,7 +166,11 @@ namespace terila::network {
     void Connection::break_now(const terila::world::BlockPos& target, std::int32_t sequence) {
         const std::int32_t broken = state_at(target);
         world_.set(target, air_state_);
-        spawn_block_drop(target, broken);
+        // Creative breaks leave nothing behind: a drop would only be collected into the
+        // inventory the player is arranging by hand, landing on whatever stack sits first.
+        if (gamemode_ == 0) {
+            spawn_block_drop(target, broken);
+        }
         persist_block_change(target);
         send_block_change(target, air_state_, sequence);
         LOG_DEBUG(Network, "{} broke a block at ({}, {}, {})",

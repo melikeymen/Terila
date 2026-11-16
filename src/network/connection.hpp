@@ -185,7 +185,7 @@ namespace terila::network {
             const std::vector<std::uint8_t>& encoded, bool edited);
         // Chunks generated while streaming are written back on later ticks.
         void queue_persist(std::int32_t cx, std::int32_t cz,
-            const std::vector<std::uint8_t>& encoded);
+            const std::vector<std::uint8_t>& encoded, bool edited);
         void persist_block_change(const terila::world::BlockPos& target);
         void queue_chunk_area(std::int32_t center_cx, std::int32_t center_cz);
         void forget_far_chunks(std::int32_t center_cx, std::int32_t center_cz);
@@ -215,7 +215,7 @@ namespace terila::network {
         int break_ticks_for(std::int32_t state) const;
         void start_breaking(const terila::world::BlockPos& pos);
         void abort_breaking();
-        void finish_breaking(const terila::world::BlockPos& pos, std::int32_t sequence);
+        void finish_breaking(const terila::world::BlockPos& pos);
         void tick_breaking();
         void break_now(const terila::world::BlockPos& target, std::int32_t sequence);
 
@@ -317,6 +317,8 @@ namespace terila::network {
             std::int32_t x = 0;
             std::int32_t z = 0;
             std::vector<std::uint8_t> bytes;
+            // A column that carries player edits must not be written back as pristine.
+            bool edited = false;
         };
         std::deque<PendingSave> pending_saves_;
         std::unordered_set<std::uint64_t> sent_chunks_;

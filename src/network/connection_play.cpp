@@ -119,29 +119,19 @@ namespace terila::network {
             return;
         }
         if (id == ids.play_set_creative_mode_slot) {
-            // Slot (short), the clicked button (byte), then the item stack. Reading the
-            // stack where the button byte sits turns every creative pick into a count of
-            // 0/1 with a garbage item id, so the offset has to skip the button.
-            static constexpr std::size_t kStackOffset = 3;
-            if (payload.size() < kStackOffset) return;
-            const std::int32_t slot = static_cast<std::int32_t>((payload[0] << 8) | payload[1]);
+            const auto update = terila::protocol::read_creative_slot(payload.data(), payload.size());
+            if (!update) {
+                LOG_WARN(Network, "invalid set_creative_mode_slot ({} bytes)", payload.size());
+                return;
+            }
 
-            const auto count = terila::protocol::read_varint(payload.data() + kStackOffset,
-                payload.size() - kStackOffset);
-            if (!count.has_value()) return;
-            const auto item = terila::protocol::read_varint(
-                payload.data() + kStackOffset + count->consumed,
-                payload.size() - kStackOffset - count->consumed);
-
-            const std::int32_t item_id = item.has_value() ? item->value : 0;
-            const std::int32_t item_count = item_id > 0 ? count->value : 0;
-            if (item_id > 0) {
-                creative_slots_[slot] = item_id;
+            if (update->item_id > 0) {
+                creative_slots_[update->slot] = update->item_id;
             }
             else {
-                creative_slots_.erase(slot);
+                creative_slots_.erase(update->slot);
             }
-            set_inventory_slot(slot, item_id, item_count);
+            set_inventory_slot(update->slot, update->item_id, update->count);
             refresh_held_item();
             return;
         }
@@ -177,34 +167,19 @@ namespace terila::network {
             switch (action->value) {
             case 0: start_breaking(target); break;
             case 1: abort_breaking(); break;
-            case 2: finish_breaking(target, sequence_value); break;
+            case 2: finish_breaking(target); break;
             default: break;
             }
             return;
         }
         if (id == ids.play_use_item_on) {
-            const auto hand = terila::protocol::read_varint(payload.data(), payload.size());
-            if (!hand.has_value() || payload.size() < hand->consumed + 8) {
+            const auto use = terila::protocol::read_use_item_on(payload.data(), payload.size());
+            if (!use) {
                 LOG_WARN(Network, "invalid use_item_on ({} bytes)", payload.size());
                 return;
             }
 
-            const auto pos = terila::protocol::unpack_block_pos(
-                payload.data() + hand->consumed, payload.size() - hand->consumed);
-
-            std::size_t offset = hand->consumed + 8;
-            const auto face = terila::protocol::read_varint(
-                payload.data() + offset, payload.size() - offset);
-            if (!face.has_value()) return;
-
-            // Cursor position (three floats) and two booleans precede the sequence.
-            offset += face->consumed + 12 + 2;
-            if (offset > payload.size()) return;
-            const auto sequence = terila::protocol::read_varint(
-                payload.data() + offset, payload.size() - offset);
-
-            handle_block_place(pos, face->value,
-                sequence.has_value() ? sequence->value : 0);
+            handle_block_place(use->pos, use->face, use->sequence);
             return;
         }
         if (id == ids.play_attack) {
