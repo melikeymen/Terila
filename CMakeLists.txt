@@ -405,6 +405,7 @@ add_executable(chunk_tests
     "tests/world/terrain_generator_test.cpp"
     "tests/world/chunk_encoder_test.cpp"
     "tests/world/light_engine_test.cpp"
+    "tests/world/relight_test.cpp"
     "src/log/logger.cpp"
 )
 

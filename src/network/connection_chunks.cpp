@@ -90,6 +90,7 @@ namespace terila::network {
         if (world_.chunk_modified(cx, cz)) {
             auto chunk = terrain_.generate(cx, cz);
             world_.apply(chunk, air_state_);
+            relight_chunk(chunk);
             auto out = terila::world::encode::encode(chunk);
             LOG_DEBUG(Chunk, "chunk ({}, {}) served from {} in-memory edits", cx, cz,
                 world_.modified_count(cx, cz));
@@ -121,7 +122,7 @@ namespace terila::network {
                 }
             }
             else if (loaded->present) {
-                const auto decoded = terila::world::decode::decode(
+                auto decoded = terila::world::decode::decode(
                     reinterpret_cast<const std::uint8_t*>(stored.data()),
                     stored.size(), terrain_.section_count());
                 if (decoded) {
@@ -129,8 +130,23 @@ namespace terila::network {
                     // it is needed again below for the cache, so it is generated once.
                     auto generated = terrain_.generate(cx, cz);
                     apply_loaded_chunk(*decoded, generated);
-                    // The stored slot already holds the wire-ready payload, so stream it
-                    // back verbatim instead of decoding and re-encoding the same chunk.
+
+                    if (world_.chunk_modified(cx, cz)) {
+                        // The column carries player edits, and the light stored with it was
+                        // computed before them: a block dug out of the terrain comes back as
+                        // a black hole until some later edit happens to relight the chunk.
+                        // Light it again from the overlay and keep the corrected copy.
+                        relight_chunk(*decoded);
+                        auto out = terila::world::encode::encode(*decoded);
+                        cache.put(std::move(generated), out);
+                        queue_persist(cx, cz, out, true);
+                        LOG_DEBUG(Chunk, "chunk ({}, {}) relit on load with {} edits", cx, cz,
+                            world_.modified_count(cx, cz));
+                        return out;
+                    }
+
+                    // Nothing was edited here, so the stored slot is already the payload a
+                    // fresh generation would produce; stream it back verbatim.
                     auto out = std::vector<std::uint8_t>(
                         reinterpret_cast<const std::uint8_t*>(stored.data()),
                         reinterpret_cast<const std::uint8_t*>(stored.data()) + stored.size());
@@ -187,6 +203,73 @@ namespace terila::network {
         }
     }
 
+    // The generator lit the world before any block was touched. Encoding an edited chunk as
+    // it is therefore carries the old light: a block that was dug out keeps the darkness it
+    // had while it was solid, which reads as a black hole in the terrain. Re-running the
+    // light engine over the overlay puts the sun back into every hole and shadow under every
+    // block the player placed.
+    void Connection::relight_chunk(terila::world::Chunk& chunk) {
+        const auto& rules = terrain_.light_rules();
+        const int min_y = terrain_.min_y();
+        const int world_top = min_y + terrain_.section_count() * 16 - 1;
+
+        // The engine reads 15 blocks past the border, so the neighbouring columns are
+        // generated once and sampled with the overlay on top of them.
+        std::unordered_map<std::uint64_t, terila::world::Chunk> neighbours;
+        const auto chunk_for = [&](std::int32_t cx, std::int32_t cz) -> const terila::world::Chunk& {
+            if (cx == chunk.x && cz == chunk.z) {
+                return chunk;
+            }
+            const auto key = terila::world::BlockWorld::chunk_key(cx, cz);
+            const auto found = neighbours.find(key);
+            if (found != neighbours.end()) {
+                return found->second;
+            }
+            return neighbours.emplace(key, terrain_.generate(cx, cz)).first->second;
+        };
+
+        const auto state_at_edited = [&](std::int32_t x, std::int32_t y,
+            std::int32_t z) -> std::int32_t {
+            const std::int32_t cx = chunk_coordinate(x);
+            const std::int32_t cz = chunk_coordinate(z);
+            const auto& c = chunk_for(cx, cz);
+            const int local_y = y - c.min_y;
+            if (local_y < 0 || local_y >= c.section_count * 16) {
+                return air_state_;
+            }
+            const auto section = static_cast<std::size_t>(local_y / 16);
+            const auto index = ((local_y % 16) * 16 + (z & 15)) * 16 + (x & 15);
+            const std::int32_t generated =
+                terila::world::section_state(c.sections[section], index);
+            if (!world_.chunk_modified(cx, cz)) {
+                return generated;
+            }
+            return world_.get(terila::world::BlockPos{ x, y, z }, generated);
+        };
+
+        const auto sky_top = [&](std::int32_t x, std::int32_t z) {
+            const auto generated_top = [&](std::int32_t gx, std::int32_t gz) {
+                const auto& c = chunk_for(chunk_coordinate(gx), chunk_coordinate(gz));
+                for (int y = world_top; y >= c.min_y; --y) {
+                    const int local_y = y - c.min_y;
+                    const auto& sec = c.sections[static_cast<std::size_t>(local_y / 16)];
+                    const auto index = ((local_y % 16) * 16 + (gz & 15)) * 16 + (gx & 15);
+                    if (!rules.of(terila::world::section_state(sec, index)).sky_down) {
+                        return y;
+                    }
+                }
+                return c.min_y - 1;
+            };
+
+            return terila::world::edited_sky_top(min_y, world_top, x, z, generated_top,
+                state_at_edited, [&rules](std::int32_t state) { return rules.of(state).sky_down; });
+        };
+
+        terila::world::LightEngine::compute(chunk, rules, sky_top, state_at_edited);
+        LOG_TRACE(Chunk, "relit chunk ({}, {}) with {} edits", chunk.x, chunk.z,
+            world_.modified_count(chunk.x, chunk.z));
+    }
+
     // An edit only exists in BlockWorld until the affected chunk is re-encoded and
     // written back, so every block change persists its chunk immediately.
     void Connection::persist_block_change(const terila::world::BlockPos& target) {
@@ -202,6 +285,7 @@ namespace terila::network {
         init_terrain();
         auto chunk = terrain_.generate(cx, cz);
         world_.apply(chunk, air_state_);
+        relight_chunk(chunk);
         LOG_DEBUG(Chunk, "queued chunk ({}, {}) with {} edits total", cx, cz,
             world_.modified_count(cx, cz));
         // Queued instead of written here: a region write inside the click handler stalls

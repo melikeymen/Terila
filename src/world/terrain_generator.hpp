@@ -203,6 +203,8 @@ namespace terila::world::terrain {
         }
 
         bool ready() const { return ready_; }
+        // What each block state does to light, so an edited chunk can be lit again.
+        const LightRules& light_rules() const { return light_rules_; }
         std::uint32_t seed() const { return seed_; }
         int min_y() const { return min_y_; }
         int section_count() const { return section_count_; }

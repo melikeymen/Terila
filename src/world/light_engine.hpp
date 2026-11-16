@@ -44,6 +44,25 @@ namespace terila::world {
         bool emits_ = false;
     };
 
+    // Sky top of a column in a world that already carries player edits. The generator knows
+    // the top of the untouched terrain; a block dug out of it lets the sky further down and a
+    // block placed on top of what is left takes the sky away again, so the generated top is
+    // only the starting point. A block floating above a gap is left to the sideways flood:
+    // walking the whole column on every edit would cost more than the lighting itself.
+    template<class GeneratedTopFn, class StateFn, class SkyDownFn>
+    inline int edited_sky_top(int min_y, int world_top, std::int32_t x, std::int32_t z,
+        GeneratedTopFn&& generated_top, StateFn&& state, SkyDownFn&& sky_down) {
+        int top = std::clamp(generated_top(x, z), min_y - 1, world_top);
+        while (top >= min_y && sky_down(state(x, top, z))) {
+            --top;
+        }
+        while (top < world_top && !sky_down(state(x, top + 1, z))) {
+            ++top;
+        }
+
+        return top;
+    }
+
     // Sky and block light of one chunk, the way the game computes it.
     //
     // Sunlight is not flooded down from the top: every column has one "sky source" height,

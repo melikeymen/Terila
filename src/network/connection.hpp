@@ -187,6 +187,9 @@ namespace terila::network {
         void queue_persist(std::int32_t cx, std::int32_t cz,
             const std::vector<std::uint8_t>& encoded, bool edited);
         void persist_block_change(const terila::world::BlockPos& target);
+        // Light belongs to a chunk, so an edited chunk has to be lit again before it is
+        // encoded: a dug-out cell otherwise keeps the darkness it had while it was solid.
+        void relight_chunk(terila::world::Chunk& chunk);
         void queue_chunk_area(std::int32_t center_cx, std::int32_t center_cz);
         void forget_far_chunks(std::int32_t center_cx, std::int32_t center_cz);
         // The stream is a coroutine: one step per pump, so a full write queue only pauses

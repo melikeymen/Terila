@@ -63,6 +63,10 @@ namespace terila::world {
             dirt_ = block(spec_.dirt).value_or(0);
             grass_ = block(spec_.grass).value_or(0);
 
+            // Air is the only thing the flat world lets light through.
+            flat_rules_ = LightRules{};
+            flat_rules_.set(air_, LightBlock{ 0, 0, true });
+
             ready_ = block(spec_.air).has_value() && block(spec_.bedrock).has_value() &&
                 block(spec_.dirt).has_value() && block(spec_.grass).has_value() &&
                 biome(spec_.biome).has_value();
@@ -74,6 +78,9 @@ namespace terila::world {
         }
 
         bool ready() const { return ready_; }
+        const LightRules& light_rules() const {
+            return type_ == WorldType::Flat ? flat_rules_ : terrain_.light_rules();
+        }
         WorldType type() const { return type_; }
         std::uint32_t seed() const { return seed_; }
         int min_y() const { return min_y_; }
@@ -187,6 +194,7 @@ namespace terila::world {
         WorldType type_ = WorldType::Terrain;
         terrain::Generator terrain_;
         flat::FlatSpec spec_;
+        LightRules flat_rules_;
         terrain::IdResolver block_;
         terrain::IdResolver biome_;
         std::int32_t air_ = 0;
