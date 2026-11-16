@@ -229,6 +229,14 @@ namespace terila::network {
                             connection->send(packet);
                         }
                     });
+                hub_->set_giver(entity_id_,
+                    [weak_self](std::int32_t item_id, std::int32_t count,
+                        const terila::item::ComponentsPtr& components) {
+                        if (const auto connection = weak_self.lock()) {
+                            return connection->give_item(item_id, count, components);
+                        }
+                        return false;
+                    });
             }
         }
     }

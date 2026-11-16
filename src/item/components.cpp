@@ -1,7 +1,7 @@
 #include "item/components.hpp"
 
 #include "log/logger.hpp"
-#include "tag/text.hpp"
+#include "nbt/nbt_text.hpp"
 #include "protocol/varint.hpp"
 
 #include <algorithm>
@@ -57,7 +57,7 @@ namespace terila::item {
         // A component value that is a chat component travels as network NBT, so a plain
         // name ("Hi") is wrapped the way the client expects to read it back.
         void write_component_nbt(std::vector<std::uint8_t>& out, const std::string& text) {
-            const auto bytes = terila::tag::text_component_bytes(text);
+            const auto bytes = terila::nbt::text_component_nbt(text);
             out.insert(out.end(), bytes.begin(), bytes.end());
         }
 

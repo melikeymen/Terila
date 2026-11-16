@@ -1,6 +1,6 @@
 #pragma once
 
-#include "tag/text.hpp"
+#include "nbt/nbt_text.hpp"
 #include "protocol/packet.hpp"
 #include "protocol/packet_ids.hpp"
 #include "protocol/string.hpp"
@@ -27,7 +27,7 @@ namespace terila::protocol {
     inline bool write_system_chat(std::vector<std::uint8_t>& output, std::string_view message) {
         LOG_DEBUG(Protocol, "write_system_chat: msg='{}' size={}", message, message.size());
         std::vector<std::uint8_t> payload;
-        auto component = terila::tag::text_component_bytes(message);
+        auto component = terila::nbt::text_component_nbt(message);
         std::string hex;
         for (auto b : component) {
             hex += std::format("{:02X} ", b);

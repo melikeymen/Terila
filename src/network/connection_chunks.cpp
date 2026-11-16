@@ -207,33 +207,58 @@ namespace terila::network {
         }
     }
 
-    void Connection::pump_chunks() {
-        if (pending_chunks_.empty() || write_queue_.size() >= kMaxWriteQueue) {
-            return;
-        }
+    // Streaming a chunk area is a coroutine. The batch it is in the middle of is its own
+    // local state, so when the socket falls behind the stream pauses instead of tearing a
+    // half sent batch down, and the next tick picks up exactly where it stopped.
+    terila::async::Task<void> Connection::stream_chunks() {
+        while (!pending_chunks_.empty()) {
+            if (write_queue_.size() >= kMaxWriteQueue) {
+                co_await terila::async::Yield{};
+                continue;
+            }
 
-        std::vector<std::uint8_t> out;
-        if (!terila::protocol::write_chunk_batch_start(out)) return;
-        send(out);
-        out.clear();
-
-        int count = 0;
-        while (!pending_chunks_.empty() && count < kChunksPerBatch) {
-            const auto pos = pending_chunks_.front();
-            pending_chunks_.pop_front();
-
-            if (!terila::protocol::write_chunk_data(out, chunk_at(pos.x, pos.z))) {
-                return;
+            std::vector<std::uint8_t> out;
+            if (!terila::protocol::write_chunk_batch_start(out)) {
+                co_return;
             }
             send(out);
+
+            int count = 0;
+            while (!pending_chunks_.empty() && count < kChunksPerBatch) {
+                const auto pos = pending_chunks_.front();
+                pending_chunks_.pop_front();
+
+                out.clear();
+                if (!terila::protocol::write_chunk_data(out, chunk_at(pos.x, pos.z))) {
+                    co_return;
+                }
+                send(out);
+                ++count;
+
+                // One chunk is in flight per write, so a busy socket is the moment to
+                // hand the frame back and let the write completion drive the rest.
+                if (write_queue_.size() >= kMaxWriteQueue) {
+                    co_await terila::async::Yield{};
+                }
+            }
+
             out.clear();
-            ++count;
+            if (!terila::protocol::write_chunk_batch_finished(out, count)) {
+                co_return;
+            }
+            send(out);
+
+            LOG_DEBUG(Chunk, "chunk batch sent: {} chunks, {} waiting", count,
+                pending_chunks_.size());
+            co_await terila::async::Yield{};
         }
+    }
 
-        if (!terila::protocol::write_chunk_batch_finished(out, count)) return;
-        send(out);
-
-        LOG_DEBUG(Chunk, "chunk batch sent: {} chunks, {} waiting", count, pending_chunks_.size());
+    void Connection::pump_chunks() {
+        if (chunk_stream_.finished()) {
+            chunk_stream_.restart(stream_chunks());
+        }
+        chunk_stream_.resume();
     }
 
     void Connection::update_player_chunk(double x, double z) {

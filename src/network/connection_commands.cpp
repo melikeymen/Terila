@@ -135,6 +135,32 @@ namespace terila::network {
         return add_to_inventory(item_id, count, components);
     }
 
+    // A selector picks who receives the item; an empty one means "me". The hub knows the
+    // other players and each connection knows how to fill its own inventory, so the two
+    // meet on the giver callback the hub keeps for every member.
+    std::size_t Connection::give_to_targets(std::string_view selector, std::int32_t item_id,
+        std::int32_t count, const terila::item::ComponentsPtr& components) {
+        if (selector.empty() || selector == "@s") {
+            return give_item(item_id, count, components) ? 1 : 0;
+        }
+        if (hub_ == nullptr) {
+            return give_item(item_id, count, components) ? 1 : 0;
+        }
+        if (selector == "@a" || selector == "@e") {
+            return hub_->give_to_all(item_id, count, components);
+        }
+        if (selector == "@p") {
+            const auto nearest = hub_->nearest_to(player_x_, player_z_);
+            return hub_->give_to(nearest, item_id, count, components) ? 1 : 0;
+        }
+        if (selector == "@r") {
+            const auto picked = hub_->random_member();
+            return hub_->give_to(picked, item_id, count, components) ? 1 : 0;
+        }
+        LOG_DEBUG(Network, "unknown selector '{}' in /give", selector);
+        return 0;
+    }
+
     // Commands:
     //   /give <item>[<component>=<value>,...] [count]
     void Connection::handle_command(const std::string& command) {
@@ -151,12 +177,23 @@ namespace terila::network {
 
         if (name == "give") {
             if (arguments.empty()) {
-                send_system_message("Usage: /give <item>[<component>=<value>,...] [count]");
+                send_system_message(
+                    "Usage: /give [@a|@s|@p|@r] <item>[<component>=<value>,...] [count]");
                 return;
             }
 
             std::string_view after_item;
-            const std::string_view item_token = read_item_token(arguments, after_item);
+            std::string_view item_token = read_item_token(arguments, after_item);
+
+            // A target selector only makes sense in front of the item, so it is the first
+            // token or it is not there at all.
+            std::string selector;
+            if (!item_token.empty() && item_token.front() == '@') {
+                selector = lower(std::string(item_token));
+                std::string_view tail;
+                item_token = read_item_token(after_item, tail);
+                after_item = tail;
+            }
             const std::string_view count_text = trim(after_item);
 
             std::string error;
@@ -188,12 +225,18 @@ namespace terila::network {
                     std::move(parsed->components));
             }
 
-            if (!give_item(item_id, count, components)) {
-                send_system_message("Your inventory is full");
+            const auto delivered = give_to_targets(selector, item_id, count, components);
+            if (delivered == 0) {
+                send_system_message(selector.empty()
+                    ? std::string("Your inventory is full")
+                    : "No player could take " + parsed->id);
                 return;
             }
 
-            std::string message = std::format("Gave {} x{}", parsed->id, count);
+            std::string message = selector.empty()
+                ? std::format("Gave {} x{}", parsed->id, count)
+                : std::format("Gave {} x{} to {} player{}", parsed->id, count, delivered,
+                    delivered == 1 ? "" : "s");
             if (components != nullptr) {
                 const auto detail = describe(*components);
                 if (!detail.empty()) {
@@ -204,7 +247,8 @@ namespace terila::network {
             return;
         }
 
-        send_system_message("Commands: /give <item>[<component>=<value>,...] [count]");
+        send_system_message(
+            "Commands: /give [@a|@s|@p|@r] <item>[<component>=<value>,...] [count]");
     }
 
 } // namespace terila::network

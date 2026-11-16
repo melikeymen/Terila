@@ -131,3 +131,25 @@ TEST(ItemParserTest, RejectsAMalformedComponentList) {
     EXPECT_FALSE(item::parse_item("diamond_sword[minecraft:damage]", registry.ids(), error)
         .has_value());
 }
+
+TEST(ItemParserTest, ReadsTheCompactEnchantmentMap) {
+    const Registry registry;
+    std::string error;
+    // The spelling players actually type: no "levels" wrapper, and the name is optional
+    // about its namespace.
+    const auto parsed = item::parse_item(
+        "diamond_sword[enchantments={sharpness:255}]", registry.ids(), error);
+    ASSERT_TRUE(parsed.has_value()) << error;
+    ASSERT_EQ(parsed->components.enchantments.size(), 1u);
+    EXPECT_EQ(parsed->components.enchantment_level("minecraft:sharpness").value_or(0), 255);
+}
+
+TEST(ItemParserTest, ReadsAnEmptyEnchantmentMap) {
+    const Registry registry;
+    std::string error;
+    const auto parsed = item::parse_item(
+        "diamond_sword[enchantments={}]", registry.ids(), error);
+    ASSERT_TRUE(parsed.has_value()) << error;
+    EXPECT_TRUE(parsed->components.enchantments.empty());
+    EXPECT_TRUE(parsed->components.enchantments_present);
+}

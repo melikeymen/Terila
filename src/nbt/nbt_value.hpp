@@ -13,54 +13,54 @@
 #include <variant>
 #include <vector>
 
-namespace terila::tag {
+namespace terila::nbt {
 
-    enum class TagKind : std::uint8_t {
+    enum class Tag : std::uint8_t {
         End = 0, Byte = 1, Short = 2, Int = 3, Long = 4, Float = 5,
         Double = 6, Bytes = 7, Text = 8, List = 9, Map = 10,
         Ints = 11, Longs = 12
     };
 
-    struct TagValue;
-    using TagList = std::vector<TagValue>;
-    using TagMap = std::map<std::string, TagValue>;
-    using TagBytes = std::vector<std::uint8_t>;
-    using TagInts = std::vector<std::int32_t>;
-    using TagLongs = std::vector<std::int64_t>;
+    struct NbtValue;
+    using NbtList = std::vector<NbtValue>;
+    using NbtCompound = std::map<std::string, NbtValue>;
+    using NbtBytes = std::vector<std::uint8_t>;
+    using NbtInts = std::vector<std::int32_t>;
+    using NbtLongs = std::vector<std::int64_t>;
 
     // A value is one of the twelve shapes; nothing is ever empty-typed by accident, so
     // the tag index maps straight onto the id the binary form uses.
-    struct TagValue {
+    struct NbtValue {
         using Storage = std::variant<std::int8_t, std::int16_t, std::int32_t, std::int64_t,
-            float, double, TagBytes, std::string, TagList, TagMap, TagInts, TagLongs>;
+            float, double, NbtBytes, std::string, NbtList, NbtCompound, NbtInts, NbtLongs>;
 
         Storage value;
 
-        TagValue() : value(TagMap{}) {}
-        TagValue(std::int8_t item) : value(item) {}
-        TagValue(std::int16_t item) : value(item) {}
-        TagValue(std::int32_t item) : value(item) {}
-        TagValue(std::int64_t item) : value(item) {}
-        TagValue(float item) : value(item) {}
-        TagValue(double item) : value(item) {}
-        TagValue(std::string item) : value(std::move(item)) {}
-        TagValue(const char* item) : value(std::string(item)) {}
-        TagValue(TagBytes item) : value(std::move(item)) {}
-        TagValue(TagInts item) : value(std::move(item)) {}
-        TagValue(TagLongs item) : value(std::move(item)) {}
-        TagValue(TagList item) : value(std::move(item)) {}
-        TagValue(TagMap item) : value(std::move(item)) {}
+        NbtValue() : value(NbtCompound{}) {}
+        NbtValue(std::int8_t item) : value(item) {}
+        NbtValue(std::int16_t item) : value(item) {}
+        NbtValue(std::int32_t item) : value(item) {}
+        NbtValue(std::int64_t item) : value(item) {}
+        NbtValue(float item) : value(item) {}
+        NbtValue(double item) : value(item) {}
+        NbtValue(std::string item) : value(std::move(item)) {}
+        NbtValue(const char* item) : value(std::string(item)) {}
+        NbtValue(NbtBytes item) : value(std::move(item)) {}
+        NbtValue(NbtInts item) : value(std::move(item)) {}
+        NbtValue(NbtLongs item) : value(std::move(item)) {}
+        NbtValue(NbtList item) : value(std::move(item)) {}
+        NbtValue(NbtCompound item) : value(std::move(item)) {}
 
         // An unsigned int would silently pick one of the signed widths; that is a bug at
         // every call site, so it is not offered at all.
-        TagValue(unsigned int) = delete;
+        NbtValue(unsigned int) = delete;
 
         template<class T> T* get_if() noexcept { return std::get_if<T>(&value); }
         template<class T> const T* get_if() const noexcept { return std::get_if<T>(&value); }
 
-        TagKind tag() const noexcept { return static_cast<TagKind>(value.index() + 1); }
+        Tag tag() const noexcept { return static_cast<Tag>(value.index() + 1); }
 
-        bool operator==(const TagValue&) const = default;
+        bool operator==(const NbtValue&) const = default;
 
         // Numbers convert the way the game truncates them, which is what a reader that
         // accepts "any number here" needs.
@@ -90,21 +90,21 @@ namespace terila::tag {
     };
 
     // Human readable name of a tag type: for logs, error messages and the tree dump.
-    inline std::string_view tag_label(TagKind kind) noexcept {
+    inline std::string_view tag_name(Tag kind) noexcept {
         switch (kind) {
-        case TagKind::End: return "end";
-        case TagKind::Byte: return "byte";
-        case TagKind::Short: return "short";
-        case TagKind::Int: return "int";
-        case TagKind::Long: return "long";
-        case TagKind::Float: return "float";
-        case TagKind::Double: return "double";
-        case TagKind::Bytes: return "bytes";
-        case TagKind::Text: return "text";
-        case TagKind::List: return "list";
-        case TagKind::Map: return "map";
-        case TagKind::Ints: return "ints";
-        case TagKind::Longs: return "longs";
+        case Tag::End: return "end";
+        case Tag::Byte: return "byte";
+        case Tag::Short: return "short";
+        case Tag::Int: return "int";
+        case Tag::Long: return "long";
+        case Tag::Float: return "float";
+        case Tag::Double: return "double";
+        case Tag::Bytes: return "bytes";
+        case Tag::Text: return "text";
+        case Tag::List: return "list";
+        case Tag::Map: return "map";
+        case Tag::Ints: return "ints";
+        case Tag::Longs: return "longs";
         }
         return "unknown";
     }
@@ -112,32 +112,32 @@ namespace terila::tag {
     // One child of a map before it is stored: the binary and text forms both need the name
     // and the value next to each other.
     struct NamedTag {
-        TagKind kind = TagKind::End;
+        Tag kind = Tag::End;
         std::string name;
-        TagValue value;
+        NbtValue value;
     };
 
     namespace detail {
 
         // A map holds children under their name; the helpers below keep the call sites from
         // spelling out the variant every time.
-        inline const TagValue* map_get(const TagMap& map, std::string_view name) {
+        inline const NbtValue* map_get(const NbtCompound& map, std::string_view name) {
             const auto it = map.find(std::string(name));
             return it == map.end() ? nullptr : &it->second;
         }
 
-        inline TagValue* map_get(TagMap& map, std::string_view name) {
+        inline NbtValue* map_get(NbtCompound& map, std::string_view name) {
             const auto it = map.find(std::string(name));
             return it == map.end() ? nullptr : &it->second;
         }
 
-        inline const TagList* list_at(const TagValue& value) {
-            return value.get_if<TagList>();
+        inline const NbtList* list_at(const NbtValue& value) {
+            return value.get_if<NbtList>();
         }
 
         // A list must stay homogeneous: the element type of an empty list is decided by the
         // first value pushed into it, and mixing types afterwards is refused.
-        inline bool list_accepts(const TagList& list, TagKind kind) {
+        inline bool list_accepts(const NbtList& list, Tag kind) {
             return list.empty() || list.front().tag() == kind;
         }
 
@@ -145,14 +145,14 @@ namespace terila::tag {
 
     // The four helpers most call sites need, written as functions so a value stays a plain
     // struct instead of growing fifty methods.
-    inline const TagValue* at(const TagValue& value, std::string_view name) {
-        if (const auto* map = value.get_if<TagMap>()) {
+    inline const NbtValue* at(const NbtValue& value, std::string_view name) {
+        if (const auto* map = value.get_if<NbtCompound>()) {
             return detail::map_get(*map, name);
         }
         return nullptr;
     }
 
-    inline std::optional<std::int32_t> int_at(const TagValue& value, std::string_view name) {
+    inline std::optional<std::int32_t> int_at(const NbtValue& value, std::string_view name) {
         const auto* child = at(value, name);
         if (child == nullptr) {
             return std::nullopt;
@@ -162,13 +162,13 @@ namespace terila::tag {
             : std::nullopt;
     }
 
-    inline std::optional<std::string_view> text_at(const TagValue& value, std::string_view name) {
+    inline std::optional<std::string_view> text_at(const NbtValue& value, std::string_view name) {
         const auto* child = at(value, name);
         return child == nullptr ? std::nullopt : child->as_text();
     }
 
-    inline bool has(const TagValue& value, std::string_view name) {
+    inline bool has(const NbtValue& value, std::string_view name) {
         return at(value, name) != nullptr;
     }
 
-} // namespace terila::tag
+} // namespace terila::nbt

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "item/components.hpp"
 #include "protocol/entity.hpp"
 #include "protocol/packet.hpp"
 #include "protocol/packet_ids.hpp"
@@ -35,6 +36,12 @@ namespace terila::network {
             float yaw = 0.0f;
             float pitch = 0.0f;
         };
+
+        // Handing an item over is not a packet: the hub only knows how to ask the
+        // connection that owns the inventory, so a member registers a giver when it joins
+        // and /give with a selector walks this list.
+        using Giver = std::function<bool(std::int32_t item_id, std::int32_t count,
+            const terila::item::ComponentsPtr& components)>;
 
         void set_view_distance(int chunks) { view_distance_ = chunks > 0 ? chunks : 10; }
 
@@ -92,6 +99,69 @@ namespace terila::network {
             }
         }
 
+        // Replaces the giver of a member that is already in the world.
+        void set_giver(std::int32_t entity_id, Giver giver)
+        {
+            const auto it = players_.find(entity_id);
+            if (it != players_.end()) {
+                it->second.give = std::move(giver);
+            }
+        }
+
+        // Every player in the world, self included. Returns how many were served.
+        std::size_t give_to_all(std::int32_t item_id, std::int32_t count,
+            const terila::item::ComponentsPtr& components)
+        {
+            std::size_t delivered = 0;
+            for (const auto& [id, member] : players_) {
+                if (member.give && member.give(item_id, count, components)) {
+                    ++delivered;
+                }
+            }
+            return delivered;
+        }
+
+        bool give_to(std::int32_t entity_id, std::int32_t item_id, std::int32_t count,
+            const terila::item::ComponentsPtr& components)
+        {
+            const auto it = players_.find(entity_id);
+            return it != players_.end() && it->second.give &&
+                it->second.give(item_id, count, components);
+        }
+
+        // The closest player to a point, which is what @p means.
+        std::int32_t nearest_to(double x, double z) const
+        {
+            std::int32_t best = -1;
+            double best_distance = 0.0;
+            for (const auto& [id, member] : players_) {
+                const double dx = member.position.x - x;
+                const double dz = member.position.z - z;
+                const double distance = dx * dx + dz * dz;
+                if (best < 0 || distance < best_distance) {
+                    best = id;
+                    best_distance = distance;
+                }
+            }
+            return best;
+        }
+
+        // One random player, which is what @r means. -1 when nobody is online.
+        std::int32_t random_member() const
+        {
+            if (players_.empty()) {
+                return -1;
+            }
+            const auto wanted = picked_++ % players_.size();
+            std::size_t index = 0;
+            for (const auto& [id, member] : players_) {
+                if (index++ == wanted) {
+                    return id;
+                }
+            }
+            return -1;
+        }
+
         void leave(std::int32_t entity_id)
         {
             const auto it = players_.find(entity_id);
@@ -143,6 +213,7 @@ namespace terila::network {
             std::vector<protocol::ProfileProperty> properties;
             Position position;
             Sender send;
+            Giver give;
         };
 
         std::vector<std::int32_t> member_ids(std::int32_t except) const
@@ -253,6 +324,8 @@ namespace terila::network {
 
         int view_distance_ = 10;
         std::int32_t player_type_id_ = 159;   // registry id of minecraft:player
+        // Rotates through the members so a repeated @r does not pick the same player.
+        mutable std::size_t picked_ = 0;
         std::unordered_map<std::int32_t, Member> players_;
         // viewer -> target -> last position this viewer was told about
         std::unordered_map<std::int32_t, std::unordered_map<std::int32_t, Position>> known_;

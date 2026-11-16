@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace terila::tag {
+namespace terila::nbt {
 
     // A tag payload says how big it is before it contains anything, so a few bytes can ask
     // for gigabytes, and a nesting chain costs one stack frame per level. Every read
@@ -85,4 +85,4 @@ namespace terila::tag {
         mutable std::size_t depth_ = 0;
     };
 
-} // namespace terila::tag
+} // namespace terila::nbt

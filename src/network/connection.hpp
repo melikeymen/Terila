@@ -2,6 +2,7 @@
 
 #include <asio.hpp>
 
+#include "async/task.hpp"
 #include "data/recipe_book.hpp"
 #include "data/registry_data.hpp"
 #include "entity/item_drop.hpp"
@@ -176,6 +177,9 @@ namespace terila::network {
         void persist_block_change(const terila::world::BlockPos& target);
         void queue_chunk_area(std::int32_t center_cx, std::int32_t center_cz);
         void forget_far_chunks(std::int32_t center_cx, std::int32_t center_cz);
+        // The stream is a coroutine: one step per pump, so a full write queue only pauses
+        // it instead of losing the batch it was in the middle of.
+        terila::async::Task<void> stream_chunks();
         void pump_chunks();
         void update_player_chunk(double x, double z);
 
@@ -247,6 +251,10 @@ namespace terila::network {
         std::int32_t resolve_item(std::string_view name) const;
         bool give_item(std::int32_t item_id, std::int32_t count,
             const terila::item::ComponentsPtr& components);
+        // /give target selector: "" or "@s" is this player, "@a"/"@e" every player,
+        // "@p" the closest, "@r" one at random. Returns how many were served.
+        std::size_t give_to_targets(std::string_view selector, std::int32_t item_id,
+            std::int32_t count, const terila::item::ComponentsPtr& components);
 
         // --- connection_entities.cpp -----------------------------------------------
         // Spawns and removes mobs as they enter or leave the view distance and sends
@@ -280,6 +288,9 @@ namespace terila::network {
         std::int32_t spawn_z_ = 8;
         terila::world::WorldGenerator terrain_;
         std::deque<ChunkPos> pending_chunks_;
+        // Keeps the coroutine frame of the chunk stream, so an unfinished batch survives a
+        // full write queue.
+        terila::async::Stream chunk_stream_;
         struct PendingSave {
             std::int32_t x = 0;
             std::int32_t z = 0;

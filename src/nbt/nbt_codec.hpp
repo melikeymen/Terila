@@ -5,8 +5,8 @@
 // layer that has to care about hostile input.
 
 #include "log/logger.hpp"
-#include "tag/budget.hpp"
-#include "tag/value.hpp"
+#include "nbt/nbt_budget.hpp"
+#include "nbt/nbt_value.hpp"
 
 #include <cstdint>
 #include <cstring>
@@ -16,7 +16,7 @@
 #include <string_view>
 #include <vector>
 
-namespace terila::tag {
+namespace terila::nbt {
 
     // Where a payload keeps the root name. Files start with it; the network form and a data
     // component value start straight at the type, so the difference has to be explicit.
@@ -151,24 +151,24 @@ namespace terila::tag {
 
     // ---- reading -----------------------------------------------------------------
 
-    class TagReader {
+    class NbtReader {
     public:
-        explicit TagReader(std::span<const std::uint8_t> data, Layout layout = Layout::Unnamed,
+        explicit NbtReader(std::span<const std::uint8_t> data, Layout layout = Layout::Unnamed,
             ReadBudget budget = ReadBudget::from_client())
             : data_(data), layout_(layout), budget_(budget) {}
 
-        explicit TagReader(const std::vector<std::uint8_t>& data,
+        explicit NbtReader(const std::vector<std::uint8_t>& data,
             Layout layout = Layout::Unnamed, ReadBudget budget = ReadBudget::from_client())
-            : TagReader(std::span<const std::uint8_t>(data), layout, budget) {}
+            : NbtReader(std::span<const std::uint8_t>(data), layout, budget) {}
 
         // The whole payload, whatever tag it holds.
-        std::optional<TagValue> root() {
+        std::optional<NbtValue> root() {
             const auto remember = position_;
             try {
                 auto value = layout_ == Layout::Unnamed ? one_tag() : read_named_body();
                 if (value.has_value()) {
                     LOG_TRACE(Data, "tag read: {} bytes, root is {}", position_,
-                        tag_label(value->tag()));
+                        tag_name(value->tag()));
                 }
                 return value;
             }
@@ -180,16 +180,16 @@ namespace terila::tag {
         }
 
         // ... when the caller needs a map, which is the only shape a command root may be.
-        std::optional<TagMap> root_map() {
+        std::optional<NbtCompound> root_map() {
             const auto remember = position_;
             auto value = root();
             if (!value.has_value()) {
                 return std::nullopt;
             }
-            if (auto* map = value->get_if<TagMap>()) {
+            if (auto* map = value->get_if<NbtCompound>()) {
                 return std::move(*map);
             }
-            LOG_WARN(Data, "root tag is a {}, not a map", tag_label(value->tag()));
+            LOG_WARN(Data, "root tag is a {}, not a map", tag_name(value->tag()));
             position_ = remember;
             return std::nullopt;
         }
@@ -199,8 +199,8 @@ namespace terila::tag {
             const auto remember = position_;
             try {
                 const auto kind = read_kind();
-                if (kind == TagKind::End) {
-                    return NamedTag{ TagKind::End, {}, TagValue(TagMap{}) };
+                if (kind == Tag::End) {
+                    return NamedTag{ Tag::End, {}, NbtValue(NbtCompound{}) };
                 }
                 NamedTag named;
                 named.kind = kind;
@@ -268,98 +268,98 @@ namespace terila::tag {
             position_ += length;
         }
 
-        TagKind read_kind() {
+        Tag read_kind() {
             const auto raw = read_byte();
-            if (raw > static_cast<std::uint8_t>(TagKind::Longs)) {
+            if (raw > static_cast<std::uint8_t>(Tag::Longs)) {
                 throw BudgetExceeded("invalid tag id " + std::to_string(raw));
             }
-            return static_cast<TagKind>(raw);
+            return static_cast<Tag>(raw);
         }
 
-        std::optional<TagValue> read_named_body() {
+        std::optional<NbtValue> read_named_body() {
             const auto kind = read_kind();
             skip_name();
-            if (kind == TagKind::End) {
-                return TagValue(TagMap{});
+            if (kind == Tag::End) {
+                return NbtValue(NbtCompound{});
             }
             return body(kind);
         }
 
         // A single tag with its type byte, no name: what the network form writes.
-        std::optional<TagValue> one_tag() {
+        std::optional<NbtValue> one_tag() {
             const auto kind = read_kind();
-            if (kind == TagKind::End) {
-                return TagValue(TagMap{});
+            if (kind == Tag::End) {
+                return NbtValue(NbtCompound{});
             }
             return body(kind);
         }
 
-        std::optional<TagValue> body(TagKind kind) {
+        std::optional<NbtValue> body(Tag kind) {
             budget_.spend(1);
             switch (kind) {
-            case TagKind::End:
+            case Tag::End:
                 throw BudgetExceeded("a tag body cannot be the end marker");
-            case TagKind::Byte:
-                return TagValue(static_cast<std::int8_t>(read_byte()));
-            case TagKind::Short:
-                return TagValue(read_number<std::int16_t>());
-            case TagKind::Int:
-                return TagValue(read_number<std::int32_t>());
-            case TagKind::Long:
-                return TagValue(read_number<std::int64_t>());
-            case TagKind::Float: {
+            case Tag::Byte:
+                return NbtValue(static_cast<std::int8_t>(read_byte()));
+            case Tag::Short:
+                return NbtValue(read_number<std::int16_t>());
+            case Tag::Int:
+                return NbtValue(read_number<std::int32_t>());
+            case Tag::Long:
+                return NbtValue(read_number<std::int64_t>());
+            case Tag::Float: {
                 const auto raw = read_number<std::uint32_t>();
                 float value = 0.0f;
                 std::memcpy(&value, &raw, sizeof(value));
-                return TagValue(value);
+                return NbtValue(value);
             }
-            case TagKind::Double: {
+            case Tag::Double: {
                 const auto raw = read_number<std::uint64_t>();
                 double value = 0.0;
                 std::memcpy(&value, &raw, sizeof(value));
-                return TagValue(value);
+                return NbtValue(value);
             }
-            case TagKind::Text:
-                return TagValue(read_name());
-            case TagKind::Bytes: {
+            case Tag::Text:
+                return NbtValue(read_name());
+            case Tag::Bytes: {
                 const auto count = read_number<std::int32_t>();
                 if (count < 0) {
                     throw BudgetExceeded("negative byte array length");
                 }
                 budget_.spend(count);
                 need(static_cast<std::size_t>(count));
-                TagBytes values(data_.begin() + static_cast<std::ptrdiff_t>(position_),
+                NbtBytes values(data_.begin() + static_cast<std::ptrdiff_t>(position_),
                     data_.begin() + static_cast<std::ptrdiff_t>(position_ + count));
                 position_ += static_cast<std::size_t>(count);
-                return TagValue(std::move(values));
+                return NbtValue(std::move(values));
             }
-            case TagKind::Ints: {
+            case Tag::Ints: {
                 const auto count = read_number<std::int32_t>();
                 if (count < 0 || static_cast<std::size_t>(count) > (data_.size() - position_) / 4) {
                     throw BudgetExceeded("int array length does not fit the payload");
                 }
                 budget_.spend(4 * static_cast<std::int64_t>(count));
-                TagInts values;
+                NbtInts values;
                 values.reserve(static_cast<std::size_t>(count));
                 for (std::int32_t i = 0; i < count; ++i) {
                     values.push_back(read_number<std::int32_t>());
                 }
-                return TagValue(std::move(values));
+                return NbtValue(std::move(values));
             }
-            case TagKind::Longs: {
+            case Tag::Longs: {
                 const auto count = read_number<std::int32_t>();
                 if (count < 0 || static_cast<std::size_t>(count) > (data_.size() - position_) / 8) {
                     throw BudgetExceeded("long array length does not fit the payload");
                 }
                 budget_.spend(8 * static_cast<std::int64_t>(count));
-                TagLongs values;
+                NbtLongs values;
                 values.reserve(static_cast<std::size_t>(count));
                 for (std::int32_t i = 0; i < count; ++i) {
                     values.push_back(read_number<std::int64_t>());
                 }
-                return TagValue(std::move(values));
+                return NbtValue(std::move(values));
             }
-            case TagKind::List: {
+            case Tag::List: {
                 const ReadBudget::Level level(budget_);
                 if (!level.ok()) {
                     throw BudgetExceeded("tag tree is nested too deeply");
@@ -369,14 +369,14 @@ namespace terila::tag {
                 if (count < 0) {
                     throw BudgetExceeded("negative list length");
                 }
-                if (element == TagKind::End && count != 0) {
+                if (element == Tag::End && count != 0) {
                     throw BudgetExceeded("a list of end markers can only be empty");
                 }
                 if (static_cast<std::size_t>(count) > data_.size() - position_ + 1) {
                     throw BudgetExceeded("list length does not fit the payload");
                 }
                 budget_.spend(count);
-                TagList values;
+                NbtList values;
                 values.reserve(static_cast<std::size_t>(count));
                 for (std::int32_t i = 0; i < count; ++i) {
                     auto child = body(element);
@@ -385,18 +385,18 @@ namespace terila::tag {
                     }
                     values.push_back(std::move(*child));
                 }
-                return TagValue(std::move(values));
+                return NbtValue(std::move(values));
             }
-            case TagKind::Map: {
+            case Tag::Map: {
                 const ReadBudget::Level level(budget_);
                 if (!level.ok()) {
                     throw BudgetExceeded("tag tree is nested too deeply");
                 }
-                TagMap children;
+                NbtCompound children;
                 while (true) {
                     const auto child_kind = read_kind();
-                    if (child_kind == TagKind::End) {
-                        return TagValue(std::move(children));
+                    if (child_kind == Tag::End) {
+                        return NbtValue(std::move(children));
                     }
                     auto name = read_name();
                     auto child = body(child_kind);
@@ -413,12 +413,12 @@ namespace terila::tag {
 
     // ---- writing -----------------------------------------------------------------
 
-    class TagWriter {
+    class NbtWriter {
     public:
-        explicit TagWriter(Layout layout = Layout::Unnamed) : layout_(layout) {}
+        explicit NbtWriter(Layout layout = Layout::Unnamed) : layout_(layout) {}
 
         void open_map() {
-            out_.push_back(static_cast<std::uint8_t>(TagKind::Map));
+            out_.push_back(static_cast<std::uint8_t>(Tag::Map));
             if (layout_ == Layout::Named && depth_ == 0) {
                 write_name("");
             }
@@ -433,7 +433,7 @@ namespace terila::tag {
         }
 
         // A standalone value: type and body, no name in front of it.
-        void put_root(const TagValue& value) {
+        void put_root(const NbtValue& value) {
             if (!writable(value)) {
                 failed_ = true;
                 LOG_WARN(Data, "tag cannot be written: a list must keep one element type");
@@ -443,7 +443,7 @@ namespace terila::tag {
             write_body(value);
         }
 
-        void put(std::string_view name, const TagValue& value) {
+        void put(std::string_view name, const NbtValue& value) {
             if (!writable(value)) {
                 failed_ = true;
                 LOG_WARN(Data, "tag '{}' cannot be written: a list must keep one element type", name);
@@ -455,19 +455,19 @@ namespace terila::tag {
         }
 
         void put_text(std::string_view name, std::string_view text) {
-            out_.push_back(static_cast<std::uint8_t>(TagKind::Text));
+            out_.push_back(static_cast<std::uint8_t>(Tag::Text));
             write_name(name);
             write_name(text);
         }
 
         void put_int(std::string_view name, std::int32_t value) {
-            out_.push_back(static_cast<std::uint8_t>(TagKind::Int));
+            out_.push_back(static_cast<std::uint8_t>(Tag::Int));
             write_name(name);
             write_number<std::int32_t>(value);
         }
 
         void put_boolean(std::string_view name, bool value) {
-            out_.push_back(static_cast<std::uint8_t>(TagKind::Byte));
+            out_.push_back(static_cast<std::uint8_t>(Tag::Byte));
             write_name(name);
             out_.push_back(value ? 1 : 0);
         }
@@ -519,11 +519,11 @@ namespace terila::tag {
             out_.insert(out_.end(), wire.begin(), wire.end());
         }
 
-        bool writable(const TagValue& value) const {
+        bool writable(const NbtValue& value) const {
             if (const auto* text = value.get_if<std::string>()) {
                 return codec::to_wire_text(*text).size() <= 0xFFFF;
             }
-            if (const auto* list = value.get_if<TagList>()) {
+            if (const auto* list = value.get_if<NbtList>()) {
                 if (list->empty()) {
                     return true;
                 }
@@ -535,7 +535,7 @@ namespace terila::tag {
                 }
                 return true;
             }
-            if (const auto* map = value.get_if<TagMap>()) {
+            if (const auto* map = value.get_if<NbtCompound>()) {
                 for (const auto& [name, child] : *map) {
                     if (codec::to_wire_text(name).size() > 0xFFFF || !writable(child)) {
                         return false;
@@ -545,7 +545,7 @@ namespace terila::tag {
             return true;
         }
 
-        void write_body(const TagValue& value) {
+        void write_body(const NbtValue& value) {
             if (const auto* v = value.get_if<std::int8_t>()) {
                 out_.push_back(static_cast<std::uint8_t>(*v));
             }
@@ -567,31 +567,31 @@ namespace terila::tag {
             else if (const auto* v = value.get_if<std::string>()) {
                 write_name(*v);
             }
-            else if (const auto* v = value.get_if<TagBytes>()) {
+            else if (const auto* v = value.get_if<NbtBytes>()) {
                 write_number<std::int32_t>(static_cast<std::int32_t>(v->size()));
                 out_.insert(out_.end(), v->begin(), v->end());
             }
-            else if (const auto* v = value.get_if<TagInts>()) {
+            else if (const auto* v = value.get_if<NbtInts>()) {
                 write_number<std::int32_t>(static_cast<std::int32_t>(v->size()));
                 for (const auto item : *v) {
                     write_number<std::int32_t>(item);
                 }
             }
-            else if (const auto* v = value.get_if<TagLongs>()) {
+            else if (const auto* v = value.get_if<NbtLongs>()) {
                 write_number<std::int32_t>(static_cast<std::int32_t>(v->size()));
                 for (const auto item : *v) {
                     write_number<std::int64_t>(item);
                 }
             }
-            else if (const auto* v = value.get_if<TagList>()) {
-                const auto kind = v->empty() ? TagKind::End : v->front().tag();
+            else if (const auto* v = value.get_if<NbtList>()) {
+                const auto kind = v->empty() ? Tag::End : v->front().tag();
                 out_.push_back(static_cast<std::uint8_t>(kind));
                 write_number<std::int32_t>(static_cast<std::int32_t>(v->size()));
                 for (const auto& child : *v) {
                     write_body(child);
                 }
             }
-            else if (const auto* v = value.get_if<TagMap>()) {
+            else if (const auto* v = value.get_if<NbtCompound>()) {
                 for (const auto& [name, child] : *v) {
                     out_.push_back(static_cast<std::uint8_t>(child.tag()));
                     write_name(name);
@@ -604,10 +604,10 @@ namespace terila::tag {
 
     // Convenience: one value as a standalone payload, which is what a data component and a
     // chat component are written as.
-    inline std::vector<std::uint8_t> encode_value(const TagValue& value) {
-        TagWriter writer(Layout::Unnamed);
+    inline std::vector<std::uint8_t> encode_nbt(const NbtValue& value) {
+        NbtWriter writer(Layout::Unnamed);
         writer.put_root(value);
         return writer.finish();
     }
 
-} // namespace terila::tag
+} // namespace terila::nbt

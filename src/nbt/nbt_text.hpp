@@ -5,8 +5,8 @@
 // a number keeps its width in a suffix, a list keeps one element type, and a name is
 // quoted only when it would otherwise read back as something else.
 
-#include "tag/codec.hpp"
-#include "tag/value.hpp"
+#include "nbt/nbt_codec.hpp"
+#include "nbt/nbt_value.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -19,7 +19,7 @@
 #include <string_view>
 #include <vector>
 
-namespace terila::tag {
+namespace terila::nbt {
 
     // ---- writing text ------------------------------------------------------------
 
@@ -125,7 +125,7 @@ namespace terila::tag {
             out.append(static_cast<std::size_t>(depth) * 2, ' ');
         }
 
-        inline void write(std::string& out, const TagValue& value, bool indented, int depth) {
+        inline void write(std::string& out, const NbtValue& value, bool indented, int depth) {
             if (const auto* v = value.get_if<std::int8_t>()) {
                 out += std::to_string(static_cast<int>(*v));
                 out.push_back('b');
@@ -152,7 +152,7 @@ namespace terila::tag {
             else if (const auto* v = value.get_if<std::string>()) {
                 quoted(out, *v);
             }
-            else if (const auto* v = value.get_if<TagBytes>()) {
+            else if (const auto* v = value.get_if<NbtBytes>()) {
                 out += "[B;";
                 for (std::size_t i = 0; i < v->size(); ++i) {
                     if (i != 0) out.push_back(',');
@@ -162,7 +162,7 @@ namespace terila::tag {
                 }
                 out.push_back(']');
             }
-            else if (const auto* v = value.get_if<TagInts>()) {
+            else if (const auto* v = value.get_if<NbtInts>()) {
                 out += "[I;";
                 for (std::size_t i = 0; i < v->size(); ++i) {
                     if (i != 0) out.push_back(',');
@@ -171,7 +171,7 @@ namespace terila::tag {
                 }
                 out.push_back(']');
             }
-            else if (const auto* v = value.get_if<TagLongs>()) {
+            else if (const auto* v = value.get_if<NbtLongs>()) {
                 out += "[L;";
                 for (std::size_t i = 0; i < v->size(); ++i) {
                     if (i != 0) out.push_back(',');
@@ -181,7 +181,7 @@ namespace terila::tag {
                 }
                 out.push_back(']');
             }
-            else if (const auto* v = value.get_if<TagList>()) {
+            else if (const auto* v = value.get_if<NbtList>()) {
                 out.push_back('[');
                 for (std::size_t i = 0; i < v->size(); ++i) {
                     if (i != 0) out.push_back(',');
@@ -191,7 +191,7 @@ namespace terila::tag {
                 if (!v->empty()) break_line(out, indented, depth);
                 out.push_back(']');
             }
-            else if (const auto* v = value.get_if<TagMap>()) {
+            else if (const auto* v = value.get_if<NbtCompound>()) {
                 out.push_back('{');
                 bool first = true;
                 for (const auto& [key, child] : *v) {
@@ -211,39 +211,39 @@ namespace terila::tag {
     } // namespace text
 
     // One line, the form a command accepts back.
-    inline std::string to_text(const TagValue& value) {
+    inline std::string to_snbt(const NbtValue& value) {
         std::string out;
         text::write(out, value, false, 0);
         return out;
     }
 
     // The indented form the game's data dump uses.
-    inline std::string to_pretty(const TagValue& value) {
+    inline std::string to_snbt_pretty(const NbtValue& value) {
         std::string out;
         text::write(out, value, true, 0);
         return out;
     }
 
     // One line per entry with the type of its value: the shape of a tree, for logs.
-    inline std::vector<std::string> describe_tree(const TagValue& value) {
+    inline std::vector<std::string> describe_tree(const NbtValue& value) {
         std::vector<std::string> lines;
-        std::function<void(const TagValue&, int)> walk = [&](const TagValue& node, int depth) {
+        std::function<void(const NbtValue&, int)> walk = [&](const NbtValue& node, int depth) {
             const std::string indent(static_cast<std::size_t>(depth) * 2, ' ');
-            const auto descend = [&](const TagValue& child) {
-                if (child.get_if<TagMap>() != nullptr || child.get_if<TagList>() != nullptr) {
+            const auto descend = [&](const NbtValue& child) {
+                if (child.get_if<NbtCompound>() != nullptr || child.get_if<NbtList>() != nullptr) {
                     walk(child, depth + 1);
                 }
             };
-            if (const auto* map = node.get_if<TagMap>()) {
+            if (const auto* map = node.get_if<NbtCompound>()) {
                 for (const auto& [key, child] : *map) {
-                    lines.push_back(indent + key + ": " + std::string(tag_label(child.tag())));
+                    lines.push_back(indent + key + ": " + std::string(tag_name(child.tag())));
                     descend(child);
                 }
                 return;
             }
-            if (const auto* list = node.get_if<TagList>()) {
+            if (const auto* list = node.get_if<NbtList>()) {
                 for (const auto& child : *list) {
-                    lines.push_back(indent + "- " + std::string(tag_label(child.tag())));
+                    lines.push_back(indent + "- " + std::string(tag_name(child.tag())));
                     descend(child);
                 }
             }
@@ -253,20 +253,24 @@ namespace terila::tag {
     }
 
     // A chat component is a map with a "text" entry, written as a standalone value.
-    inline std::vector<std::uint8_t> text_component_bytes(std::string_view message) {
-        TagMap component;
-        component.insert_or_assign("text", TagValue(std::string(message)));
-        return encode_value(TagValue(std::move(component)));
+    inline std::vector<std::uint8_t> text_component_nbt(std::string_view message) {
+        NbtCompound component;
+        component.insert_or_assign("text", NbtValue(std::string(message)));
+        return encode_nbt(NbtValue(std::move(component)));
     }
 
     // ---- reading text ------------------------------------------------------------
 
-    class TagTextReader {
+    class SnbtReader {
     public:
-        explicit TagTextReader(std::string_view input) : input_(input) {}
+        explicit SnbtReader(std::string_view input) : input_(input) {}
+
+        // Nesting is recursion here too, so the same depth ceiling applies as in the
+        // binary reader; text written by a player is not trustworthy either.
+        static constexpr std::size_t kMaxDepth = 64;
 
         // Reads one value and insists that nothing is left over.
-        TagValue read_all() {
+        NbtValue read_all() {
             auto value = read_value(false);
             skip_space();
             if (cursor_ < input_.size()) {
@@ -278,6 +282,21 @@ namespace terila::tag {
     private:
         std::string_view input_;
         std::size_t cursor_ = 0;
+        std::size_t depth_ = 0;
+
+        struct Nest {
+            explicit Nest(SnbtReader& reader) : reader_(reader) {
+                if (++reader_.depth_ > kMaxDepth) {
+                    reader_.fail("tag is nested too deeply");
+                }
+            }
+            ~Nest() { --reader_.depth_; }
+            Nest(const Nest&) = delete;
+            Nest& operator=(const Nest&) = delete;
+
+        private:
+            SnbtReader& reader_;
+        };
 
         [[noreturn]] void fail(std::string message) const {
             throw BudgetExceeded(message + " at character " + std::to_string(cursor_));
@@ -299,7 +318,7 @@ namespace terila::tag {
             return false;
         }
 
-        TagValue read_value(bool root) {
+        NbtValue read_value(bool root) {
             skip_space();
             if (cursor_ >= input_.size()) {
                 fail("expected a value");
@@ -312,7 +331,7 @@ namespace terila::tag {
                 return read_list_or_array();
             }
             if (c == '"' || c == '\'') {
-                return TagValue(read_quoted());
+                return NbtValue(read_quoted());
             }
             if (root) {
                 fail("a command value has to be a map");
@@ -320,11 +339,12 @@ namespace terila::tag {
             return read_unquoted();
         }
 
-        TagValue read_map() {
+        NbtValue read_map() {
+            const Nest nest(*this);
             take('{');
-            TagMap children;
+            NbtCompound children;
             if (take('}')) {
-                return TagValue(std::move(children));
+                return NbtValue(std::move(children));
             }
             while (true) {
                 const std::string key = read_key();
@@ -336,7 +356,7 @@ namespace terila::tag {
                     continue;
                 }
                 if (take('}')) {
-                    return TagValue(std::move(children));
+                    return NbtValue(std::move(children));
                 }
                 fail("expected ',' or '}'");
             }
@@ -362,7 +382,8 @@ namespace terila::tag {
             return std::string(input_.substr(start, cursor_ - start));
         }
 
-        TagValue read_list_or_array() {
+        NbtValue read_list_or_array() {
+            const Nest nest(*this);
             take('[');
 
             // A letter and a semicolon right after the bracket mark a typed array; anything
@@ -375,26 +396,31 @@ namespace terila::tag {
                 }
             }
 
-            TagList items;
+            NbtList items;
             if (take(']')) {
-                return TagValue(std::move(items));
+                return NbtValue(std::move(items));
             }
             while (true) {
-                items.push_back(read_value(false));
+                auto element = read_value(false);
+                // A list carries one element type, so a mixed one is a typo, not a value.
+                if (!items.empty() && items.front().tag() != element.tag()) {
+                    fail("a list cannot mix element types");
+                }
+                items.push_back(std::move(element));
                 if (take(',')) {
                     continue;
                 }
                 if (take(']')) {
-                    return TagValue(std::move(items));
+                    return NbtValue(std::move(items));
                 }
                 fail("expected ',' or ']'");
             }
         }
 
-        TagValue read_array(char kind) {
-            TagBytes bytes;
-            TagInts ints;
-            TagLongs longs;
+        NbtValue read_array(char kind) {
+            NbtBytes bytes;
+            NbtInts ints;
+            NbtLongs longs;
             while (!take(']')) {
                 auto element = read_unquoted();
                 const auto number = element.as_long();
@@ -420,9 +446,9 @@ namespace terila::tag {
                     fail("expected ',' inside an array");
                 }
             }
-            if (kind == 'B') return TagValue(std::move(bytes));
-            if (kind == 'I') return TagValue(std::move(ints));
-            return TagValue(std::move(longs));
+            if (kind == 'B') return NbtValue(std::move(bytes));
+            if (kind == 'I') return NbtValue(std::move(ints));
+            return NbtValue(std::move(longs));
         }
 
         std::string read_quoted() {
@@ -483,17 +509,17 @@ namespace terila::tag {
         }
 
         // A bare word is a boolean, a number with its width in the suffix, or text.
-        TagValue read_unquoted() {
+        NbtValue read_unquoted() {
             skip_space();
             if (cursor_ < input_.size() && (input_[cursor_] == '"' || input_[cursor_] == '\'')) {
-                return TagValue(read_quoted());
+                return NbtValue(read_quoted());
             }
 
             const auto start = cursor_;
             while (cursor_ < input_.size()) {
                 const char c = input_[cursor_];
                 if (std::isspace(static_cast<unsigned char>(c)) != 0 || c == ',' || c == ']' ||
-                    c == '}' || c == ':' || c == ';') {
+                    c == '}' || c == ';') {
                     break;
                 }
                 ++cursor_;
@@ -503,18 +529,18 @@ namespace terila::tag {
                 fail("expected a value");
             }
             if (word == "true") {
-                return TagValue(static_cast<std::int8_t>(1));
+                return NbtValue(static_cast<std::int8_t>(1));
             }
             if (word == "false") {
-                return TagValue(static_cast<std::int8_t>(0));
+                return NbtValue(static_cast<std::int8_t>(0));
             }
             if (auto number = as_number(word)) {
                 return std::move(*number);
             }
-            return TagValue(word);
+            return NbtValue(word);
         }
 
-        static std::optional<TagValue> as_number(const std::string& word) {
+        static std::optional<NbtValue> as_number(const std::string& word) {
             if (word.empty()) {
                 return std::nullopt;
             }
@@ -541,23 +567,23 @@ namespace terila::tag {
             switch (suffix) {
             case 'b': {
                 if (!integer) return std::nullopt;
-                return TagValue(static_cast<std::int8_t>(
+                return NbtValue(static_cast<std::int8_t>(
                     std::strtoll(text.c_str(), nullptr, 10) & 0xFF));
             }
             case 's': {
                 if (!integer) return std::nullopt;
-                return TagValue(static_cast<std::int16_t>(
+                return NbtValue(static_cast<std::int16_t>(
                     std::strtoll(text.c_str(), nullptr, 10)));
             }
             case 'l': {
                 if (!integer) return std::nullopt;
-                return TagValue(static_cast<std::int64_t>(std::strtoll(text.c_str(), nullptr, 10)));
+                return NbtValue(static_cast<std::int64_t>(std::strtoll(text.c_str(), nullptr, 10)));
             }
             case 'f': {
-                return TagValue(std::strtof(text.c_str(), nullptr));
+                return NbtValue(std::strtof(text.c_str(), nullptr));
             }
             case 'd': {
-                return TagValue(std::strtod(text.c_str(), nullptr));
+                return NbtValue(std::strtod(text.c_str(), nullptr));
             }
             default:
                 break;
@@ -566,11 +592,11 @@ namespace terila::tag {
             if (integer) {
                 const auto value = std::strtoll(text.c_str(), nullptr, 10);
                 if (value >= INT32_MIN && value <= INT32_MAX) {
-                    return TagValue(static_cast<std::int32_t>(value));
+                    return NbtValue(static_cast<std::int32_t>(value));
                 }
-                return TagValue(static_cast<std::int64_t>(value));
+                return NbtValue(static_cast<std::int64_t>(value));
             }
-            return TagValue(std::strtod(text.c_str(), nullptr));
+            return NbtValue(std::strtod(text.c_str(), nullptr));
         }
 
         static bool is_integer(std::string_view text) {
@@ -623,12 +649,12 @@ namespace terila::tag {
 
     // Reads one value from text. The error says what the reader expected, the way a failed
     // command tells the player.
-    inline std::optional<TagValue> parse_tag(std::string_view input, std::string& error) {
+    inline std::optional<NbtValue> parse_snbt(std::string_view input, std::string& error) {
         try {
-            TagTextReader reader(input);
+            SnbtReader reader(input);
             auto value = reader.read_all();
             LOG_TRACE(Data, "tag text parsed: {} characters into a {}", input.size(),
-                tag_label(value.tag()));
+                tag_name(value.tag()));
             return value;
         }
         catch (const std::exception& exception) {
@@ -638,9 +664,9 @@ namespace terila::tag {
         }
     }
 
-    inline std::optional<TagValue> parse_tag(std::string_view input) {
+    inline std::optional<NbtValue> parse_snbt(std::string_view input) {
         std::string ignored;
-        return parse_tag(input, ignored);
+        return parse_snbt(input, ignored);
     }
 
-} // namespace terila::tag
+} // namespace terila::nbt
