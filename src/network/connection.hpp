@@ -210,6 +210,15 @@ namespace terila::network {
             std::int32_t face, std::int32_t sequence);
         void refresh_held_item();
 
+        // --- survival breaking (connection_world.cpp) -------------------------------
+        // Survival waits out the block's hardness; creative still removes it at once.
+        int break_ticks_for(std::int32_t state) const;
+        void start_breaking(const terila::world::BlockPos& pos);
+        void abort_breaking();
+        void finish_breaking(const terila::world::BlockPos& pos, std::int32_t sequence);
+        void tick_breaking();
+        void break_now(const terila::world::BlockPos& target, std::int32_t sequence);
+
         // --- dropped items ---------------------------------------------------------
         // Surface a broken block falls onto: the block above the grass layer.
         double drop_ground_y(std::int32_t x, std::int32_t z) const;
@@ -329,6 +338,13 @@ namespace terila::network {
         std::int32_t item_entity_type_ = 0;
         std::unordered_map<std::int32_t, KnownDrop> known_drops_;
         std::array<InvSlot, kInventorySlots> inventory_{};
+        // The block a survival player is holding the button down on, and how far that dig
+        // has got. Cleared whenever the dig stops for any reason.
+        terila::world::BlockPos breaking_pos_{};
+        std::int32_t breaking_state_ = 0;
+        int break_progress_ = 0;
+        int break_ticks_ = 0;
+        bool breaking_ = false;
         bool menu_open_ = false;
         MenuKind menu_kind_ = kMenuNone;
         std::int32_t menu_id_ = 0;

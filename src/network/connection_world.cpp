@@ -4,6 +4,10 @@
 #include "protocol/item.hpp"
 #include "protocol/play.hpp"
 
+#include "world/block_break.hpp"
+
+#include <cmath>
+
 namespace terila::network {
 
     std::optional<std::int32_t> Connection::block_state(std::string_view name) const {
@@ -55,6 +59,111 @@ namespace terila::network {
             return;
         }
 
+        break_now(target, sequence);
+    }
+
+    // How long this state resists a bare hand. Unknown states fall back to stone without the
+    // pickaxe that would make it quick, so a missing data entry never turns into a free dig.
+    int Connection::break_ticks_for(std::int32_t state) const {
+        const auto info = data_.block_break_info.find(state);
+        if (info == data_.block_break_info.end()) {
+            return terila::world::break_ticks(1.5f, true);
+        }
+        return terila::world::break_ticks(info->second.hardness,
+            info->second.requires_correct_tool);
+    }
+
+    void Connection::start_breaking(const terila::world::BlockPos& pos) {
+        if (!can_break_blocks() || !inside_world(pos.y)) {
+            return;
+        }
+        if (menu_open_) {
+            close_menu();
+        }
+
+        const std::int32_t state = state_at(pos);
+        if (state == air_state_) {
+            abort_breaking();
+            return;
+        }
+
+        const int ticks = break_ticks_for(state);
+        if (ticks < 0) {
+            // Bedrock never yields; the client shows the block and the server leaves it.
+            abort_breaking();
+            return;
+        }
+        if (ticks == 0) {
+            // Plants, torches and anything else with no resistance: gone on contact.
+            break_now(pos, 0);
+            return;
+        }
+
+        breaking_ = true;
+        breaking_pos_ = pos;
+        breaking_state_ = state;
+        break_ticks_ = ticks;
+        break_progress_ = 0;
+        LOG_DEBUG(Network, "{} is digging ({}, {}, {}): state {} takes {} ticks",
+            username_, pos.x, pos.y, pos.z, state, ticks);
+    }
+
+    void Connection::abort_breaking() {
+        breaking_ = false;
+        break_progress_ = 0;
+    }
+
+    void Connection::finish_breaking(const terila::world::BlockPos& pos, std::int32_t sequence) {
+        // The client says the block is gone. The server keeps its own clock: while the dig is
+        // still running the tick loop finishes it, so a client-side timer cannot shorten the
+        // work. Anything else means the dig was already over and there is nothing to do.
+        const bool same_block = breaking_ && pos.x == breaking_pos_.x &&
+            pos.y == breaking_pos_.y && pos.z == breaking_pos_.z;
+        if (same_block) {
+            return;
+        }
+
+        // A zero-resistance block is finished by the stop packet alone: the start packet
+        // already removed it, and a client that sends only stop still deserves the same.
+        if (!breaking_ && inside_world(pos.y) && state_at(pos) != air_state_ &&
+            break_ticks_for(state_at(pos)) == 0) {
+            break_now(pos, sequence);
+            return;
+        }
+
+        abort_breaking();
+    }
+
+    void Connection::tick_breaking() {
+        if (!breaking_) {
+            return;
+        }
+
+        if (!inside_world(breaking_pos_.y) || state_at(breaking_pos_) != breaking_state_) {
+            // The block is gone or was replaced while it was being dug.
+            abort_breaking();
+            return;
+        }
+
+        // Walking away lets go of the button, the way the game does it.
+        const double dx = (breaking_pos_.x + 0.5) - player_x_;
+        const double dy = (breaking_pos_.y + 0.5) - player_y_;
+        const double dz = (breaking_pos_.z + 0.5) - player_z_;
+        if (dx * dx + dy * dy + dz * dz > 36.0) {
+            abort_breaking();
+            return;
+        }
+
+        if (++break_progress_ < break_ticks_) {
+            return;
+        }
+
+        const auto target = breaking_pos_;
+        abort_breaking();
+        break_now(target, 0);
+    }
+
+    void Connection::break_now(const terila::world::BlockPos& target, std::int32_t sequence) {
         const std::int32_t broken = state_at(target);
         world_.set(target, air_state_);
         spawn_block_drop(target, broken);

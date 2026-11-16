@@ -22,6 +22,8 @@ namespace terila::network {
         }
 
         gamemode_ = requested;
+        // A dig in progress belongs to the mode it started in.
+        abort_breaking();
         LOG_INFO(Network, "{} switched to gamemode {}", username_, gamemode_);
         send_gamemode_state();
         if (hub_) {
@@ -158,12 +160,25 @@ namespace terila::network {
             const auto sequence = terila::protocol::read_varint(
                 payload.data() + sequence_offset, payload.size() - sequence_offset);
 
-            // 2 = finished destroying. A creative client only sends 0 (start destroy)
-            // because it breaks the block instantly, so that counts as a break too —
-            // otherwise the server keeps the block and re-sends it later.
-            const bool finished = action->value == 2 || (action->value == 0 && instant_break());
-            if (finished) {
-                handle_block_break(pos, sequence.has_value() ? sequence->value : 0);
+            const std::int32_t sequence_value = sequence.has_value() ? sequence->value : 0;
+            const terila::world::BlockPos target{ pos.x, pos.y, pos.z };
+
+            // Creative removes the block the moment the dig starts and never waits.
+            if (instant_break()) {
+                if (action->value == 0 || action->value == 2) {
+                    handle_block_break(pos, sequence_value);
+                }
+                return;
+            }
+
+            // Survival holds the block down: 0 starts the dig, 1 lets go, 2 is the client
+            // claiming it is done. The server times the dig with the block's hardness, so
+            // the claim only counts once the clock agrees.
+            switch (action->value) {
+            case 0: start_breaking(target); break;
+            case 1: abort_breaking(); break;
+            case 2: finish_breaking(target, sequence_value); break;
+            default: break;
             }
             return;
         }

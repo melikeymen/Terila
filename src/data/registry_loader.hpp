@@ -184,6 +184,55 @@ namespace terila::data {
 			out.block_state_ids.size(), out.block_states.size());
 	}
 
+	// blocks/minecraft.json: every block kind with its hardness, joined to the state ids the
+	// dig packets actually carry. Breaking asks for a state, so the join happens once here
+	// instead of a name lookup per breaker tick.
+	inline void load_block_break_info(RegistryData& out, const std::string& path) {
+		std::string text;
+		if (!input::read_text(path, text)) {
+			LOG_WARN(Data, "cannot open {}", path);
+			return;
+		}
+
+		try {
+			auto j = nlohmann::json::parse(text);
+			if (!j.contains("data") || !j["data"].is_array()) {
+				LOG_WARN(Data, "unexpected format in {} (no 'data' array)", path);
+				return;
+			}
+
+			for (const auto& entry : j["data"]) {
+				if (!entry.contains("id") || !entry["id"].is_string()) continue;
+
+				const std::string name = entry["id"].get<std::string>();
+				BlockBreakInfo info;
+				if (entry.contains("hardness")) {
+					info.hardness = entry["hardness"].get<float>();
+				}
+				info.requires_correct_tool = entry.value("requires_correct_tool", false);
+
+				if (const auto variants = out.block_states.find(name);
+					variants != out.block_states.end()) {
+					for (const auto& variant : variants->second) {
+						out.block_break_info[variant.id] = info;
+					}
+					continue;
+				}
+
+				// Blocks without variants live at their single state id.
+				if (const auto single = out.block_state_ids.find(name);
+					single != out.block_state_ids.end()) {
+					out.block_break_info[single->second] = info;
+				}
+			}
+		}
+		catch (const std::exception& e) {
+			LOG_WARN(Data, "parse failed: {} ({})", path, e.what());
+		}
+
+		LOG_DEBUG(Data, "block break info: {} states", out.block_break_info.size());
+	}
+
 	// worldgen/biomes.json format:
 	//   { data: [ { id: "minecraft:badlands", protocol_id: N, data: {...} } ] }
 	inline void load_biome_ids(std::unordered_map<std::string, std::int32_t>& out, const std::string& path) {

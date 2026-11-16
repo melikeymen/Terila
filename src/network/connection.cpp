@@ -43,6 +43,8 @@ namespace terila::network {
     }
 
     void Connection::tick_entities() {
+        // A held-down survival dig counts down once per tick.
+        tick_breaking();
         send_entity_updates(mobs_.mobs());
         send_drop_updates();
         tick_menu();

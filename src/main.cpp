@@ -242,6 +242,8 @@ int main() {
     terila::data::load_command_tree(data.command_tree_payload, "commands/tree.nbt");
 
     terila::data::load_blocks(data, "blocks/state_ids.json");
+    // After the state ids: breaking is answered per state, not per block kind.
+    terila::data::load_block_break_info(data, "blocks/minecraft.json");
     terila::data::load_biome_ids(data.biome_ids, "worldgen/biomes.json");
     terila::data::load_dimensions(data.overworld, "worldgen/dimensions.json");
     terila::data::load_entity_type_ids(data.entity_type_ids, "entities/minecraft.json");

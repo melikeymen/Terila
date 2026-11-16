@@ -19,6 +19,12 @@ namespace terila::data {
         std::unordered_map<std::string, std::string> properties;
     };
 
+    // What a block does when it is dug at, as far as breaking is concerned.
+    struct BlockBreakInfo {
+        float hardness = 0.0f;
+        bool requires_correct_tool = false;
+    };
+
     struct RegistryData {
 
         std::unordered_map<std::string, std::vector<std::uint8_t>> nbt_payloads;
@@ -31,6 +37,8 @@ namespace terila::data {
 
         std::unordered_map<std::string, std::int32_t> block_state_ids;
         std::unordered_map<std::string, std::vector<BlockStateInfo>> block_states;
+        // Keyed by state id because a dig names the block it hits, not the block kind.
+        std::unordered_map<std::int32_t, BlockBreakInfo> block_break_info;
         std::unordered_map<std::string, std::int32_t> biome_ids;
         std::unordered_map<std::string, std::int32_t> entity_type_ids;
         std::unordered_map<std::string, std::string>  entity_categories;
