@@ -1,5 +1,6 @@
 #pragma once
 
+#include "version/mc_version.hpp"
 #include "world/trf/trf_error.hpp"
 
 #include <array>
@@ -15,7 +16,10 @@ namespace terila::world::trf {
     // byte-swapped, so the protocol's own big-endian encoding survives a save/load.
     inline constexpr std::uint16_t format_major = 1;
     inline constexpr std::uint16_t format_minor = 0;
-    inline constexpr std::uint16_t protocol_version = 777;
+    // Region payloads are stored verbatim, so the file is only readable by a build that
+    // speaks the protocol the chunks were encoded for.
+    inline constexpr std::uint16_t protocol_version =
+        static_cast<std::uint16_t>(terila::version::protocol());
 
     inline constexpr std::size_t header_size = 4096;
     inline constexpr std::size_t footer_size = 4096;

@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <cstdint>
+#include <string>
 
 namespace terila::protocol {
 
@@ -91,6 +92,19 @@ namespace terila::protocol {
     inline PacketIds& packet_ids() {
         static PacketIds ids;
         return ids;
+    }
+
+    // The extractor records which release the dump came from. Keeping it lets the server
+    // refuse a dump that belongs to another protocol instead of loading ids that happen to
+    // exist and then speaking the wrong numbers.
+    struct PacketIdSource {
+        std::string version;
+        std::int32_t protocol = -1;
+    };
+
+    inline PacketIdSource& packet_id_source() {
+        static PacketIdSource source;
+        return source;
     }
 
 }

@@ -11,6 +11,9 @@
 #include "protocol/primitives.hpp"
 #include "protocol/uuid.hpp"
 
+#include "version/features.hpp"
+#include "version/mc_version.hpp"
+
 namespace terila::network {
 
     void Connection::handle_login(std::int32_t id, const std::vector<std::uint8_t>& payload) {
@@ -57,6 +60,7 @@ namespace terila::network {
             LOG_DEBUG(Network, "state: Login → Configuration");
             state_ = State::Configuration;
 
+#ifdef TERILA_HAS_UPDATE_ENABLED_FEATURES
             std::vector<std::uint8_t> features_payload;
             terila::protocol::write_varint(features_payload, 1);
             terila::protocol::write_string(features_payload, "minecraft:vanilla");
@@ -64,17 +68,22 @@ namespace terila::network {
             terila::protocol::write_packet(features_out, ids.config_update_enabled_features, features_payload);
             send(features_out);
             LOG_DEBUG(Network, "update enabled features sent");
+#endif
 
+#ifdef TERILA_HAS_SELECT_KNOWN_PACKS
             std::vector<std::uint8_t> select_payload;
             terila::protocol::write_varint(select_payload, 1);
             terila::protocol::write_string(select_payload, "minecraft");
             terila::protocol::write_string(select_payload, "core");
-            terila::protocol::write_string(select_payload, "26.3");
+            // The pack version the client compares against its own; it follows the protocol
+            // target instead of being pinned to the release this tree started on.
+            terila::protocol::write_string(select_payload, std::string(terila::version::known_packs()));
 
             std::vector<std::uint8_t> select_out;
             terila::protocol::write_packet(select_out, ids.config_select_known_packs, select_payload);
             send(select_out);
             LOG_DEBUG(Network, "select known packs sent");
+#endif
         }
         else {
             LOG_DEBUG(Network, "unknown login packet id=0x{:02X}", id);

@@ -6,6 +6,25 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 
+# Minecraft protocol this build speaks. The buildable targets are listed in
+# src/version/mc_version.hpp; this picks one of them and refuses anything older than 26.3
+# there, at compile time.
+set(TERILA_MC_TARGET "26.3" CACHE STRING "Minecraft protocol target, for example 26.3")
+
+# "26.3" -> 2603, the same value TERILA_MC_CODE produces in src/version/mc_version.hpp.
+string(REPLACE "." ";" TERILA_MC_TARGET_PARTS "${TERILA_MC_TARGET}")
+list(LENGTH TERILA_MC_TARGET_PARTS TERILA_MC_TARGET_PART_COUNT)
+if(NOT TERILA_MC_TARGET_PART_COUNT EQUAL 2)
+    message(FATAL_ERROR "TERILA_MC_TARGET must look like 26.3, got '${TERILA_MC_TARGET}'")
+endif()
+list(GET TERILA_MC_TARGET_PARTS 0 TERILA_MC_TARGET_MAJOR)
+list(GET TERILA_MC_TARGET_PARTS 1 TERILA_MC_TARGET_MINOR)
+math(EXPR TERILA_MC_TARGET_CODE
+    "${TERILA_MC_TARGET_MAJOR} * 100 + ${TERILA_MC_TARGET_MINOR}")
+
+# Directory scope, so the server, the tests and the fuzzers all see the same target.
+add_compile_definitions(TERILA_MC_TARGET=${TERILA_MC_TARGET_CODE})
+
 add_executable(terila "src/main.cpp")
 
 if(WIN32)
@@ -23,6 +42,8 @@ endif()
 target_include_directories(terila PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 target_sources(terila PRIVATE
+    "src/version/mc_version.hpp"
+    "src/version/features.hpp"
     "src/protocol/varint.hpp"
     "src/protocol/string.hpp"
     "src/protocol/packet.hpp"
@@ -204,6 +225,7 @@ endif()
 
 
 add_executable(protocol_tests
+    "tests/protocol/version_test.cpp"
     "tests/protocol/varint_test.cpp"
     "tests/protocol/string_test.cpp"
     "tests/protocol/packet_test.cpp"

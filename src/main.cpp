@@ -14,6 +14,7 @@
 #include "entity/mob.hpp"
 #include "world/block_world.hpp"
 #include "world/world_generator.hpp"
+#include "version/mc_version.hpp"
 #include "world/trf/trf_store.hpp"
 #include <nlohmann/json.hpp>
 #include <memory>
@@ -151,6 +152,19 @@ int main() {
         LOG_FATAL(Protocol, "cannot load packet ids from {}/packets/ids.json", in);
         return 7;
     }
+
+    // The ids and every payload layout below them belong to one release. A dump from
+    // another protocol would resolve to the wrong numbers, so it is refused instead of
+    // starting a server that answers with packets its clients cannot read.
+    if (const auto& source = terila::protocol::packet_id_source();
+        !terila::version::matches_source(source.protocol)) {
+        LOG_FATAL(Main, "input/ was extracted from {} (protocol {}), this build speaks {}",
+            source.version.empty() ? "another release" : source.version, source.protocol,
+            terila::version::label());
+        return 7;
+    }
+
+    LOG_INFO(Main, "speaking Minecraft {}", terila::version::label());
 
     terila::data::RegistryData data;
 

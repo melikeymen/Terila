@@ -19,6 +19,18 @@ cmake --build build --config Release
 
 Requires an `input/` folder next to the executable (or in a parent directory). Listens on `0.0.0.0:25565`.
 
+## Minecraft versions
+
+The tree carries the supported protocol releases side by side and compiles one of them:
+
+```bash
+cmake -B build -DTERILA_MC_TARGET=26.3
+```
+
+26.3 is the floor; older releases are refused at compile time. Release-specific behaviour is
+kept behind `TERILA_HAS_*` flags instead of version comparisons, so adding a release means
+appending one row and one block of differences — see `src/version/README.md`.
+
 ## Logging
 
 7 levels (FATAL, CRITICAL, ERROR, WARN, INFO, DEBUG, TRACE), 8 scopes. Set `cfg.min_level` in `main.cpp` (default: `INFO`).

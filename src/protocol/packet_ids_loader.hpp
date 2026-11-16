@@ -2,6 +2,7 @@
 
 #include "protocol/packet_ids.hpp"
 #include "log/logger.hpp"
+#include "version/features.hpp"
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <string>
@@ -22,6 +23,13 @@ namespace terila::protocol {
         }
 
         auto& ids = packet_ids();
+
+        // Which release the dump was extracted from; main compares it with the build.
+        if (j.contains("_meta")) {
+            const auto& meta = j["_meta"];
+            packet_id_source().version = meta.value("minecraft_version", std::string{});
+            packet_id_source().protocol = meta.value("protocol_version", -1);
+        }
 
         auto find = [&](const std::string& state, const std::string& direction,
             const std::string& name) -> std::int32_t {
@@ -79,8 +87,13 @@ namespace terila::protocol {
         set(ids.play_login, find("play", "clientbound", "minecraft:login"), "play_login");
         set(ids.play_player_position, find("play", "clientbound", "minecraft:player_position"), "play_player_position");
         set(ids.play_game_event, find("play", "clientbound", "minecraft:game_event"), "play_game_event");
+#ifdef TERILA_HAS_CHUNK_CACHE_CENTER
         set(ids.play_set_center_chunk, find_any({ "minecraft:set_chunk_cache_center",
                                                   "minecraft:set_center_chunk" }), "play_set_center_chunk");
+#else
+        set(ids.play_set_center_chunk, find("play", "clientbound", "minecraft:set_center_chunk"),
+            "play_set_center_chunk");
+#endif
         set(ids.play_level_chunk, find("play", "clientbound", "minecraft:level_chunk_with_light"), "play_level_chunk");
         set(ids.play_chunk_batch_start, find("play", "clientbound", "minecraft:chunk_batch_start"), "play_chunk_batch_start");
         set(ids.play_chunk_batch_finished, find("play", "clientbound", "minecraft:chunk_batch_finished"), "play_chunk_batch_finished");
@@ -132,7 +145,9 @@ namespace terila::protocol {
             ids.play_login, ids.play_player_position, ids.play_game_event,
             ids.play_set_center_chunk, ids.play_level_chunk);
 
-        LOG_INFO(Protocol, "packet ids loaded from {}", path);
+        const auto& source = packet_id_source();
+        LOG_INFO(Protocol, "packet ids loaded from {} ({}, protocol {})", path,
+            source.version.empty() ? "unknown release" : source.version, source.protocol);
         return true;
     }
 

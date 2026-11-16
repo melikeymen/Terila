@@ -3,6 +3,8 @@
 #include "protocol/handshake.hpp"
 #include "protocol/status.hpp"
 
+#include "version/mc_version.hpp"
+
 namespace terila::network {
 
     void Connection::handle_handshake(std::int32_t id, const std::vector<std::uint8_t>& payload) {
@@ -44,8 +46,10 @@ namespace terila::network {
             }
 
             terila::protocol::StatusResponse resp;
-            resp.version_name = "26.3";
-            resp.version_protocol = 777;
+            // Both numbers come from the compiled protocol target, so a status reply can
+            // never advertise a version the build does not speak.
+            resp.version_name = std::string(terila::version::name());
+            resp.version_protocol = terila::version::protocol();
             resp.players_max = max_players_;
             resp.players_online = static_cast<std::int32_t>(hub_ ? hub_->count() : 0);
             resp.description = "Terila Server";
