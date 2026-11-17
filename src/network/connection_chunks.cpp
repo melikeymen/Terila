@@ -297,9 +297,12 @@ namespace terila::network {
     // An edit only exists in BlockWorld until the affected chunk is re-encoded and
     // written back, so every block change persists its chunk immediately.
     void Connection::persist_block_change(const terila::world::BlockPos& target) {
-        const std::int32_t cx = chunk_coordinate(target.x);
-        const std::int32_t cz = chunk_coordinate(target.z);
+        persist_chunk_edits(chunk_coordinate(target.x), chunk_coordinate(target.z));
+    }
 
+    // The same save, addressed by column: the block simulation moves several cells of one
+    // column in a tick, and re-encoding it once per cascade is what keeps that affordable.
+    void Connection::persist_chunk_edits(std::int32_t cx, std::int32_t cz) {
         // The column changed, so the shared copy no longer matches what this player holds.
         terila::world::WorldContext::shared().chunks().erase(cx, cz);
         if (store_ == nullptr) {

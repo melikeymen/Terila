@@ -13,6 +13,7 @@
 #include "protocol/block.hpp"
 #include "protocol/player_state.hpp"
 #include "world/block_world.hpp"
+#include "world/falling_blocks.hpp"
 #include "world/world_context.hpp"
 #include "world/chunk_jobs.hpp"
 #include "world/world_clock.hpp"
@@ -39,6 +40,7 @@ namespace terila::network {
     public:
         explicit Connection(asio::ip::tcp::socket socket, const terila::data::RegistryData& data,
             terila::entity::MobManager& mobs, terila::world::BlockWorld& world,
+            terila::world::FallingBlocks& falling,
             const std::unordered_map<std::int32_t, std::int32_t>& item_block_state,
             std::shared_ptr<PlayerHub> hub,
             terila::world::trf::ChunkStore* store,
@@ -55,7 +57,7 @@ namespace terila::network {
             std::int32_t entity_id, int gamemode,
             std::shared_ptr<terila::world::WorldClock> clock, int sea_level)
             : socket_(std::move(socket)), keep_alive_timer_(socket_.get_executor()), data_(data),
-              mobs_(mobs), world_(world), item_block_state_(item_block_state),
+              mobs_(mobs), world_(world), falling_(falling), item_block_state_(item_block_state),
               hub_(std::move(hub)), store_(store), drops_(drops),
               block_state_item_(block_state_item), item_entity_type_(item_entity_type),
               recipes_(recipes), menu_blocks_(menu_blocks), furnace_states_(furnace_states),
@@ -90,6 +92,11 @@ namespace terila::network {
         // Persists a few of the chunks generated while streaming, so the initial chunk
         // burst is not serialised behind region-file writes on the IO thread.
         void flush_pending_saves(std::size_t budget);
+
+        // The block simulation moved a block in the shared overlay: tell this client when it
+        // already holds the column, and save a column it touched once per cascade.
+        void send_world_block(const terila::world::BlockPos& pos, std::int32_t state);
+        void persist_chunk_edits(std::int32_t cx, std::int32_t cz);
 
         bool joined() const { return joined_; }
 
@@ -378,6 +385,7 @@ namespace terila::network {
         const terila::data::RegistryData& data_;
         terila::entity::MobManager& mobs_;
         terila::world::BlockWorld& world_;
+        terila::world::FallingBlocks& falling_;
         const std::unordered_map<std::int32_t, std::int32_t>& item_block_state_;
         std::shared_ptr<PlayerHub> hub_;
         terila::world::trf::ChunkStore* store_ = nullptr;

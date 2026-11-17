@@ -99,6 +99,7 @@ target_sources(terila PRIVATE
     "src/protocol/block.hpp"
     "src/entity/mob.hpp"
     "src/world/block_world.hpp"
+    "src/world/falling_blocks.hpp"
     "src/world/block_break.hpp"
     "src/world/light_engine.hpp"
     "src/world/trf/trf_error.hpp"
@@ -413,6 +414,7 @@ terila_copy_runtime(nbt_tests)
 add_executable(chunk_tests
     "src/world/chunk_jobs.cpp"
     "tests/world/block_break_test.cpp"
+    "tests/world/falling_blocks_test.cpp"
     "tests/world/chunk_cache_test.cpp"
     "tests/world/chunk_decoder_test.cpp"
     "tests/world/terrain_generator_test.cpp"

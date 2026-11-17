@@ -15,6 +15,7 @@
 #include "entity/mob.hpp"
 #include "entity/natural_spawner.hpp"
 #include "world/block_world.hpp"
+#include "world/falling_blocks.hpp"
 #include "world/world_clock.hpp"
 #include "world/world_generator.hpp"
 #include "version/mc_version.hpp"
@@ -462,6 +463,39 @@ int main() {
 
     terila::world::BlockWorld world;
 
+    // Block physics: sand, gravel and the concrete powders are not stable. The states that
+    // fall are the vanilla FallingBlock kinds, and the states they fall through are the
+    // game's own #minecraft:replaceable tag (air, water, lava, plants, fire, snow layers),
+    // so neither list is guessed from a hard-coded set of ids.
+    terila::world::FallingBlocks falling;
+    {
+        std::unordered_set<std::int32_t> falling_states;
+        std::unordered_set<std::int32_t> passes_through;
+        for (const auto& [name, variants] : data.block_states) {
+            const bool falls = terila::world::is_falling_block(name);
+            const auto tags = data.block_tags.find(name);
+            const bool replaceable = tags != data.block_tags.end() &&
+                tags->second.count("minecraft:replaceable") != 0;
+            if (!falls && !replaceable) {
+                continue;
+            }
+            for (const auto& variant : variants) {
+                if (falls) falling_states.insert(variant.id);
+                if (replaceable) passes_through.insert(variant.id);
+            }
+        }
+        const auto falling_count = falling_states.size();
+        const auto through_count = passes_through.size();
+        falling.set_world(&world, resolve_block_id("minecraft:air").value_or(0),
+            data.overworld.min_y, data.overworld.min_y + data.overworld.height - 1);
+        falling.set_states(std::move(falling_states), std::move(passes_through));
+        falling.set_state_at([&world, &world_terrain](const terila::world::BlockPos& pos) {
+            return world_terrain.state_at(pos.x, pos.y, pos.z);
+            });
+        LOG_DEBUG(Chunk, "block physics: {} falling states, {} states they fall through",
+            falling_count, through_count);
+    }
+
     // TRF region files live beside the executable, one folder per generator so a flat world
     // never streams chunks a terrain run saved. The seed lives in the descriptor inside.
     const auto region_dir = terila::world::trf::default_region_directory(world_root);
@@ -496,6 +530,21 @@ int main() {
 
     std::vector<std::weak_ptr<terila::network::Connection>> players;
 
+    // The simulation edits the overlay itself, so the tick loop collects the changed cells:
+    // every player that holds the column is told at once, and the column is saved when the
+    // cascade is over instead of once per moved cell.
+    std::unordered_set<std::uint64_t> falling_dirty_chunks;
+    int falling_dirty_ticks = 0;
+    falling.set_change_sink([&](const terila::world::BlockPos& pos, std::int32_t state) {
+        for (const auto& player : players) {
+            if (const auto conn = player.lock()) {
+                conn->send_world_block(pos, state);
+            }
+        }
+        falling_dirty_chunks.insert(
+            terila::world::BlockWorld::chunk_key(pos.x >> 4, pos.z >> 4));
+        });
+
     // One registry for the whole server: connections register themselves when
     // they join, which is what lets players see each other and the status
     // response report a real online count.
@@ -510,7 +559,7 @@ int main() {
 
     auto do_accept = [&](auto&& self) -> void {
         acceptor.async_accept(
-            [&acceptor, &data, &mobs, &world, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, world_type, world_seed, &spawn, &srv, &players, &player_hub, &chunk_store, &next_player_entity_id, &world_terrain, clock, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
+            [&acceptor, &data, &mobs, &world, &falling, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, world_type, world_seed, &spawn, &srv, &players, &player_hub, &chunk_store, &next_player_entity_id, &world_terrain, clock, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
                 if (error) {
                     LOG_ERROR(Network, "accept failed: {} ({})", error.message(), error.value());
                     self(self);
@@ -522,7 +571,7 @@ int main() {
                     LOG_DEBUG(Network, "new connection from {}:{}", remote_ep.address().to_string(), remote_ep.port());
                 }
                 auto conn = std::make_shared<terila::network::Connection>(std::move(socket), data, mobs,
-                    world, item_block_state, player_hub, &chunk_store, &drops, block_state_item,
+                    world, falling, item_block_state, player_hub, &chunk_store, &drops, block_state_item,
                     item_entity_type, &recipes, menu_blocks, furnace_states, furnace_item_id,
                     world_seed, world_type, spawn.x, spawn.z, srv.view_distance,
                     srv.simulation_distance, static_cast<int>(srv.max_players),
@@ -573,6 +622,28 @@ int main() {
             }
 
             drops.tick(player_positions);
+
+            falling.tick();
+            if (!falling_dirty_chunks.empty()) {
+                ++falling_dirty_ticks;
+                // Re-encoding a column re-lights it and generates its neighbours, so the
+                // save waits for the end of the cascade (or a second of continuous falling)
+                // and then writes every touched column once.
+                if (falling.pending() == 0 || falling_dirty_ticks >= 20) {
+                    for (const auto& player : players) {
+                        if (const auto conn = player.lock()) {
+                            for (const auto chunk : falling_dirty_chunks) {
+                                conn->persist_chunk_edits(
+                                    static_cast<std::int32_t>(chunk >> 32),
+                                    static_cast<std::int32_t>(chunk & 0xFFFFFFFFu));
+                            }
+                            break;
+                        }
+                    }
+                    falling_dirty_chunks.clear();
+                    falling_dirty_ticks = 0;
+                }
+            }
 
             for (auto it = players.begin(); it != players.end();) {
                 if (const auto conn = it->lock()) {

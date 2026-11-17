@@ -30,6 +30,20 @@ namespace terila::network {
         return y >= terrain_.min_y() && y < terrain_.min_y() + terrain_.section_count() * 16;
     }
 
+    // The block simulation moved a block in the shared overlay. A client only needs the
+    // packet when it already holds the column; a column still waiting in the stream picks
+    // the new state up from the overlay anyway.
+    void Connection::send_world_block(const terila::world::BlockPos& pos, std::int32_t state) {
+        if (sent_chunks_.find(chunk_key(chunk_coordinate(pos.x), chunk_coordinate(pos.z))) ==
+            sent_chunks_.end()) {
+            return;
+        }
+        std::vector<std::uint8_t> out;
+        if (terila::protocol::write_block_update(out, pos.x, pos.y, pos.z, state)) {
+            send(out);
+        }
+    }
+
     void Connection::send_block_change(const terila::world::BlockPos& pos, std::int32_t state,
         std::int32_t sequence) {
         std::vector<std::uint8_t> out;
@@ -182,6 +196,8 @@ namespace terila::network {
     void Connection::break_now(const terila::world::BlockPos& target, std::int32_t sequence) {
         const std::int32_t broken = state_at(target);
         world_.set(target, air_state_);
+        // Whatever stood on it may now be hanging, so it and the cell above get a tick.
+        falling_.block_changed(target);
         // Creative breaks leave nothing behind: a drop would only be collected into the
         // inventory the player is arranging by hand, landing on whatever stack sits first.
         if (gamemode_ == 0) {
@@ -248,6 +264,8 @@ namespace terila::network {
         }
 
         world_.set(target, placed);
+        // A placed sand is scheduled like any other block that might not stay up.
+        falling_.block_changed(target);
         persist_block_change(target);
         send_block_change(target, placed, sequence);
         LOG_DEBUG(Network, "{} placed block state {} at ({}, {}, {})",
