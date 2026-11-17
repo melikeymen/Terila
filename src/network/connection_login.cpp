@@ -218,7 +218,7 @@ namespace terila::network {
 
                 const auto nodes = terila::protocol::builtin_command_tree(
                     parser_id("minecraft:item_stack", 14), parser_id("brigadier:integer", 3),
-                    parser_id("minecraft:entity", 6));
+                    parser_id("minecraft:entity", 6), parser_id("minecraft:message", 20));
                 const auto tree = terila::protocol::write_command_tree(nodes, 0);
                 if (!tree.empty() &&
                     terila::protocol::write_packet(out, ids.play_commands, tree)) {
@@ -261,6 +261,11 @@ namespace terila::network {
                         }
                         return false;
                     });
+                hub_->set_runner(entity_id_, [weak_self](const std::string& nested) {
+                    if (const auto connection = weak_self.lock()) {
+                        connection->run_command(nested);
+                    }
+                });
             }
         }
     }

@@ -6,12 +6,15 @@
 #include "protocol/packet_ids.hpp"
 #include "protocol/player_info.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -108,6 +111,53 @@ namespace terila::network {
             if (it != players_.end()) {
                 it->second.give = std::move(giver);
             }
+        }
+
+        // /execute runs a command in another player's context, so a member also has to
+        // expose the way to run one, for the same reason it exposes its giver.
+        using Runner = std::function<void(const std::string&)>;
+
+        void set_runner(std::int32_t entity_id, Runner runner)
+        {
+            const auto it = players_.find(entity_id);
+            if (it != players_.end()) {
+                it->second.run = std::move(runner);
+            }
+        }
+
+        // Runs a command as that member. False when nobody with that id is online.
+        bool run_as(std::int32_t entity_id, const std::string& command) const
+        {
+            const auto it = players_.find(entity_id);
+            if (it == players_.end() || !it->second.run) {
+                return false;
+            }
+            it->second.run(command);
+            return true;
+        }
+
+        // Every player in the world, self included. A copy: running a command can end a
+        // connection and rebuild the stored list.
+        std::vector<std::int32_t> members() const { return member_list(); }
+
+        // A player named in a command, matched without regard to case. -1 when nobody is
+        // called that.
+        std::int32_t find_by_name(std::string_view name) const
+        {
+            if (name.empty()) {
+                return -1;
+            }
+            const auto same = [](char a, char b) {
+                return std::tolower(static_cast<unsigned char>(a)) ==
+                    std::tolower(static_cast<unsigned char>(b));
+            };
+            for (const auto& [id, member] : players_) {
+                if (name.size() == member.name.size() &&
+                    std::equal(name.begin(), name.end(), member.name.begin(), same)) {
+                    return id;
+                }
+            }
+            return -1;
         }
 
         // Every player in the world, self included. Returns how many were served.
@@ -223,6 +273,7 @@ namespace terila::network {
             Position position;
             Sender send;
             Giver give;
+            Runner run;
         };
 
         // The member list changes only on join and leave, but it is needed on every move

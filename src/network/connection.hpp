@@ -130,6 +130,9 @@ namespace terila::network {
         // Inventory index where the hotbar starts (protocol slot 36).
         static constexpr std::int32_t kMainInventorySlots = 27;
         static constexpr std::int32_t kMaxStackSize = 64;
+        // /execute can nest (/execute as @s run execute ...), and an unbounded chain would
+        // recurse until the stack runs out.
+        static constexpr std::uint32_t kMaxCommandDepth = 8;
 
         enum class State {
             Handshake,
@@ -271,6 +274,13 @@ namespace terila::network {
 
         // --- connection_commands.cpp -----------------------------------------------
         void handle_command(const std::string& command);
+        // Runs a command in this player's context. /execute nests through here, so the
+        // depth guard lives with it.
+        void run_command(std::string_view command);
+        void run_execute(std::string_view arguments);
+        // Who /execute as means: @s, @p, @a, @e, @r or a player name.
+        std::vector<std::int32_t> execute_targets(std::string_view selector) const;
+        void execute_as(std::int32_t target, std::string_view command);
         void send_system_message(std::string_view text);
         std::int32_t resolve_item(std::string_view name) const;
         bool give_item(std::int32_t item_id, std::int32_t count,
@@ -383,6 +393,7 @@ namespace terila::network {
         std::int32_t air_state_ = 0;
         std::int32_t carried_slot_ = 0;
         std::int32_t held_item_id_ = 0;
+        std::uint32_t command_depth_ = 0;
         std::unordered_map<std::int32_t, std::int32_t> creative_slots_;
     };
 

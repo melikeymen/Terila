@@ -87,20 +87,23 @@ namespace terila::protocol {
     // The commands this server runs, in the order the login handler sends them:
     //   /give <targets> <item> [count]
     //   /give <item> [count]
+    //   /execute [as <targets>] run <command>
     // The item argument uses minecraft:item_stack, the parser /give uses in the game, so
     // the client completes item ids and validates the component patch it is given, and
     // the target argument uses minecraft:entity so @a, @p, @s and a player name parse.
+    // The executed command is a minecraft:message argument: it takes the rest of the line,
+    // which is what the client needs to accept "/execute run give stone" as one argument.
     //
-    // The item branch exists twice on purpose: a Brigadier node has one parent, so the
-    // two shapes of the command cannot share the same subtree indices.
+    // Branches are repeated on purpose: a Brigadier node has one parent, so the two shapes
+    // of /give, and the two `run` literals, cannot share the same subtree indices.
     inline std::vector<CommandNode> builtin_command_tree(std::int32_t item_stack_parser,
-        std::int32_t integer_parser, std::int32_t entity_parser) {
-        std::vector<CommandNode> nodes(7);
+        std::int32_t integer_parser, std::int32_t entity_parser, std::int32_t message_parser) {
+        std::vector<CommandNode> nodes(14);
 
         // The client casts the resolved root to RootCommandNode, so node 0 must be the
         // stub-less root type; as a literal the cast fails after a successful decode.
         nodes[0].kind = CommandNode::Root;
-        nodes[0].children = { 1 };
+        nodes[0].children = { 1, 7 };
 
         nodes[1].kind = CommandNode::Literal;
         nodes[1].name = "give";
@@ -137,6 +140,41 @@ namespace terila::protocol {
         nodes[6].parser = integer_parser;
         nodes[6].properties = integer_properties(1, false, 0);
         nodes[6].executable = true;
+
+        // /execute [as <targets>] run <command>
+        nodes[7].kind = CommandNode::Literal;
+        nodes[7].name = "execute";
+        nodes[7].children = { 8, 10 };
+
+        // /execute run <command>
+        nodes[8].kind = CommandNode::Literal;
+        nodes[8].name = "run";
+        nodes[8].children = { 9 };
+
+        nodes[9].kind = CommandNode::Argument;
+        nodes[9].name = "command";
+        nodes[9].parser = message_parser;
+        nodes[9].executable = true;
+
+        // /execute as <targets> run <command>
+        nodes[10].kind = CommandNode::Literal;
+        nodes[10].name = "as";
+        nodes[10].children = { 11 };
+
+        nodes[11].kind = CommandNode::Argument;
+        nodes[11].name = "targets";
+        nodes[11].parser = entity_parser;
+        nodes[11].properties = players_only_properties();
+        nodes[11].children = { 12 };
+
+        nodes[12].kind = CommandNode::Literal;
+        nodes[12].name = "run";
+        nodes[12].children = { 13 };
+
+        nodes[13].kind = CommandNode::Argument;
+        nodes[13].name = "command";
+        nodes[13].parser = message_parser;
+        nodes[13].executable = true;
 
         return nodes;
     }

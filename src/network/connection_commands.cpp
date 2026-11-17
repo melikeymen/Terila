@@ -1,5 +1,7 @@
 #include "network/connection.hpp"
 
+#include "network/command_parse.hpp"
+
 #include "item/item_parser.hpp"
 #include "protocol/chat.hpp"
 
@@ -170,8 +172,89 @@ namespace terila::network {
         return 0;
     }
 
+    // A command that runs another command shares one guard, so
+    // /execute as @s run execute as @s run ... cannot recurse until the stack is gone.
+    void Connection::run_command(std::string_view command) {
+        if (command_depth_ >= kMaxCommandDepth) {
+            send_system_message("Too many nested commands");
+            return;
+        }
+        ++command_depth_;
+        handle_command(std::string(trim(command)));
+        --command_depth_;
+    }
+
+    // Who `execute as` means. The selectors are the ones /give understands, plus a plain
+    // player name; @e is every player because the server has no other entities to run as.
+    std::vector<std::int32_t> Connection::execute_targets(std::string_view selector) const {
+        const auto none = std::vector<std::int32_t>{};
+        if (selector.empty() || selector == "@s") {
+            return { entity_id_ };
+        }
+        if (hub_ == nullptr) {
+            return none;
+        }
+        if (selector == "@a" || selector == "@e") {
+            return hub_->members();
+        }
+        if (selector == "@p") {
+            const auto nearest = hub_->nearest_to(player_x_, player_z_);
+            return nearest < 0 ? none : std::vector<std::int32_t>{ nearest };
+        }
+        if (selector == "@r") {
+            const auto picked = hub_->random_member();
+            return picked < 0 ? none : std::vector<std::int32_t>{ picked };
+        }
+        if (selector.front() == '@') {
+            return none;
+        }
+        const auto by_name = hub_->find_by_name(selector);
+        return by_name < 0 ? none : std::vector<std::int32_t>{ by_name };
+    }
+
+    void Connection::execute_as(std::int32_t target, std::string_view command) {
+        if (target == entity_id_) {
+            run_command(command);
+            return;
+        }
+        if (hub_ == nullptr || !hub_->run_as(target, std::string(trim(command)))) {
+            send_system_message("No player to run that command as");
+        }
+    }
+
+    // /execute [as <targets>] run <command>
+    //
+    // The rest of the game's grammar (at, positioned, if, store) is not implemented: every
+    // command this server runs acts on the player, not on a position, so the only context
+    // that changes anything is whose player it is.
+    void Connection::run_execute(std::string_view arguments) {
+        static constexpr const char* kUsage = "Usage: /execute [as <targets>] run <command>";
+
+        const auto parsed = commands::parse_execute(arguments);
+        if (!parsed) {
+            send_system_message(kUsage);
+            return;
+        }
+
+        if (parsed->selector.empty()) {
+            run_command(parsed->command);
+            return;
+        }
+
+        const auto targets = execute_targets(parsed->selector);
+        if (targets.empty()) {
+            send_system_message("No player matched '" + parsed->selector + "'");
+            return;
+        }
+        for (const auto target : targets) {
+            execute_as(target, parsed->command);
+        }
+    }
+
     // Commands:
     //   /give <item>[<component>=<value>,...] [count]
+    //   /give <targets> <item>[<component>=<value>,...] [count]
+    //   /execute [as <targets>] run <command>
     void Connection::handle_command(const std::string& command) {
         std::string_view rest = trim(command);
         if (rest.empty()) {
@@ -261,8 +344,14 @@ namespace terila::network {
             return;
         }
 
+        if (name == "execute") {
+            run_execute(arguments);
+            return;
+        }
+
         send_system_message(
-            "Commands: /give [@a|@s|@p|@r] <item>[<component>=<value>,...] [count]");
+            "Commands: /give [@a|@s|@p|@r] <item>[<component>=<value>,...] [count], "
+            "/execute [as <targets>] run <command>");
     }
 
 } // namespace terila::network

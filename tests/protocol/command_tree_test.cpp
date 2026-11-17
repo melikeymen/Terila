@@ -37,10 +37,10 @@ TEST(CommandTreeTest, EncodesCountRootIndexAndGreedyArguments) {
 }
 
 TEST(CommandTreeTest, BuiltinTreeStartsWithARootNode) {
-    const auto nodes = protocol::builtin_command_tree(14, 3, 6);
-    ASSERT_EQ(nodes.size(), 7u);
+    const auto nodes = protocol::builtin_command_tree(14, 3, 6, 20);
+    ASSERT_EQ(nodes.size(), 14u);
     EXPECT_EQ(nodes[0].kind, protocol::CommandNode::Root);
-    EXPECT_EQ(nodes[0].children, (std::vector<std::int32_t>{ 1 }));
+    EXPECT_EQ(nodes[0].children, (std::vector<std::int32_t>{ 1, 7 }));
     EXPECT_EQ(nodes[1].name, "give");
     EXPECT_EQ(nodes[1].children, (std::vector<std::int32_t>{ 2, 4 }));
     EXPECT_EQ(nodes[2].name, "item");
@@ -51,14 +51,47 @@ TEST(CommandTreeTest, BuiltinTreeStartsWithARootNode) {
 
     const auto bytes = protocol::write_command_tree(nodes, 0);
     ASSERT_GT(bytes.size(), 5u);
-    EXPECT_EQ(bytes[0], 7);      // seven nodes
+    EXPECT_EQ(bytes[0], 14);     // fourteen nodes
     EXPECT_EQ(bytes[1], 0x00);   // root flags
-    EXPECT_EQ(bytes[2], 1);      // one child
+    EXPECT_EQ(bytes[2], 2);      // give and execute
     EXPECT_EQ(bytes[3], 1);
 }
 
+TEST(CommandTreeTest, ExecuteOffersRunAndAsBranches) {
+    const auto nodes = protocol::builtin_command_tree(14, 3, 6, 20);
+
+    // /execute
+    EXPECT_EQ(nodes[7].kind, protocol::CommandNode::Literal);
+    EXPECT_EQ(nodes[7].name, "execute");
+    EXPECT_EQ(nodes[7].children, (std::vector<std::int32_t>{ 8, 10 }));
+
+    // /execute run <command>
+    EXPECT_EQ(nodes[8].name, "run");
+    EXPECT_EQ(nodes[8].children, (std::vector<std::int32_t>{ 9 }));
+    EXPECT_EQ(nodes[9].name, "command");
+    EXPECT_EQ(nodes[9].parser, 20);   // minecraft:message takes the rest of the line
+    EXPECT_TRUE(nodes[9].executable);
+
+    // /execute as <targets> run <command>
+    EXPECT_EQ(nodes[10].name, "as");
+    EXPECT_EQ(nodes[10].children, (std::vector<std::int32_t>{ 11 }));
+    EXPECT_EQ(nodes[11].name, "targets");
+    EXPECT_EQ(nodes[11].parser, 6);   // minecraft:entity
+    ASSERT_EQ(nodes[11].properties.size(), 1u);
+    EXPECT_EQ(nodes[11].properties[0], 0x02);   // players only
+    EXPECT_EQ(nodes[12].name, "run");
+    EXPECT_EQ(nodes[12].children, (std::vector<std::int32_t>{ 13 }));
+    EXPECT_EQ(nodes[13].name, "command");
+    EXPECT_TRUE(nodes[13].executable);
+
+    // The two `run` literals are separate nodes: a Brigadier node has one parent, which
+    // EveryChildIndexIsInRangeAndUsedOnce checks across the whole tree.
+    EXPECT_EQ(nodes[8].name, nodes[12].name);
+    EXPECT_NE(nodes[8].children, nodes[12].children);
+}
+
 TEST(CommandTreeTest, GiveAcceptsATargetSelectorBeforeTheItem) {
-    const auto nodes = protocol::builtin_command_tree(14, 3, 6);
+    const auto nodes = protocol::builtin_command_tree(14, 3, 6, 20);
 
     // /give @a <item> [count]
     EXPECT_EQ(nodes[4].name, "targets");
@@ -74,7 +107,7 @@ TEST(CommandTreeTest, GiveAcceptsATargetSelectorBeforeTheItem) {
 }
 
 TEST(CommandTreeTest, EveryChildIndexIsInRangeAndUsedOnce) {
-    const auto nodes = protocol::builtin_command_tree(14, 3, 6);
+    const auto nodes = protocol::builtin_command_tree(14, 3, 6, 20);
 
     std::vector<int> parents(nodes.size(), 0);
     for (const auto& node : nodes) {
