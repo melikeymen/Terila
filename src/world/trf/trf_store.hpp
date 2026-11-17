@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "world/trf/trf_error.hpp"
 #include "world/trf/trf_format.hpp"
@@ -53,16 +53,17 @@ namespace terila::world::trf {
         const std::filesystem::path& region_directory() const noexcept { return directory_; }
 
     private:
-        std::expected<TrfRegion*, TrfError> region_for(std::int32_t cx, std::int32_t cz);
+        std::expected<std::shared_ptr<TrfRegion>, TrfError> region_for(std::int32_t cx, std::int32_t cz);
         std::filesystem::path region_path(std::int32_t rx, std::int32_t rz) const;
 
         struct CachedRegion {
-            std::unique_ptr<TrfRegion> region;
+            std::shared_ptr<TrfRegion> region;
             std::uint64_t last_used = 0;
         };
 
         std::filesystem::path directory_;
         WorldIdentity identity_;
+        mutable std::mutex cache_mutex_;
         std::unordered_map<std::uint64_t, CachedRegion> regions_;
         std::uint64_t access_clock_ = 0;
     };

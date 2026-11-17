@@ -1,4 +1,4 @@
-#include "world/trf/trf_store.hpp"
+﻿#include "world/trf/trf_store.hpp"
 
 #include "world/trf/trf_crc32c.hpp"
 #include "world/trf/trf_header.hpp"
@@ -173,30 +173,25 @@ namespace terila::world::trf {
         return directory_ / ("r." + std::to_string(rx) + "." + std::to_string(rz) + ".trf");
     }
 
-    std::expected<TrfRegion*, TrfError> ChunkStore::region_for(std::int32_t cx, std::int32_t cz) {
+    std::expected<std::shared_ptr<TrfRegion>, TrfError> ChunkStore::region_for(
+        std::int32_t cx, std::int32_t cz) {
+
         const std::int32_t rx = region_coordinate(cx);
         const std::int32_t rz = region_coordinate(cz);
         const std::uint64_t key = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(rx)) << 32) |
             static_cast<std::uint32_t>(rz);
 
-        const auto found = regions_.find(key);
-        if (found != regions_.end()) {
-            found->second.last_used = ++access_clock_;
-            return found->second.region.get();
-        }
-
-        if (regions_.size() >= max_open_regions) {
-            // §18: evict the least recently used region instead of dropping every handle.
-            // Erasing closes it, which also releases its OS lock for another process.
-            auto oldest = regions_.end();
-            for (auto it = regions_.begin(); it != regions_.end(); ++it) {
-                if (oldest == regions_.end() || it->second.last_used < oldest->second.last_used) {
-                    oldest = it;
-                }
+        
+        {
+            std::lock_guard<std::mutex> lock(cache_mutex_);
+            const auto found = regions_.find(key);
+            if (found != regions_.end()) {
+                found->second.last_used = ++access_clock_;
+                return found->second.region;  // shared_ptr copy
             }
-            regions_.erase(oldest);
         }
 
+        // Cache miss
         RegionOptions options;
         options.create_if_missing = true;
         options.region_x = rx;
@@ -207,15 +202,33 @@ namespace terila::world::trf {
         options.generator_version = identity_.generator_version;
         options.default_compression = compression::stored;
 
-        auto region = TrfRegion::open(region_path(rx, rz), options);
-        if (!region) {
-            return std::unexpected(region.error());
+        auto opened = TrfRegion::open(region_path(rx, rz), options);
+        if (!opened) {
+            return std::unexpected(opened.error());
+        }
+        std::shared_ptr<TrfRegion> region = std::move(*opened);
+
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        const auto existing = regions_.find(key);
+        if (existing != regions_.end()) {
+            existing->second.last_used = ++access_clock_;
+            return existing->second.region;
+        }
+
+        if (regions_.size() >= max_open_regions) {
+            auto oldest = regions_.end();
+            for (auto it = regions_.begin(); it != regions_.end(); ++it) {
+                if (oldest == regions_.end() || it->second.last_used < oldest->second.last_used) {
+                    oldest = it;
+                }
+            }
+            regions_.erase(oldest);
         }
 
         auto& cached = regions_[key];
-        cached.region = std::move(*region);
+        cached.region = region;
         cached.last_used = ++access_clock_;
-        return cached.region.get();
+        return region;
     }
 
     std::expected<LoadResult, TrfError> ChunkStore::load_chunk(std::int32_t cx, std::int32_t cz,
@@ -247,8 +260,16 @@ namespace terila::world::trf {
     }
 
     std::expected<void, TrfError> ChunkStore::flush() {
-        for (auto& entry : regions_) {
-            if (auto flushed = entry.second.region->flush(); !flushed) {
+        std::vector<std::shared_ptr<TrfRegion>> snapshot;
+        {
+            std::lock_guard<std::mutex> lock(cache_mutex_);
+            snapshot.reserve(regions_.size());
+            for (auto& entry : regions_) {
+                snapshot.push_back(entry.second.region);
+            }
+        }
+        for (auto& region : snapshot) {
+            if (auto flushed = region->flush(); !flushed) {
                 return std::unexpected(flushed.error());
             }
         }
