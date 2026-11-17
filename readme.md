@@ -1,5 +1,9 @@
 ﻿# Terila
 
+> **Pre-alpha.** Terila is under active development and not ready for
+> production servers. See [SECURITY.md](SECURITY.md) before running it
+> with untrusted players.
+
 A Minecraft server implementation in C++23.
 
 ## Build
