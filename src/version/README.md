@@ -6,7 +6,8 @@ Two headers, no translation unit: the numbers are `constexpr` and the difference
 preprocessor flags, so every use site is resolved while compiling.
 
 - `mc_version.hpp` — the table of supported releases, the 26.3 floor, and the comparison
-  macros `TERILA_MC_AT_LEAST(major, minor)` / `TERILA_MC_IS(major, minor)`.
+  macros `TERILA_MC_CODE(major, minor)`, `TERILA_MC_AT_LEAST(major, minor)`, and
+  `TERILA_MC_IS(major, minor)`.
 - `features.hpp` — `TERILA_HAS_*` flags, one per behaviour that differs between releases.
 
 ## Choosing a target
@@ -15,8 +16,22 @@ preprocessor flags, so every use site is resolved while compiling.
 cmake -B build -DTERILA_MC_TARGET=26.3
 ```
 
-CMake turns `26.3` into `2603` and passes `TERILA_MC_TARGET=2603`. Without the option the
-build uses the newest row in the table, which today is 26.3.
+CMake turns `26.3` into `2603` with `TERILA_MC_CODE(26, 3)` and passes
+`TERILA_MC_TARGET=2603`. `TERILA_MC_IS(26, 3)` expands to the comparison
+`TERILA_MC_TARGET == TERILA_MC_CODE(26, 3)`, so it is true only when the selected target is
+26.3. Both macros can be used in `#if` expressions. Without the CMake option, the build uses
+the newest row in the table, which today is 26.3.
+
+## Release table
+
+Each `version::table` row has five fields:
+
+```cpp
+{TERILA_MC_CODE(26, 4), "26.4", 780, 5050, "26.4"}
+```
+
+In order, these are the comparison code, release name, handshake protocol number, world data
+version, and core known-pack version.
 
 ## The floor
 
@@ -24,9 +39,13 @@ build uses the newest row in the table, which today is 26.3.
 
 - `TERILA_MC_TARGET` below `TERILA_MC_CODE(26, 3)` is an `#error`.
 - A target with no row in `version::table` fails a `static_assert`.
-- At startup the protocol recorded in `input/packets/ids.json` is compared with the build;
-  a dump extracted from another release stops the server with the two versions in the log
-  instead of speaking the wrong packet ids.
+- At startup, `load_packet_ids` compares `_meta.protocol_version` in
+  `input/packets/ids.json` with the build protocol. On a mismatch it logs the dump and build
+  protocol numbers and returns `false`; `main` logs a fatal error and exits with code 7 before
+  accepting connections.
+- If the `_meta` object is entirely absent, the source version stays unknown (`-1`) and
+  `matches_source` permits startup without a comparison. If `_meta` exists but omits
+  `protocol_version`, the loader uses `-1`, treats it as a mismatch, and rejects startup.
 
 Nothing older than 26.3 is compiled in, so there are no fallbacks for it anywhere.
 
