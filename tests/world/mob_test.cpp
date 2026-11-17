@@ -22,13 +22,22 @@ namespace {
         mobs.set_water_resolver([](double, double) { return false; });
     }
 
-    entity::SpawnWorld flat_world(int biome) {
+    entity::SpawnWorld flat_world(int biome,
+        entity::SpawnBlock ground = entity::SpawnBlock::Soil, bool water = false) {
         entity::SpawnWorld world_view;
         world_view.biome_index = [biome](std::int32_t, std::int32_t) { return biome; };
         world_view.surface_y = [](std::int32_t, std::int32_t) { return 64; };
-        world_view.is_water = [](std::int32_t, std::int32_t) { return false; };
+        world_view.is_water = [water](std::int32_t, std::int32_t) { return water; };
         world_view.block_light = [](std::int32_t, std::int32_t, std::int32_t) { return 0; };
         world_view.sky_light = [](std::int32_t, std::int32_t, std::int32_t) { return 15; };
+        world_view.block_kind = [ground, water](std::int32_t, std::int32_t y, std::int32_t) {
+            if (water) {
+                return y <= 64 ? entity::SpawnBlock::Water : entity::SpawnBlock::Air;
+            }
+            if (y < 63) return entity::SpawnBlock::Solid;
+            if (y == 63) return ground;
+            return entity::SpawnBlock::Air;
+            };
         return world_view;
     }
 
@@ -107,6 +116,32 @@ TEST(MobTest, SpawnUsesTheSpecAndStandsOnTheGround) {
     EXPECT_DOUBLE_EQ(cow.health, 10.0);
     EXPECT_DOUBLE_EQ(cow.y, 64.0);
     EXPECT_TRUE(cow.on_ground);
+}
+
+TEST(MobTest, AMobWalksWhereItIsLooking) {
+    entity::MobManager mobs;
+    make_manager(mobs);
+    ASSERT_TRUE(mobs.spawn("minecraft:cow", 0.0, 0.0));
+
+    // Entity.getInputVector turns yaw 0 into +Z, 90 into -X and 180 into -Z. A mob that
+    // walks in the direction it reports has to move along that vector every single tick.
+    for (int tick = 0; tick < 240; ++tick) {
+        const auto before = mobs.mobs().front();
+        mobs.tick({});
+        const auto& cow = mobs.mobs().front();
+        const double dx = cow.x - before.x;
+        const double dz = cow.z - before.z;
+        if (std::abs(dx) + std::abs(dz) < 1e-9) {
+            continue;
+        }
+        constexpr double kPi = 3.14159265358979323846;
+        const double radians = static_cast<double>(cow.yaw) * kPi / 180.0;
+        const double facing_x = -std::sin(radians);
+        const double facing_z = std::cos(radians);
+        const double length = std::sqrt(dx * dx + dz * dz);
+        const double dot = (dx / length) * facing_x + (dz / length) * facing_z;
+        EXPECT_GT(dot, 0.999) << "the mob walks along its yaw, not away from it";
+    }
 }
 
 TEST(MobTest, AStrollingMobWalksAndStaysOnTheGround) {
@@ -222,19 +257,26 @@ TEST(MobTest, ABabyGrowsUpAndFollowsAnAdult) {
     entity::MobManager mobs;
     make_manager(mobs);
     ASSERT_TRUE(mobs.spawn("minecraft:cow", 0.0, 0.0));
-    ASSERT_TRUE(mobs.spawn("minecraft:cow", 30.0, 0.0, true));
+    ASSERT_TRUE(mobs.spawn("minecraft:cow", 6.0, 0.0, true));
 
     const auto& baby = mobs.mobs()[1];
     ASSERT_TRUE(baby.baby);
     EXPECT_EQ(baby.goal, entity::GoalKind::Unsupported) << "nothing runs before the first tick";
 
-    // The adult is 30 blocks away: the baby walks towards it.
-    const double start = std::abs(mobs.mobs()[1].x - 0.0);
+    // FollowParentGoal looks for the closest adult within eight blocks, so the baby starts
+    // well inside that range and closes the rest of the gap.
+    const auto gap = [&mobs] {
+        const auto& young = mobs.mobs()[1];
+        const auto& adult = mobs.mobs()[0];
+        return std::sqrt((young.x - adult.x) * (young.x - adult.x) +
+            (young.z - adult.z) * (young.z - adult.z));
+    };
+    const double start = gap();
     for (int tick = 0; tick < 60; ++tick) {
         mobs.tick({});
     }
-    const double now = std::abs(mobs.mobs()[1].x - mobs.mobs()[0].x);
-    EXPECT_LT(now, start) << "FollowParent closes the gap";
+    EXPECT_EQ(mobs.mobs()[1].goal, entity::GoalKind::FollowParent);
+    EXPECT_LT(gap(), start) << "FollowParent closes the gap";
 
     // Ten feedings take a tenth of the childhood each, so it is an adult afterwards.
     for (int feeding = 0; feeding < 100; ++feeding) {
@@ -334,6 +376,52 @@ TEST(NaturalSpawnerTest, TheInitialPopulationHonoursTheCategoryCaps) {
     EXPECT_LE(creatures, static_cast<std::size_t>(entity::CategoryCaps::creature));
     EXPECT_LE(monsters, static_cast<std::size_t>(entity::CategoryCaps::monster));
     EXPECT_GT(creatures, 0u) << "plains lists cows and sheep";
+}
+
+TEST(NaturalSpawnerTest, AnimalsNeedGrassAndStayOutOfTheWater) {
+    const std::vector<entity::PlayerPos> none;
+
+    // Sand is a solid spawn surface, but it is not animals_spawnable_on: no cows on a beach.
+    entity::MobManager on_sand;
+    make_manager(on_sand);
+    entity::NaturalSpawner sand_spawner;
+    sand_spawner.set_world(flat_world(world::terrain::kPlains, entity::SpawnBlock::Solid));
+    std::uint32_t sand_rng = 0x5A5A5Au;
+    EXPECT_EQ(sand_spawner.spawn_initial(on_sand, 0, 0, 48.0, sand_rng, false), 0u)
+        << "Animal#checkAnimalSpawnRules wants the animals tag under the mob";
+
+    // A flooded plains column has no ground to stand on either, so nothing landbound spawns.
+    entity::MobManager flooded;
+    make_manager(flooded);
+    entity::NaturalSpawner water_spawner;
+    water_spawner.set_world(flat_world(world::terrain::kPlains, entity::SpawnBlock::Soil, true));
+    std::uint32_t water_rng = 0x5A5A5Au;
+    EXPECT_EQ(water_spawner.spawn_initial(flooded, 0, 0, 48.0, water_rng, true), 0u);
+    for (int tick = 0; tick < 200; ++tick) {
+        water_spawner.tick(flooded, { { 0.0, 64.0, 0.0, 1 } }, true, water_rng);
+    }
+    EXPECT_TRUE(flooded.mobs().empty()) << "no land mob spawns inside water";
+}
+
+TEST(NaturalSpawnerTest, WaterMobsOnlySpawnInWater) {
+    // The ocean's list is squid and fish; their InWater placement rejects dry ground.
+    entity::MobManager dry;
+    make_manager(dry);
+    entity::NaturalSpawner dry_spawner;
+    dry_spawner.set_world(flat_world(world::terrain::kOcean));
+    std::uint32_t dry_rng = 0xC0FFEEu;
+    EXPECT_EQ(dry_spawner.spawn_initial(dry, 0, 0, 48.0, dry_rng, false), 0u);
+
+    entity::MobManager wet;
+    make_manager(wet);
+    entity::NaturalSpawner wet_spawner;
+    wet_spawner.set_world(flat_world(world::terrain::kOcean, entity::SpawnBlock::Solid, true));
+    std::uint32_t wet_rng = 0xC0FFEEu;
+    EXPECT_GT(wet_spawner.spawn_initial(wet, 0, 0, 48.0, wet_rng, false), 0u);
+    for (const auto& mob : wet.mobs()) {
+        EXPECT_TRUE(entity::is_water_category(mob.category()))
+            << mob.type_name << " belongs in the water";
+    }
 }
 
 TEST(NaturalSpawnerTest, MonstersOnlyArriveAtNight) {

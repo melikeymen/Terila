@@ -56,7 +56,7 @@ namespace terila::network {
 
             if (known == known_entities_.end()) {
                 if (terila::protocol::write_add_entity(out, mob.id, mob.uuid, mob.type_id,
-                    mob.x, mob.y, mob.z, mob.yaw, 0.0f, mob.head_yaw)) {
+                    mob.x, mob.y, mob.z, mob.yaw, mob.pitch, mob.head_yaw)) {
                     if (!logged_first_entity_) {
                         logged_first_entity_ = true;
                         std::string hex;
@@ -71,7 +71,7 @@ namespace terila::network {
                     send(out);
                 }
                 out.clear();
-                known_entities_[mob.id] = KnownEntity{ mob.x, mob.y, mob.z, mob.yaw };
+                known_entities_[mob.id] = KnownEntity{ mob.x, mob.y, mob.z, mob.yaw, mob.head_yaw };
                 continue;
             }
 
@@ -114,19 +114,29 @@ namespace terila::network {
 
             const bool moved = dxs != 0 || dys != 0 || dzs != 0;
             const bool turned = mob.yaw != known->second.yaw;
+            const bool head_turned = mob.head_yaw != known->second.head_yaw;
 
-            if (!moved && !turned) {
+            if (!moved && !turned && !head_turned) {
                 continue;
             }
 
             if (moved) {
                 if (terila::protocol::write_move_entity_pos_rot(out, mob.id, dxs, dys, dzs,
-                    mob.yaw, 0.0f, true)) {
+                    mob.yaw, mob.pitch, mob.on_ground)) {
                     send(out);
                 }
                 out.clear();
             }
             else if (turned) {
+                // The body has to turn, not only the head: a mob that turns in place and only
+                // sends its head yaw keeps walking with its old body direction on the client.
+                if (terila::protocol::write_move_entity_rot(out, mob.id, mob.yaw, mob.pitch,
+                    mob.on_ground)) {
+                    send(out);
+                }
+                out.clear();
+            }
+            if (head_turned) {
                 if (terila::protocol::write_rotate_head(out, mob.id, mob.head_yaw)) {
                     send(out);
                 }
@@ -137,6 +147,7 @@ namespace terila::network {
             known->second.y = mob.y;
             known->second.z = mob.z;
             known->second.yaw = mob.yaw;
+            known->second.head_yaw = mob.head_yaw;
         }
 
         for (auto it = known_entities_.begin(); it != known_entities_.end();) {

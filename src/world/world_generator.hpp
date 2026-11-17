@@ -166,6 +166,29 @@ namespace terila::world {
             return best;
         }
 
+        // The y of the block that keeps the sky out of a column: above it the column sees
+        // the sky, which is what the natural spawner's light test reads.
+        int sky_top(std::int32_t x, std::int32_t z) const {
+            if (type_ == WorldType::Flat) {
+                return min_y_ + spec_.dirt_layers + 1;
+            }
+            return terrain_.sky_top(x, z);
+        }
+
+        // A block in the four kinds the spawn rules test; a flat world is all air above its
+        // grass layer.
+        terrain::BlockKind block_kind_at(std::int32_t x, std::int32_t y,
+            std::int32_t z) const {
+            if (type_ != WorldType::Flat) {
+                return terrain_.kind_at(x, y, z);
+            }
+            const std::int32_t state = state_at(x, y, z);
+            if (state == air_) return terrain::BlockKind::Air;
+            if (state == grass_) return terrain::BlockKind::Soil;
+            if (state == bedrock_ || state == dirt_) return terrain::BlockKind::Solid;
+            return terrain::BlockKind::Air;
+        }
+
         std::int32_t state_at(std::int32_t x, std::int32_t y, std::int32_t z) const {
             if (type_ != WorldType::Flat) {
                 return terrain_.state_at(x, y, z);

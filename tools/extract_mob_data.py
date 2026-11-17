@@ -59,6 +59,72 @@ ATTRIBUTE_CALL = re.compile(
     r"\.add\(\s*Attributes\.([A-Z_]+)\s*(?:,\s*([-0-9.eEfF]+)\s*)?\)")
 HELPER_CALL = re.compile(r"this\.([a-zA-Z0-9_]+)\(\)\s*;")
 
+# SpawnPlacements registers where a type may appear and which light/test it needs:
+#   register(EntityTypes.COW, SpawnPlacementTypes.ON_GROUND, Heightmap.Types.X,
+#            Animal::checkAnimalSpawnRules);
+SPAWN_REGISTER = re.compile(
+    r"register\(\s*EntityTypes\.([A-Z0-9_]+)\s*,\s*SpawnPlacementTypes\.([A-Z_]+)\s*,"
+    r"[^;]*?,\s*([A-Za-z0-9_]+::[A-Za-z0-9_]+)\s*\)", re.S)
+
+PLACEMENTS = {
+    "ON_GROUND": "OnGround",
+    "IN_WATER": "InWater",
+    "IN_LAVA": "InLava",
+    "NO_RESTRICTIONS": "NoRestrictions",
+}
+
+# Predicates that test the light at the spawn position. Anything else (water animals,
+# Mob::checkMobSpawnRules, nether-only mobs) is allowed at any brightness.
+DARK_PREDICATES = {
+    "Monster::checkMonsterSpawnRules",
+    "Monster::checkSurfaceMonstersSpawnRules",
+    "Bat::checkBatSpawnRules",
+    "Slime::checkSlimeSpawnRules",
+    "Silverfish::checkSilverfishSpawnRules",
+    "Endermite::checkEndermiteSpawnRules",
+    "GlowSquid::checkGlowSquidSpawnRules",
+    "MagmaCube::checkMagmaCubeSpawnRules",
+}
+BRIGHT_PREDICATES = {
+    "Animal::checkAnimalSpawnRules",
+    "Armadillo::checkArmadilloSpawnRules",
+    "Camel::checkCamelSpawnRules",
+    "Fox::checkFoxSpawnRules",
+    "Frog::checkFrogSpawnRules",
+    "Goat::checkGoatSpawnRules",
+    "Hoglin::checkHoglinSpawnRules",
+    "MushroomCow::checkMushroomSpawnRules",
+    "Ocelot::checkOcelotSpawnRules",
+    "Panda::checkPandaSpawnRules",
+    "Parrot::checkParrotSpawnRules",
+    "PolarBear::checkPolarBearSpawnRules",
+    "Rabbit::checkRabbitSpawnRules",
+    "Turtle::checkTurtleSpawnRules",
+    "Wolf::checkWolfSpawnRules",
+}
+
+DEFAULT_LIGHT = {"Monster": "Dark", "Creature": "Bright"}
+
+
+def spawn_rules(decompiled):
+    """Entity id -> (placement, light rule), straight from SpawnPlacements' static block."""
+    path = os.path.join(decompiled, "world/entity/SpawnPlacements.java")
+    if not os.path.isfile(path):
+        return {}
+    text = strip_comments(read(path))
+    rules = {}
+    for match in SPAWN_REGISTER.finditer(text):
+        constant, placement, predicate = match.groups()
+        entity_id = "minecraft:" + constant.lower()
+        if predicate in DARK_PREDICATES:
+            light = "Dark"
+        elif predicate in BRIGHT_PREDICATES:
+            light = "Bright"
+        else:
+            light = "Any"
+        rules[entity_id] = (PLACEMENTS.get(placement, "NoRestrictions"), light)
+    return rules
+
 
 def read(path):
     with open(path, encoding="utf-8", errors="replace") as handle:
@@ -220,7 +286,7 @@ def parse_class(path):
     return parent.group(1) if parent else None, goals, attributes
 
 
-def write_mobs(out):
+def write_mobs(out, decompiled):
     entities = json.load(open(os.path.join(ROOT, "input/entities/minecraft.json"),
                               encoding="utf-8"))["data"]
     by_id = {entry["id"]: entry for entry in entities}
@@ -262,6 +328,16 @@ def write_mobs(out):
             "attributes": attributes,
             "goals": [goals[key] for key in sorted(goals, key=lambda k: (k[1], k[0]))],
         })
+
+    rules = spawn_rules(decompiled)
+    for row in rows:
+        placement, light = rules.get(row["id"], (None, None))
+        if placement is None:
+            placement = "NoRestrictions"
+        if light is None:
+            light = DEFAULT_LIGHT.get(row["category"], "Any")
+        row["placement"] = placement
+        row["light"] = light
 
     rows.sort(key=lambda row: row["id"])
 
@@ -322,6 +398,21 @@ def write_mobs(out):
         '        std::string_view target;     // class the goal targets, e.g. "Player"',
         "    };",
         "",
+        "    // Where the type may appear (SpawnPlacementTypes) and the light it needs",
+        "    // (the checkSpawnRules predicate SpawnPlacements registers for it).",
+        "    enum class SpawnPlacement : std::uint8_t {",
+        "        NoRestrictions,",
+        "        OnGround,",
+        "        InWater,",
+        "        InLava,",
+        "    };",
+        "",
+        "    enum class SpawnLight : std::uint8_t {",
+        "        Any,",
+        "        Dark,",
+        "        Bright,",
+        "    };",
+        "",
         "    struct MobSpec {",
         "        std::string_view id;",
         "        MobCategory category = MobCategory::Misc;",
@@ -332,6 +423,8 @@ def write_mobs(out):
         "        float attack_damage = 2.0f;",
         "        float follow_range = 32.0f;",
         "        float armor = 0.0f;",
+        "        SpawnPlacement placement = SpawnPlacement::NoRestrictions;",
+        "        SpawnLight light = SpawnLight::Any;",
         "        std::uint16_t goal_begin = 0;",
         "        std::uint16_t goal_count = 0;",
         "        std::uint16_t food_begin = 0;",
@@ -352,11 +445,13 @@ def write_mobs(out):
     for row in rows:
         attributes = row["attributes"]
         lines.append(
-            '        { "%s", MobCategory::%s, %.3ff, %.3ff, %.1ff, %.3ff, %.2ff, %.1ff, %.1ff, %d, %d, %d, %d },'
+            '        { "%s", MobCategory::%s, %.3ff, %.3ff, %.1ff, %.3ff, %.2ff, %.1ff, %.1ff, '
+            'SpawnPlacement::%s, SpawnLight::%s, %d, %d, %d, %d },'
             % (row["id"], row["category"], row["width"], row["height"],
                attributes["max_health"], attributes["movement_speed"],
                attributes["attack_damage"], attributes["follow_range"],
-               attributes["armor"], row["goal_begin"], row["goal_count"],
+               attributes["armor"], row["placement"], row["light"],
+               row["goal_begin"], row["goal_count"],
                row["food_begin"], row["food_count"]))
     lines.append("    };")
     lines.append("")
@@ -391,6 +486,11 @@ def write_mobs(out):
     with open(out, "w", encoding="utf-8") as handle:
         handle.write("\n".join(lines))
     print("wrote %s: %d mobs, %d goals" % (out, len(rows), len(goal_lines)))
+
+
+def category_key(kind):
+    """The lowercase snake_case key the C++ spawner matches (water_creature, ...)."""
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", kind).lower()
 
 
 def spawn_count(value):
@@ -449,7 +549,8 @@ def write_biome_spawns(out):
         "    inline constexpr BiomeSpawn kBiomeSpawns[] = {",
     ]
     for type_, kind, weight, low, high in entries:
-        lines.append('        { "%s", "%s", %d, %d, %d },' % (type_, kind.lower(), weight, low, high))
+        lines.append('        { "%s", "%s", %d, %d, %d },'
+                     % (type_, category_key(kind), weight, low, high))
     lines.append("    };")
     lines.append("")
     lines.append("    inline constexpr BiomeSpawnList kBiomeSpawnLists[] = {")
@@ -487,7 +588,7 @@ def main():
     global TAGS
     TAGS = item_tags()
 
-    write_mobs(args.out)
+    write_mobs(args.out, args.decompiled)
     write_biome_spawns(args.spawns)
 
 

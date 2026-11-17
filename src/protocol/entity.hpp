@@ -102,6 +102,23 @@ namespace terila::protocol {
         return true;
     }
 
+    // Body rotation only: ClientboundMoveEntityPacket.Rot writes id, onGround, yaw, pitch.
+    inline bool write_move_entity_rot(std::vector<std::uint8_t>& output,
+        std::int32_t entity_id, float yaw, float pitch, bool on_ground)
+    {
+        std::vector<std::uint8_t> payload;
+        write_varint(payload, entity_id);
+        payload.push_back(on_ground ? 1 : 0);
+        payload.push_back(angle_to_byte(yaw));
+        payload.push_back(angle_to_byte(pitch));
+
+        if (!write_packet(output, packet_ids().play_move_entity_rot, payload)) {
+            LOG_WARN(Protocol, "write_move_entity_rot: failed (id={})", entity_id);
+            return false;
+        }
+        return true;
+    }
+
     // Same linear VecDelta as above, without the rotation bytes.
     inline bool write_move_entity_pos(std::vector<std::uint8_t>& output,
         std::int32_t entity_id, std::int16_t dx, std::int16_t dy, std::int16_t dz,

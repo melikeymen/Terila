@@ -351,8 +351,17 @@ int main() {
         return world_terrain.surface_height(x, z) + 1 <= world_terrain.sea_level();
         };
     spawn_world.block_light = [](std::int32_t, std::int32_t, std::int32_t) { return 0; };
-    spawn_world.sky_light = [](std::int32_t, std::int32_t, std::int32_t) { return 15; };
+    spawn_world.sky_light = [&world_terrain](std::int32_t x, std::int32_t y, std::int32_t z) {
+        // Everything above the column's sky top sees the sky; underneath it is roofed.
+        return y > world_terrain.sky_top(x, z) ? 15 : 0;
+        };
+    spawn_world.sea_level = world_terrain.sea_level();
+    // SpawnPlacements asks three things of a position: is it empty, what is below it, and is
+    // that surface the animals tag. The world generator answers with one classification.
+    spawn_world.block_kind = [&world_terrain](std::int32_t x, std::int32_t y,
+        std::int32_t z) { return world_terrain.block_kind_at(x, y, z); };
     spawner.set_world(spawn_world);
+    spawner.set_spawn_point(spawn.x, spawn.z);
 
     // Mobs that swim in the biome's water entries need to know when they are in it.
     mobs.set_water_resolver([&world_terrain](double x, double z) {
@@ -369,8 +378,8 @@ int main() {
     std::uint32_t population_rng = static_cast<std::uint32_t>(world_terrain.seed()) ^ 0x5EED5EEDu;
     const std::size_t spawned = spawner.spawn_initial(mobs, spawn.x, spawn.z, 96.0,
         population_rng, clock->night());
-    LOG_INFO(Entity, "spawned {} mobs from the {} spawn list", spawned,
-        terila::world::terrain::kBiomeNames[world_terrain.biome_at(spawn.x, spawn.z)]);
+    LOG_INFO(Entity, "spawned {} mobs around ({}, {}), each from the spawn list of its own biome",
+        spawned, spawn.x, spawn.z);
     if (spawned == 0) {
         LOG_WARN(Entity, "the biome spawn list produced nothing — check the entity registry");
     }

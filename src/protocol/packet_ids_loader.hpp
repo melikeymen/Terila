@@ -143,6 +143,7 @@ namespace terila::protocol {
         set(ids.play_remove_entities, find("play", "clientbound", "minecraft:remove_entities"), "play_remove_entities");
         set(ids.play_entity_position_sync, find("play", "clientbound", "minecraft:entity_position_sync"), "play_entity_position_sync");
         set(ids.play_move_entity_pos_rot, find("play", "clientbound", "minecraft:move_entity_pos_rot"), "play_move_entity_pos_rot");
+        set(ids.play_move_entity_rot, find("play", "clientbound", "minecraft:move_entity_rot"), "play_move_entity_rot");
         set(ids.play_move_entity_pos, find("play", "clientbound", "minecraft:move_entity_pos"), "play_move_entity_pos");
         set(ids.play_rotate_head, find("play", "clientbound", "minecraft:rotate_head"), "play_rotate_head");
         set(ids.play_entity_event, find("play", "clientbound", "minecraft:entity_event"), "play_entity_event");

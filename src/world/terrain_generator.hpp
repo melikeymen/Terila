@@ -122,6 +122,21 @@ namespace terila::world::terrain {
         bool ready() const { return ready_; }
         // What each block state does to light, so an edited chunk can be lit again.
         const LightRules& light_rules() const { return light_rules_; }
+        // A single block, in the four kinds the world rules test. Leaves and snow are
+        // Plant because a mob stands above them rather than inside them, and grass is Soil
+        // because it is the only block in the animals_spawnable_on tag.
+        BlockKind kind_at(std::int32_t x, std::int32_t y, std::int32_t z) const {
+            const std::int32_t state = state_at(x, y, z);
+            if (state == blocks_.air) return BlockKind::Air;
+            if (state == blocks_.water) return BlockKind::Water;
+            if (state == blocks_.grass) return BlockKind::Soil;
+            if (state == blocks_.snow) return BlockKind::Plant;
+            for (const std::int32_t leaves : { blocks_.oak_leaves, blocks_.spruce_leaves,
+                blocks_.birch_leaves, blocks_.jungle_leaves, blocks_.acacia_leaves }) {
+                if (state == leaves) return BlockKind::Plant;
+            }
+            return BlockKind::Solid;
+        }
         std::uint32_t seed() const { return seed_; }
         int min_y() const { return min_y_; }
         int section_count() const { return section_count_; }

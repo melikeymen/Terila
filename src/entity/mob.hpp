@@ -563,8 +563,8 @@ namespace terila::entity {
                 const double radius = 1.0 + static_cast<double>(next_random() % 10);
                 constexpr double kPi = 3.14159265358979323846;
                 const double radians = angle * kPi / 180.0;
-                mob.wander_x = mob.x + std::sin(radians) * radius;
-                mob.wander_z = mob.z - std::cos(radians) * radius;
+                mob.wander_x = mob.x - std::sin(radians) * radius;
+                mob.wander_z = mob.z + std::cos(radians) * radius;
                 mob.wander_ticks = kStrollIntervalTicks + static_cast<int>(next_random() % 80);
             }
             --mob.wander_ticks;
@@ -582,10 +582,12 @@ namespace terila::entity {
         }
 
         void wander_away(Mob& mob, double speed) {
-            const float away = static_cast<float>((mob.knockback_yaw + 180.0f));
+            // knockback_yaw points from whatever hurt the mob towards the mob, so running
+            // along it is running away from the attacker (PanicGoal does the same).
+            const float away = mob.knockback_yaw;
             if (mob.panic_ticks % 20 == 0 || mob.wander_ticks <= 0) {
-                mob.wander_x = mob.x + std::sin(away * 3.14159265f / 180.0f) * 6.0;
-                mob.wander_z = mob.z - std::cos(away * 3.14159265f / 180.0f) * 6.0;
+                mob.wander_x = mob.x - std::sin(away * 3.14159265f / 180.0f) * 6.0;
+                mob.wander_z = mob.z + std::cos(away * 3.14159265f / 180.0f) * 6.0;
                 mob.wander_ticks = 20;
             }
             --mob.wander_ticks;
@@ -624,10 +626,12 @@ namespace terila::entity {
         }
 
         bool apply_move(Mob& mob, float yaw, double speed, bool can_jump) {
+            // Entity.getInputVector: the local forward (0, 0, 1) becomes (-sin, cos), so the
+            // mob walks exactly where its yaw points instead of away from it.
             constexpr double kPi = 3.14159265358979323846;
             const double radians = static_cast<double>(yaw) * kPi / 180.0;
-            const double nx = mob.x + std::sin(radians) * speed;
-            const double nz = mob.z - std::cos(radians) * speed;
+            const double nx = mob.x - std::sin(radians) * speed;
+            const double nz = mob.z + std::cos(radians) * speed;
             if (!inside_roam(nx, nz)) {
                 return false;
             }
@@ -645,8 +649,8 @@ namespace terila::entity {
 
             mob.x = nx;
             mob.z = nz;
-            mob.vx = std::sin(radians) * speed;
-            mob.vz = -std::cos(radians) * speed;
+            mob.vx = -std::sin(radians) * speed;
+            mob.vz = std::cos(radians) * speed;
             return true;
         }
 

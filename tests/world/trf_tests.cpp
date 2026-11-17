@@ -3,6 +3,7 @@
 #include "world/trf/trf_crc32c.hpp"
 #include "world/trf/trf_format.hpp"
 #include "world/trf/trf_header.hpp"
+#include "world/trf/trf_lz4.hpp"
 #include "world/trf/trf_region.hpp"
 #include "world/trf/trf_slot.hpp"
 #include "world/trf/trf_store.hpp"
@@ -713,4 +714,72 @@ TEST(TrfBench, ReadSpeed) {
                 (1024.0 * 1024.0));
     }
 #endif
+}
+
+// --- §15 codecs -----------------------------------------------------------
+
+TEST(TrfCompressionTest, CompressibleRecordsRoundTripAsLz4) {
+    TempDir dir;
+    auto opened = trf::TrfRegion::open(dir.path() / "r.0.0.trf", region_options());
+    ASSERT_TRUE(opened.has_value()) << trf::to_string(opened.error().code);
+    auto& region = **opened;
+
+    // A chunk payload repeats itself: section palettes and long block runs.
+    std::vector<std::byte> payload(64 * 1024);
+    for (std::size_t i = 0; i < payload.size(); ++i) {
+        payload[i] = static_cast<std::byte>((i / 7u) & 0x07u);
+    }
+
+    ASSERT_TRUE(region.save_chunk(1, 2, as_span(payload),
+        trf::chunk_flags(true, true, false)).has_value());
+
+    std::vector<std::byte> loaded;
+    const auto result = region.load_chunk(1, 2, loaded);
+    ASSERT_TRUE(result.has_value()) << trf::to_string(result.error().code);
+    EXPECT_EQ(result->compression, trf::compression::lz4);
+    EXPECT_EQ(loaded, payload) << "the decoded bytes are the bytes that were saved";
+}
+
+TEST(TrfCompressionTest, IncompressibleRecordsStayStored) {
+    TempDir dir;
+    auto opened = trf::TrfRegion::open(dir.path() / "r.0.0.trf", region_options());
+    ASSERT_TRUE(opened.has_value()) << trf::to_string(opened.error().code);
+    auto& region = **opened;
+
+    std::vector<std::byte> payload(8 * 1024);
+    std::uint32_t state = 0x9E3779B9u;
+    for (auto& byte : payload) {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        byte = static_cast<std::byte>(state & 0xFFu);
+    }
+
+    ASSERT_TRUE(region.save_chunk(4, 4, as_span(payload),
+        trf::chunk_flags(false, false, false)).has_value());
+
+    std::vector<std::byte> loaded;
+    const auto result = region.load_chunk(4, 4, loaded);
+    ASSERT_TRUE(result.has_value()) << trf::to_string(result.error().code);
+    EXPECT_EQ(result->compression, trf::compression::stored)
+        << "compression must never make a record bigger";
+    EXPECT_EQ(loaded, payload);
+}
+
+TEST(TrfCompressionTest, MalformedBlocksAreRejectedWithoutOverrun) {
+    std::vector<std::byte> out(128, std::byte{ 0 });
+
+    // A literal run longer than the record.
+    const std::vector<std::byte> overlong = { std::byte{ 0xF0 }, std::byte{ 0xFF },
+        std::byte{ 0x01 }, std::byte{ 0x41 } };
+    EXPECT_FALSE(trf::lz4_decompress(overlong, out).has_value());
+
+    // A zero match offset would read before the start of the block.
+    const std::vector<std::byte> zero_offset = { std::byte{ 0x10 }, std::byte{ 0x41 },
+        std::byte{ 0x00 }, std::byte{ 0x00 } };
+    EXPECT_FALSE(trf::lz4_decompress(zero_offset, out).has_value());
+
+    // A well formed block that decodes to the wrong size.
+    const std::vector<std::byte> short_block = { std::byte{ 0x10 }, std::byte{ 0x41 } };
+    EXPECT_FALSE(trf::lz4_decompress(short_block, out).has_value());
 }

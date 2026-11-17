@@ -98,12 +98,15 @@ namespace terila::entity {
         return dx * dx + dz * dz;
     }
 
-    // Degrees around +Y, matching the (sin, -cos) movement convention.
+    // Degrees around +Y in the game's convention: 0 faces +Z (south), 90 faces -X (west),
+    // 180 faces -Z (north) and 270 faces +X (east). MoveControl derives it as
+    // atan2(dz, dx) - 90, which is the atan2(-dx, dz) below, and Entity.getInputVector turns
+    // it back into (-sin, cos): that pair is what makes a mob both look and walk the same way.
     inline float yaw_between(double from_x, double from_z, double to_x, double to_z) {
         constexpr double kPi = 3.14159265358979323846;
         const double dx = to_x - from_x;
         const double dz = to_z - from_z;
-        double degrees = std::atan2(dx, -dz) * 180.0 / kPi;
+        double degrees = std::atan2(-dx, dz) * 180.0 / kPi;
         while (degrees < 0.0) degrees += 360.0;
         while (degrees >= 360.0) degrees -= 360.0;
         return static_cast<float>(degrees);

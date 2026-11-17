@@ -52,6 +52,16 @@ namespace terila::world::terrain {
         std::int32_t diamond_ore = 0;
     };
 
+    // What a single block is, for the rules that do not care about its identity: the natural
+    // spawner tests a column like this instead of resolving block ids itself.
+    enum class BlockKind : std::uint8_t {
+        Air,     // no collision, no light loss
+        Soil,    // animals_spawnable_on (grass_block)
+        Solid,   // a full collision block
+        Water,   // the water fluid
+        Plant,   // snow, leaves: a thin layer a mob stands on top of
+    };
+
     // One entry of the biome table: what the surface looks like and what grows on it.
     struct Biome {
         std::int32_t id = 0;          // biome registry id

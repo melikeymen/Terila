@@ -200,7 +200,7 @@ namespace terila::world::trf {
         options.world_uuid = identity_.world_uuid;
         options.generator_id = identity_.generator_id;
         options.generator_version = identity_.generator_version;
-        options.default_compression = compression::stored;
+        options.default_compression = compression::lz4;
 
         auto opened = TrfRegion::open(region_path(rx, rz), options);
         if (!opened) {

@@ -1,6 +1,7 @@
 #include "world/trf/trf_region.hpp"
 
 #include "world/trf/trf_crc32c.hpp"
+#include "world/trf/trf_lz4.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -485,14 +486,27 @@ namespace terila::world::trf {
                 "stored payload CRC mismatch"));
         }
 
-        // Only Stored records are produced by this implementation; a compressed record
-        // would need a decoder that the format leaves to the caller.
-        if (chosen->compression != compression::stored) {
-            return std::unexpected(make_chunk_error(TrfErrorCode::CompressionFailed, id,
-                "compressed records are not supported by this build"));
+        if (chosen->compression == compression::stored) {
+            out.assign(payload.begin(), payload.end());
         }
-
-        out.assign(payload.begin(), payload.end());
+        else if (chosen->compression == compression::lz4) {
+            out.resize(chosen->raw_size);
+            if (auto decoded = lz4_decompress(payload, out, id); !decoded) {
+                out.clear();
+                return std::unexpected(decoded.error());
+            }
+            // The prefix and the slot CRC cover the bytes on disk; the raw CRC covers what
+            // they expand to, so a block that decodes to the wrong text is caught too.
+            if (crc32c(out) != chosen->raw_crc32c) {
+                out.clear();
+                return std::unexpected(make_chunk_error(TrfErrorCode::CrcMismatch, id,
+                    "raw payload CRC mismatch"));
+            }
+        }
+        else {
+            return std::unexpected(make_chunk_error(TrfErrorCode::CompressionFailed, id,
+                "unknown compression codec"));
+        }
         result.present = true;
         result.compression = chosen->compression;
         result.edited = chosen->edited();
@@ -526,7 +540,22 @@ namespace terila::world::trf {
     std::expected<void, TrfError> TrfRegion::append_record(std::uint32_t id,
         std::span<const std::byte> payload, std::uint8_t flags) {
 
-        const std::uint32_t stored_size = static_cast<std::uint32_t>(payload.size()) +
+        // Records are compressed when the codec actually saves bytes; an incompressible
+        // chunk stays Stored, which the index and §21 both accept alongside it.
+        std::vector<std::byte> compressed;
+        std::span<const std::byte> stored = payload;
+        std::uint8_t codec = compression::stored;
+        if (payload.size() >= lz4_min_input) {
+            compressed = lz4_compress(payload);
+            if (!compressed.empty() &&
+                compressed.size() + stored_framing_overhead >= min_compressed_stored_size &&
+                compressed.size() + stored_framing_overhead < payload.size()) {
+                stored = compressed;
+                codec = compression::lz4;
+            }
+        }
+
+        const std::uint32_t stored_size = static_cast<std::uint32_t>(stored.size()) +
             stored_framing_overhead;
         std::uint64_t offset = align_up(std::max<std::uint64_t>(header_.data_end, data_start),
             data_align);
@@ -545,8 +574,9 @@ namespace terila::world::trf {
 
         std::vector<std::byte> record(stored_size);
         store_u32(record.data(), static_cast<std::uint32_t>(payload.size()));
-        store_u32(record.data() + 4, crc32c(payload));
-        std::memcpy(record.data() + record_prefix_size, payload.data(), payload.size());
+        const std::uint32_t stored_crc = crc32c(stored);
+        store_u32(record.data() + 4, stored_crc);
+        std::memcpy(record.data() + record_prefix_size, stored.data(), stored.size());
 
         if (auto written = file_.write_at(offset, record); !written) {
             return std::unexpected(written.error());
@@ -558,12 +588,12 @@ namespace terila::world::trf {
         slot.record_offset = static_cast<std::uint32_t>(offset);
         slot.stored_size = stored_size;
         slot.raw_size = static_cast<std::uint32_t>(payload.size());
-        slot.compression = compression::stored;
+        slot.compression = codec;
         slot.flags = flags;
         slot.lx = static_cast<std::uint8_t>(id & 31);
         slot.lz = static_cast<std::uint8_t>((id >> 5) & 31);
-        slot.stored_crc32c = crc32c(payload);
-        slot.raw_crc32c = slot.stored_crc32c;
+        slot.stored_crc32c = stored_crc;
+        slot.raw_crc32c = codec == compression::stored ? stored_crc : crc32c(payload);
         slot.slot_generation = next_slot_generation(slots_[id][0], slots_[id][1]);
 
         const int target = shadow_slot(id);

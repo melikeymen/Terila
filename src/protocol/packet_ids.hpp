@@ -60,6 +60,7 @@ namespace terila::protocol {
         std::int32_t play_remove_entities = -1;
         std::int32_t play_entity_position_sync = -1;
         std::int32_t play_move_entity_pos_rot = -1;
+        std::int32_t play_move_entity_rot = -1;
         std::int32_t play_move_entity_pos = -1;
         std::int32_t play_rotate_head = -1;
         std::int32_t play_entity_event = -1;

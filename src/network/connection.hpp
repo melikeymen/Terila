@@ -131,6 +131,7 @@ namespace terila::network {
             double y = 0.0;
             double z = 0.0;
             float yaw = 0.0f;
+            float head_yaw = 0.0f;
             std::uint32_t hurt_serial = 0;
             bool death_sent = false;
         };
