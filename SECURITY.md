@@ -6,7 +6,7 @@ Terila is pre-alpha. Only the latest release receives security fixes.
 
 Do not open a public issue for security problems. Use
 [GitHub Security Advisories](https://github.com/melikeymen/terila/security/advisories/new)
-so the report stays private until a fix ships. (currently unavailable)
+so the report stays private until a fix ships.
 
 Include:
 
