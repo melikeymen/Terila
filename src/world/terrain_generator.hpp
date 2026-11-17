@@ -11,6 +11,9 @@
 // always agree, so the overlay only ever stores real player edits.
 
 #include "world/chunk.hpp"
+#include "world/block_cache.hpp"
+
+#include <memory>
 #include "world/light_engine.hpp"
 #include "world/terrain_biomes.hpp"
 #include "world/terrain_caves.hpp"
@@ -96,6 +99,10 @@ namespace terila::world::terrain {
             min_y_ = min_y;
             section_count_ = section_count;
             seed_ = seed;
+            // A fresh table per world, salted with the seed: entries of an earlier world can
+            // never be read back.
+            block_cache_ = std::make_shared<BlockSampleCache>();
+            cache_salt_ = static_cast<std::uint64_t>(seed) * 0x9E3779B97F4A7C15ull + 1;
 
             const auto resolved_blocks = resolve_blocks(block);
             if (!resolved_blocks) {
@@ -507,11 +514,38 @@ namespace terila::world::terrain {
             // come from the same generator, so the light along a chunk border matches what
             // the chunk on the other side computes.
             {
+                // A halo cell costs a full block evaluation, and the four chunks that share
+                // it would each pay for it again: the shared table makes the repeats free.
                 const auto sample = [&](std::int32_t wx, std::int32_t wy, std::int32_t wz) {
-                    return state_at(wx, wy, wz, *cache);
+                    if (!BlockSampleCache::is_enabled()) {
+                        return state_at(wx, wy, wz, *cache);
+                    }
+                    const std::int64_t key = block_key(wx, wy, wz);
+                    if (const auto hit = block_cache_->find(key, cache_salt_)) {
+                        BlockSampleCache::count_hit();
+                        return *hit;
+                    }
+                    BlockSampleCache::count_miss();
+                    const std::int32_t state = state_at(wx, wy, wz, *cache);
+                    block_cache_->insert(key, cache_salt_, state);
+                    return state;
                 };
+                // A column's top is asked for again by every chunk that touches it, and each
+                // answer walks a 5x5 tree neighbourhood: memoised in the same table, with the
+                // unused top of the y range as its marker.
                 const auto top = [this, &cache](std::int32_t wx, std::int32_t wz) {
-                    return sky_top(wx, wz, *cache);
+                    if (!BlockSampleCache::is_enabled()) {
+                        return sky_top(wx, wz, *cache);
+                    }
+                    const std::int64_t key = block_key(wx, kTopMarkerY, wz);
+                    if (const auto hit = block_cache_->find(key, cache_salt_)) {
+                        BlockSampleCache::count_hit();
+                        return *hit;
+                    }
+                    BlockSampleCache::count_miss();
+                    const int result = sky_top(wx, wz, *cache);
+                    block_cache_->insert(key, cache_salt_, result);
+                    return result;
                 };
                 LightEngine::compute(chunk, light_rules_, top, sample);
             }
@@ -521,6 +555,8 @@ namespace terila::world::terrain {
 
     private:
         static constexpr std::uint32_t kFeatureSeed = 0x7E41A5u;
+        // No column top can reach this height, so it marks a top entry in the sample table.
+        static constexpr int kTopMarkerY = 2047;
 
         void init_noise() {
             // Every channel gets its own permutation, all derived from the world seed.
@@ -803,6 +839,11 @@ namespace terila::world::terrain {
         int section_count_ = 24;
         int sea_level_ = 63;
         std::uint32_t seed_ = 0x51ED2C3u;
+        // Every halo sample of every chunk goes through this, workers included: it is shared
+        // state, so it is held by a pointer the generator hands to nobody else.
+        mutable std::shared_ptr<BlockSampleCache> block_cache_ =
+            std::make_shared<BlockSampleCache>();
+        std::uint64_t cache_salt_ = 1;
         bool ready_ = false;
     };
 

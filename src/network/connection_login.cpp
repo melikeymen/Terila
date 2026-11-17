@@ -11,6 +11,7 @@
 #include "protocol/primitives.hpp"
 #include "protocol/uuid.hpp"
 
+#include <algorithm>
 #include <array>
 
 #include "version/features.hpp"
@@ -31,12 +32,26 @@ namespace terila::network {
                 return;
             }
 
-            // The real UUID of an account cannot be derived from its name, so it is asked
-            // for; the offline UUID only stands in when there is no account to ask about.
-            const auto profile = terila::network::lookup_mojang_profile(result->username);
+            // The client sends the profile it plays with, and a premium launcher sends the
+            // account's real UUID: taking that makes a premium login instant instead of
+            // paying a round trip to Mojang that, on a slow route, did not even come back
+            // before the timeout and silently handed a real account an offline identity.
+            // It is the same trust the name already has — anybody can claim any name until
+            // session auth exists — and a client that sends nothing still gets the lookup.
+            const bool claimed = result->has_uuid &&
+                std::any_of(result->uuid.begin(), result->uuid.end(),
+                    [](std::uint8_t byte) { return byte != 0; });
+
+            terila::network::PlayerProfile profile;
             std::array<std::uint8_t, 16> uuid{};
-            if (profile.found) {
-                uuid = profile.uuid;
+            if (claimed) {
+                uuid = result->uuid;
+            }
+            else if (const auto looked_up =
+                         terila::network::lookup_mojang_profile(result->username);
+                     looked_up.found) {
+                profile = looked_up;
+                uuid = looked_up.uuid;
             }
             else if (const auto offline = terila::protocol::offline_uuid(result->username)) {
                 uuid = *offline;
@@ -58,7 +73,7 @@ namespace terila::network {
             // One line per attempt: who is connecting, from where, with which identity.
             LOG_INFO(Network, "{}[/{}] logging in (uuid {}, {})", username_, remote_,
                 terila::protocol::uuid_to_string(uuid),
-                profile.found ? "account" : "offline identity");
+                claimed ? "client profile" : profile.found ? "account" : "offline identity");
 
             std::vector<std::uint8_t> out;
 

@@ -28,6 +28,41 @@ TEST(LoginTest, ReadLoginStartValid) {
     EXPECT_EQ(result->username, "Steve");
 }
 
+static std::vector<std::uint8_t> make_login_start_packet_with_uuid(
+    const std::string& username, const std::array<std::uint8_t, 16>& uuid) {
+    std::vector<std::uint8_t> payload;
+    write_string(payload, username);
+    payload.insert(payload.end(), uuid.begin(), uuid.end());
+
+    std::vector<std::uint8_t> out;
+    write_packet(out, 0x00, payload);
+    return out;
+}
+
+// A premium launcher puts the account's real UUID in the hello packet, which is what lets
+// the server skip the Mojang round trip on login.
+TEST(LoginTest, ReadLoginStartCarriesTheClaimedProfile) {
+    const std::array<std::uint8_t, 16> uuid{ 0x06, 0x9a, 0x79, 0xf4, 0x44, 0xe9, 0x47, 0x26,
+        0xa5, 0xbe, 0xfc, 0xa9, 0x0e, 0x38, 0xaa, 0xf5 };
+    auto packet = make_login_start_packet_with_uuid("Notch", uuid);
+
+    auto result = read_login_start(packet.data(), packet.size());
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->username, "Notch");
+    EXPECT_TRUE(result->has_uuid);
+    EXPECT_EQ(result->uuid, uuid);
+}
+
+TEST(LoginTest, ReadLoginStartWithoutAProfileLeavesItUnset) {
+    auto packet = make_login_start_packet("Steve");
+
+    auto result = read_login_start(packet.data(), packet.size());
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_FALSE(result->has_uuid);
+}
+
 TEST(LoginTest, ReadLoginStartWrongId) {
     std::vector<std::uint8_t> payload;
     write_string(payload, "Steve");

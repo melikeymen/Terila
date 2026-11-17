@@ -13,6 +13,7 @@
 #include "protocol/block.hpp"
 #include "world/block_world.hpp"
 #include "world/world_context.hpp"
+#include "world/chunk_jobs.hpp"
 #include "world/world_generator.hpp"
 #include "world/trf/trf_store.hpp"
 
@@ -180,6 +181,9 @@ namespace terila::network {
 
         // Served from TRF when the region holds the chunk, generated and persisted otherwise.
         std::vector<std::uint8_t> chunk_at(std::int32_t cx, std::int32_t cz);
+        // The same chunk, reusing a column the worker pool already generated.
+        std::vector<std::uint8_t> chunk_at(std::int32_t cx, std::int32_t cz,
+            std::optional<terila::world::PreparedChunk> prepared);
         // The baseline is passed in because the caller may already hold the generated
         // chunk, and generating it twice per load is the expensive part.
         void apply_loaded_chunk(const terila::world::Chunk& chunk,

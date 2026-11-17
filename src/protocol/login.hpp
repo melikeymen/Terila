@@ -9,13 +9,22 @@
 #include <optional>
 #include <cstdint>
 #include <string>
+#include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstddef>
 
 namespace terila::protocol {
 
 	struct LoginStartResult {
 		std::string username;
+
+		// The profile the client claims. A premium launcher puts the account's real UUID in
+		// the hello packet and an offline one the UUID derived from the name — the same one
+		// the server would compute. It is a claim, not a proof: the trust the name already
+		// has, nothing more.
+		std::array<std::uint8_t, 16> uuid{};
+		bool has_uuid = false;
 	};
 
 	// 3-16 chars, only a-z, A-Z, 0-9 and '_'
@@ -62,7 +71,18 @@ namespace terila::protocol {
 
 		LOG_DEBUG(Protocol, "read_login_start: username={}", username_result->value);
 
-		return LoginStartResult{ username_result->value };
+		LoginStartResult start{ username_result->value };
+		const std::size_t offset = username_result->consumed;
+		if (result->payload.size() >= offset + 16) {
+			std::copy_n(result->payload.begin() + static_cast<std::ptrdiff_t>(offset), 16,
+				start.uuid.begin());
+			start.has_uuid = true;
+		}
+		else {
+			LOG_DEBUG(Protocol, "read_login_start: no profile UUID in the packet ({} bytes)",
+				result->payload.size());
+		}
+		return start;
 	}
 
 	inline bool write_login_success(std::vector<std::uint8_t>& output, const std::string& username, const std::array<std::uint8_t, 16>& uuid, const std::array<std::uint8_t, 16>& session_id) {

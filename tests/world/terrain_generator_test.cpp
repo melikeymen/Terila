@@ -1,4 +1,17 @@
 #include <gtest/gtest.h>
+
+#include "world/block_cache.hpp"
+#include "world/chunk_jobs.hpp"
+#include "world/light_engine.hpp"
+#include "world/world_context.hpp"
+
+#include <chrono>
+#include <cstdlib>
+#include <future>
+#include <iostream>
+#include <utility>
+#include <unordered_map>
+#include <vector>
 #include "world/terrain_generator.hpp"
 #include "world/world_generator.hpp"
 #include "world/chunk_encoder.hpp"
@@ -382,4 +395,178 @@ TEST(TerrainGeneratorTest, TerrainHasBothWaterAndHighGround) {
     EXPECT_GT(highest, generator.sea_level() + 20);
 }
 
+// Streaming a view distance generates batches of chunks on the worker pool. This prints what
+// that buys over asking for the same columns one after another; it is a measurement, not an
+// assertion, so it only runs when asked for.
+TEST(ChunkJobsBench, BatchGenerationRunsInParallel) {
+    if (std::getenv("TERILA_BENCH") == nullptr) {
+        GTEST_SKIP() << "set TERILA_BENCH=1 to run the chunk job benchmark";
+    }
 
+    auto& generator = WorldContext::shared().generator();
+    ASSERT_TRUE(generator.init(WorldType::Terrain, -64, 24, 1337, mock_block, mock_biome));
+
+    constexpr int kChunks = 64;
+    std::vector<std::pair<std::int32_t, std::int32_t>> coords;
+    coords.reserve(kChunks);
+    for (int i = 0; i < kChunks; ++i) {
+        coords.emplace_back(2000 + i, -2000);
+    }
+
+    const auto sequential_start = std::chrono::steady_clock::now();
+    for (const auto& [cx, cz] : coords) {
+        const auto chunk = generator.generate(cx, cz);
+        ASSERT_EQ(chunk.x, cx);
+    }
+    const double sequential_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - sequential_start).count();
+
+    auto& jobs = ChunkJobs::shared();
+    const auto pooled_start = std::chrono::steady_clock::now();
+    std::vector<std::future<PreparedChunk>> pending;
+    pending.reserve(coords.size());
+    for (const auto& [cx, cz] : coords) {
+        pending.push_back(jobs.prepare(cx, cz));
+    }
+    for (auto& job : pending) {
+        ASSERT_FALSE(job.get().encoded.empty());
+    }
+    const double pooled_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - pooled_start).count();
+
+    std::cout << "chunk jobs: " << jobs.threads() << " threads, " << kChunks
+              << " chunks: " << sequential_ms << " ms sequential ("
+              << sequential_ms / kChunks << " ms/chunk), " << pooled_ms << " ms pooled ("
+              << pooled_ms / kChunks << " ms/chunk)" << std::endl;
+}
+
+namespace {
+
+    std::uint64_t column_key(std::int32_t x, std::int32_t z) {
+        return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(x)) << 32) |
+            static_cast<std::uint32_t>(z);
+    }
+
+} // namespace
+
+// What the light engine costs per chunk on its own: the columns come from real generated
+// chunks and the tops are precomputed, so this measures the engine (fill, flood fill and
+// packing) and not the terrain sampling it is handed in the server.
+TEST(LightBench, ComputePerChunk) {
+    if (std::getenv("TERILA_BENCH") == nullptr) {
+        GTEST_SKIP() << "set TERILA_BENCH=1 to run the light engine benchmark";
+    }
+
+    auto generator = make_generator(2026);
+
+    std::unordered_map<std::uint64_t, Chunk> grid;
+    for (std::int32_t cz = -1; cz <= 1; ++cz) {
+        for (std::int32_t cx = -1; cx <= 1; ++cx) {
+            grid.emplace(column_key(cx, cz), generator.generate(cx, cz));
+        }
+    }
+
+    const auto& rules = generator.light_rules();
+    const Chunk& center = grid.at(column_key(0, 0));
+    const int world_top = center.min_y + center.section_count * 16 - 1;
+
+    const auto state_in = [](const Chunk& chunk, int x, int y, int z) -> std::int32_t {
+        const int local_y = y - chunk.min_y;
+        if (local_y < 0 || local_y >= chunk.section_count * 16) {
+            return 0;
+        }
+        const auto section = static_cast<std::size_t>(local_y / 16);
+        return section_state(chunk.sections[section],
+            ((local_y % 16) * 16 + (z & 15)) * 16 + (x & 15));
+    };
+
+    std::size_t sample_calls = 0;
+    const auto sample = [&](int x, int y, int z) -> std::int32_t {
+        ++sample_calls;
+        const auto found = grid.find(column_key(x >> 4, z >> 4));
+        return found == grid.end() ? 0 : state_in(found->second, x, y, z);
+    };
+
+    // The column tops of the whole halo, once: the server's generator caches these as well.
+    std::unordered_map<std::uint64_t, int> tops;
+    std::size_t top_calls = 0;
+    const auto sky_top = [&](int x, int z) -> int {
+        ++top_calls;
+        const auto found = tops.find(column_key(x, z));
+        if (found != tops.end()) {
+            return found->second;
+        }
+        int top = center.min_y - 1;
+        const auto chunk = grid.find(column_key(x >> 4, z >> 4));
+        if (chunk != grid.end()) {
+            for (int y = world_top; y >= chunk->second.min_y; --y) {
+                if (!rules.of(state_in(chunk->second, x, y, z)).sky_down) {
+                    top = y;
+                    break;
+                }
+            }
+        }
+        tops.emplace(column_key(x, z), top);
+        return top;
+    };
+
+    Chunk chunk = center;
+    constexpr int kRuns = 20;
+    const auto start = std::chrono::steady_clock::now();
+    for (int run = 0; run < kRuns; ++run) {
+        terila::world::LightEngine::compute(chunk, rules, sky_top, sample);
+    }
+    const double light_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - start).count() / kRuns;
+
+    // The same 16 chunk sweep with the halo cache off and on: the terrain, the column cache
+    // and the machine are identical, so the difference is what the table is worth.
+    constexpr int kChunks = 16;
+    const auto sweep = [&](bool cache) -> double {
+        terila::world::BlockSampleCache::set_enabled(cache);
+        terila::world::BlockSampleCache::reset_stats();
+        const auto started = std::chrono::steady_clock::now();
+        for (int i = 0; i < kChunks; ++i) {
+            const auto generated = generator.generate(5000 + i, 5000);
+            EXPECT_EQ(generated.sections.size(), static_cast<std::size_t>(center.section_count));
+        }
+        return std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - started).count() / kChunks;
+    };
+
+    // The machine is shared, so the best of a few runs is the number worth printing.
+    double without_cache_ms = 1e9;
+    double with_cache_ms = 1e9;
+    for (int run = 0; run < 3; ++run) {
+        without_cache_ms = std::min(without_cache_ms, sweep(false));
+        with_cache_ms = std::min(with_cache_ms, sweep(true));
+    }
+    terila::world::BlockSampleCache::set_enabled(true);
+    const double generate_ms = with_cache_ms;
+
+    // What those callbacks cost in the server: the generator's own column-cached lookups.
+    volatile std::int32_t sink = 0;
+    const auto top_start = std::chrono::steady_clock::now();
+    for (int i = 0; i < 2116; ++i) {
+        sink += generator.sky_top((i % 46) - 15, (i / 46) - 15);
+    }
+    const double top_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - top_start).count();
+
+    const auto state_start = std::chrono::steady_clock::now();
+    for (int i = 0; i < 12705; ++i) {
+        sink += generator.state_at((i % 46) - 15, 60 + (i % 24), (i / 46) - 15);
+    }
+    const double state_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - state_start).count();
+
+    std::cout << "light engine: " << light_ms << " ms/chunk (engine only), generate + light: "
+              << without_cache_ms << " ms/chunk without the halo cache, " << generate_ms
+              << " with it, per compute: " << top_calls / kRuns
+              << " sky_top calls (" << top_ms / 2116 * 1000.0 << " us each, " << top_ms
+              << " ms total), " << sample_calls / kRuns << " halo samples ("
+              << state_ms / 12705 * 1000.0 << " us each, " << state_ms << " ms total";
+    const auto sample_stats = terila::world::BlockSampleCache::stats();
+    std::cout << ", halo block cache: " << sample_stats.hits << " hits, "
+              << sample_stats.misses << " misses" << std::endl;
+}

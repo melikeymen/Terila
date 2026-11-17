@@ -370,6 +370,20 @@ namespace terila::world {
 
                 const auto build = [&](const std::vector<std::uint8_t>& levels, bool is_sky) {
                     std::vector<std::uint8_t> packed(2048, 0);
+                    // A chunk is taller than the band it had to look at: everything above it
+                    // is open sky and everything below it is dark, so those sections are a
+                    // fill instead of 4096 decisions.
+                    if (base_y > top_band) {
+                        if (is_sky) {
+                            std::fill(packed.begin(), packed.end(), static_cast<std::uint8_t>(0xFF));
+                            return std::pair{ true, std::move(packed) };
+                        }
+                        return std::pair{ false, std::move(packed) };
+                    }
+                    if (base_y + 15 < bottom_band) {
+                        return std::pair{ false, std::move(packed) };
+                    }
+
                     bool any = false;
                     for (int y = 0; y < 16; ++y) {
                         const int world_y = base_y + y;

@@ -5,6 +5,7 @@
 #include "world/chunk_decoder.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 
 namespace terila::network {
@@ -74,7 +75,26 @@ namespace terila::network {
     // the server runs, so re-streaming a chunk can never resurrect an older disk copy and
     // drop blocks the player has placed since.
     std::vector<std::uint8_t> Connection::chunk_at(std::int32_t cx, std::int32_t cz) {
+        return chunk_at(cx, cz, std::nullopt);
+    }
+
+    // `prepared` is a column the worker pool generated for this very coordinate. Only the
+    // paths that need a generated chunk consume it, so a cache or region hit never pays for
+    // a generation it would throw away.
+    std::vector<std::uint8_t> Connection::chunk_at(std::int32_t cx, std::int32_t cz,
+        std::optional<terila::world::PreparedChunk> prepared) {
         init_terrain();
+
+        const auto take = [&]() {
+            if (prepared) {
+                auto taken = std::move(*prepared);
+                prepared.reset();
+                return taken;
+            }
+            terila::world::PreparedChunk fresh;
+            fresh.chunk = terrain_.generate(cx, cz);
+            return fresh;
+        };
 
         auto& cache = terila::world::WorldContext::shared().chunks();
 
@@ -88,7 +108,8 @@ namespace terila::network {
         }
 
         if (world_.chunk_modified(cx, cz)) {
-            auto chunk = terrain_.generate(cx, cz);
+            auto taken = take();
+            auto chunk = std::move(taken.chunk);
             world_.apply(chunk, air_state_);
             relight_chunk(chunk);
             auto out = terila::world::encode::encode(chunk);
@@ -128,7 +149,8 @@ namespace terila::network {
                 if (decoded) {
                     // The baseline is the generated chunk the overlay is diffed against;
                     // it is needed again below for the cache, so it is generated once.
-                    auto generated = terrain_.generate(cx, cz);
+                    auto taken = take();
+                    auto generated = std::move(taken.chunk);
                     apply_loaded_chunk(*decoded, generated);
 
                     if (world_.chunk_modified(cx, cz)) {
@@ -157,8 +179,10 @@ namespace terila::network {
             }
         }
 
-        auto chunk = terrain_.generate(cx, cz);
-        auto out = terila::world::encode::encode(chunk);
+        auto taken = take();
+        auto chunk = std::move(taken.chunk);
+        auto out = taken.encoded.empty() ? terila::world::encode::encode(chunk)
+                                         : std::move(taken.encoded);
         cache.put(chunk, out);
         queue_persist(cx, cz, out, false);
         return out;
@@ -332,10 +356,35 @@ namespace terila::network {
     // local state, so when the socket falls behind the stream pauses instead of tearing a
     // half sent batch down, and the next tick picks up exactly where it stopped.
     terila::async::Task<void> Connection::stream_chunks() {
+        // The workers generate on the shared generator, so it has to exist before the first
+        // batch is handed out: init() is idempotent and this is the only caller that runs it
+        // off the chunk path.
+        init_terrain();
+
         while (!pending_chunks_.empty()) {
             if (write_queue_.size() >= kMaxWriteQueue) {
                 co_await terila::async::Yield{};
                 continue;
+            }
+
+            // Generation and encoding are the expensive half of streaming and both are pure,
+            // so a whole batch is handed to the workers at once. The frames below are still
+            // produced in queue order, which keeps the ring order the client sees, and a
+            // chunk that is not ready yet yields instead of stalling the io thread that
+            // every other player's packets arrive on.
+            std::vector<ChunkPos> batch;
+            batch.reserve(static_cast<std::size_t>(kChunksPerBatch));
+            while (!pending_chunks_.empty() &&
+                batch.size() < static_cast<std::size_t>(kChunksPerBatch)) {
+                batch.push_back(pending_chunks_.front());
+                pending_chunks_.pop_front();
+            }
+
+            auto& jobs = terila::world::ChunkJobs::shared();
+            std::vector<std::future<terila::world::PreparedChunk>> prepared;
+            prepared.reserve(batch.size());
+            for (const auto& pos : batch) {
+                prepared.push_back(jobs.prepare(pos.x, pos.z));
             }
 
             std::vector<std::uint8_t> out;
@@ -349,11 +398,14 @@ namespace terila::network {
             // chunk.
             std::vector<std::uint8_t> group;
             int count = 0;
-            while (!pending_chunks_.empty() && count < kChunksPerBatch) {
-                const auto pos = pending_chunks_.front();
-                pending_chunks_.pop_front();
+            for (std::size_t i = 0; i < batch.size(); ++i) {
+                while (prepared[i].wait_for(std::chrono::seconds(0)) !=
+                    std::future_status::ready) {
+                    co_await terila::async::Yield{};
+                }
 
-                if (!terila::protocol::write_chunk_data(group, chunk_at(pos.x, pos.z))) {
+                if (!terila::protocol::write_chunk_data(group,
+                        chunk_at(batch[i].x, batch[i].z, prepared[i].get()))) {
                     co_return;
                 }
                 ++count;
