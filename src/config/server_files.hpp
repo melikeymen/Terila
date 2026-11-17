@@ -21,7 +21,7 @@ namespace terila::config {
         "log-exit-level=fatal\n"
         "\n"
         "# World generation seed. Numbers are used as-is, other text is hashed.\n"
-        "level-seed=terila\n"
+        "level-seed=\n"
         "\n"
         "# World generator. normal streams the terrain (oceans, hills, biomes, trees),\n"
         "# flat streams the classic superflat layer cake.\n"

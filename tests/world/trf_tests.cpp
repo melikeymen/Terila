@@ -487,6 +487,32 @@ TEST(TrfChunkStoreTest, KeepsTheWorldDescriptorStable) {
     EXPECT_EQ(first->generator_version, second->generator_version);
 }
 
+TEST(TrfChunkStoreTest, KeepsTheSeedTheWorldWasCreatedWith) {
+    TempDir dir;
+
+    const auto first = trf::load_or_create_world(dir.path(), 424242u);
+    ASSERT_TRUE(first.has_value()) << trf::to_string(first.error().code);
+    EXPECT_EQ(first->seed, 424242u);
+
+    // A later run that names another seed keeps the world's own terrain.
+    const auto second = trf::load_or_create_world(dir.path(), 999u);
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ(second->seed, 424242u);
+}
+
+TEST(TrfChunkStoreTest, DrawsARandomSeedForANewWorld) {
+    TempDir first_dir;
+    TempDir second_dir;
+
+    const auto first = trf::load_or_create_world(first_dir.path(), 0);
+    const auto second = trf::load_or_create_world(second_dir.path(), 0);
+    ASSERT_TRUE(first.has_value());
+    ASSERT_TRUE(second.has_value());
+
+    EXPECT_NE(first->seed, 0u);
+    EXPECT_NE(first->seed, second->seed);
+}
+
 TEST(TrfFormatTest, RegionCoordinateFloorsTowardsMinusInfinity) {
     EXPECT_EQ(trf::region_coordinate(0), 0);
     EXPECT_EQ(trf::region_coordinate(31), 0);
@@ -506,3 +532,35 @@ TEST(TrfFormatTest, ChunkIdsStayInsideTheIndex) {
         }
     }
 }
+
+#ifdef _WIN32
+#include <windows.h>
+
+// A region is a fixed-size file that is mostly empty, so it has to be sparse: the old
+// _chsize_s extension wrote zeros through the whole file and allocated every block of it.
+TEST(TrfFileTest, RegionFilesStaySparseWhenTheyGrow) {
+    TempDir dir;
+    const auto path = dir.path() / "sparse.trf";
+
+    DWORD volume_flags = 0;
+    const auto root = path.root_path().wstring();
+    if (!GetVolumeInformationW(root.c_str(), nullptr, 0, nullptr, nullptr, &volume_flags,
+            nullptr, 0)) {
+        GTEST_SKIP() << "cannot query the volume holding " << path.string();
+    }
+    if ((volume_flags & FILE_SUPPORTS_SPARSE_FILES) == 0) {
+        GTEST_SKIP() << "volume does not support sparse files";
+    }
+
+    ASSERT_TRUE(trf::TrfFile::create(path, 64ull * 1024 * 1024).has_value());
+
+    std::uint32_t high = 0;
+    const auto low = GetCompressedFileSizeW(path.wstring().c_str(),
+        reinterpret_cast<LPDWORD>(&high));
+    ASSERT_NE(low, INVALID_FILE_SIZE);
+    const auto allocated = (static_cast<std::uint64_t>(high) << 32) | low;
+
+    EXPECT_EQ(std::filesystem::file_size(path), 64ull * 1024 * 1024);
+    EXPECT_EQ(allocated, 0u) << "the empty region allocated disk space";
+}
+#endif

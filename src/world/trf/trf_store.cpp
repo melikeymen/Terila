@@ -110,7 +110,8 @@ namespace terila::world::trf {
 
     }
 
-    std::expected<WorldIdentity, TrfError> load_or_create_world(const std::filesystem::path& world_root) {
+    std::expected<WorldIdentity, TrfError> load_or_create_world(
+        const std::filesystem::path& world_root, std::uint32_t seed) {
         std::error_code ec;
         std::filesystem::create_directories(world_root, ec);
         if (ec) {
@@ -124,11 +125,19 @@ namespace terila::world::trf {
         }
 
         WorldIdentity identity;
-        identity.seed = 0;
-        identity.generator_id = static_cast<std::uint32_t>(crc32c(std::span<const std::byte>(
-            reinterpret_cast<const std::byte*>("terila.flat.v1"), 14)));
-        identity.generator_version = 1;
         identity.world_uuid = random_uuid();
+        // A world without a seed in its config gets a random one, drawn once and then kept.
+        if (seed == 0) {
+            std::uint32_t drawn = 0;
+            for (std::size_t i = 0; i < 4; ++i) {
+                drawn = (drawn << 8) | static_cast<std::uint32_t>(identity.world_uuid[i]);
+            }
+            seed = drawn != 0 ? drawn : 0x51ED2C3u;
+        }
+        identity.seed = seed;
+        identity.generator_id = static_cast<std::uint32_t>(crc32c(std::span<const std::byte>(
+            reinterpret_cast<const std::byte*>("terila.noise.v1"), 15)));
+        identity.generator_version = 2;
         return write_descriptor(path, identity);
     }
 

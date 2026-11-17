@@ -282,8 +282,26 @@ int main() {
         return it == data.biome_ids.end() ? std::nullopt
             : std::optional<std::int32_t>(it->second);
     };
+    // The seed belongs to the world, not to the config: a new world draws one (or takes the
+    // one from level-seed) and keeps it in its descriptor, so restarts replay the same
+    // terrain even after the config stops naming a seed.
+    const fs::path world_root = executable_directory() / "world" /
+        std::string(terila::world::world_type_name(world_type));
+    auto world_identity = terila::world::trf::load_or_create_world(world_root,
+        srv.random_seed() ? 0u : srv.seed_value());
+    if (!world_identity) {
+        LOG_FATAL(Main, "cannot prepare the world directory '{}': {}", world_root.string(),
+            world_identity.error().detail);
+        return 7;
+    }
+    const auto world_seed = static_cast<std::uint32_t>(world_identity->seed);
+    if (!srv.random_seed() && world_seed != srv.seed_value()) {
+        LOG_WARN(Main, "world keeps its own seed {}; level-seed {} applies to new worlds",
+            world_seed, srv.seed_value());
+    }
+
     if (!world_terrain.init(world_type, data.overworld.min_y, data.overworld.height / 16,
-            srv.seed_value(), resolve_block_id, resolve_biome_id)) {
+            world_seed, resolve_block_id, resolve_biome_id)) {
         LOG_FATAL(Data, "{} world generator failed to initialise",
             terila::world::world_type_name(world_type));
         return 7;
@@ -293,8 +311,9 @@ int main() {
     // there, which on a mountainous seed is a peak the player has to jump down from.
     const auto spawn = world_terrain.spawn_point();
     const int spawn_surface = spawn.surface_y;
-    LOG_INFO(Chunk, "{} world ready: seed '{}' ({}), spawn at ({}, {}) stands on y={}, sea level {}",
-        terila::world::world_type_name(world_type), srv.level_seed, world_terrain.seed(),
+    LOG_INFO(Chunk, "{} world ready: seed {} (level-seed '{}'), spawn at ({}, {}) stands on y={}, sea level {}",
+        terila::world::world_type_name(world_type), world_terrain.seed(),
+        srv.random_seed() ? std::string("random") : srv.level_seed,
         spawn.x, spawn.z, spawn_surface, world_terrain.sea_level());
 
     terila::entity::MobManager mobs;
@@ -443,19 +462,8 @@ int main() {
 
     terila::world::BlockWorld world;
 
-    // TRF region files live beside the executable. The generator and seed are part of
-    // the folder so a flat world never streams chunks a terrain run saved, and changing
-    // level-seed starts a fresh world instead of mixing two seed's chunks.
-    const fs::path world_root = executable_directory() / "world" /
-        (std::string(terila::world::world_type_name(world_type)) + "-" +
-            std::to_string(srv.seed_value()));
-    auto world_identity = terila::world::trf::load_or_create_world(world_root);
-    if (!world_identity) {
-        LOG_FATAL(Main, "cannot prepare the world directory '{}': {}", world_root.string(),
-            world_identity.error().detail);
-        return 7;
-    }
-
+    // TRF region files live beside the executable, one folder per generator so a flat world
+    // never streams chunks a terrain run saved. The seed lives in the descriptor inside.
     const auto region_dir = terila::world::trf::default_region_directory(world_root);
     terila::world::trf::ChunkStore chunk_store(region_dir, *world_identity);
     LOG_INFO(Main, "world directory: {}", world_root.string());
@@ -502,7 +510,7 @@ int main() {
 
     auto do_accept = [&](auto&& self) -> void {
         acceptor.async_accept(
-            [&acceptor, &data, &mobs, &world, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, world_type, &spawn, &srv, &players, &player_hub, &chunk_store, &next_player_entity_id, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
+            [&acceptor, &data, &mobs, &world, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, world_type, world_seed, &spawn, &srv, &players, &player_hub, &chunk_store, &next_player_entity_id, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
                 if (error) {
                     LOG_ERROR(Network, "accept failed: {} ({})", error.message(), error.value());
                     self(self);
@@ -516,7 +524,7 @@ int main() {
                 auto conn = std::make_shared<terila::network::Connection>(std::move(socket), data, mobs,
                     world, item_block_state, player_hub, &chunk_store, &drops, block_state_item,
                     item_entity_type, &recipes, menu_blocks, furnace_states, furnace_item_id,
-                    srv.seed_value(), world_type, spawn.x, spawn.z, srv.view_distance,
+                    world_seed, world_type, spawn.x, spawn.z, srv.view_distance,
                     srv.simulation_distance, static_cast<int>(srv.max_players),
                     next_player_entity_id++, srv.gamemode);
                 conn->start();

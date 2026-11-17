@@ -34,6 +34,36 @@ namespace terila::world::trf {
         }
 #endif
 
+        // Sets the logical size of a region. On Windows _chsize_s grows a file by writing
+        // zeroes through it, which allocates every block of a sparse region; SetEndOfFile
+        // only moves the end of the file, so the unwritten tail stays unallocated and a
+        // region costs what it actually stores.
+        std::expected<void, TrfError> set_file_size(std::FILE* handle, std::uint64_t size) {
+#ifdef _WIN32
+            const intptr_t raw = _get_osfhandle(_fileno(handle));
+            if (raw == -1) {
+                return std::unexpected(make_error(TrfErrorCode::Io,
+                    "cannot size region: no file handle"));
+            }
+            HANDLE device = reinterpret_cast<HANDLE>(raw);
+            LARGE_INTEGER target;
+            target.QuadPart = static_cast<LONGLONG>(size);
+            if (SetFilePointerEx(device, target, nullptr, FILE_BEGIN) == 0 ||
+                SetEndOfFile(device) == 0) {
+                return std::unexpected(make_error(TrfErrorCode::Io,
+                    "cannot size region (windows error " +
+                    std::to_string(GetLastError()) + ")"));
+            }
+            return {};
+#else
+            if (ftruncate(fileno(handle), static_cast<off_t>(size)) != 0) {
+                return std::unexpected(make_error(TrfErrorCode::Io,
+                    system_error_detail("cannot size region")));
+            }
+            return {};
+#endif
+        }
+
         std::FILE* open_handle(const std::filesystem::path& path, const char* mode) {
 #ifdef _WIN32
             std::wstring wide_mode;
@@ -105,17 +135,10 @@ namespace terila::world::trf {
         }
 #endif
 
-        std::uint64_t written_size = size;
-        bool ok = true;
-#ifdef _WIN32
-        ok = _chsize_s(_fileno(handle), static_cast<__int64>(written_size)) == 0;
-#else
-        ok = ftruncate(fileno(handle), static_cast<off_t>(written_size)) == 0;
-#endif
-        if (!ok) {
+        if (auto sized = set_file_size(handle, size); !sized) {
             std::fclose(handle);
             std::filesystem::remove(path, ec);
-            return std::unexpected(make_error(TrfErrorCode::Io, system_error_detail("cannot size region")));
+            return sized;
         }
 
         std::fflush(handle);
@@ -224,16 +247,7 @@ namespace terila::world::trf {
         if (std::fflush(file_) != 0) {
             return std::unexpected(make_error(TrfErrorCode::Io, system_error_detail("flush failed")));
         }
-#ifdef _WIN32
-        if (_chsize_s(_fileno(file_), static_cast<__int64>(size)) != 0) {
-            return std::unexpected(make_error(TrfErrorCode::Io, system_error_detail("resize failed")));
-        }
-#else
-        if (ftruncate(fileno(file_), static_cast<off_t>(size)) != 0) {
-            return std::unexpected(make_error(TrfErrorCode::Io, system_error_detail("resize failed")));
-        }
-#endif
-        return {};
+        return set_file_size(file_, size);
     }
 
     std::expected<void, TrfError> TrfFile::lock_exclusive() {

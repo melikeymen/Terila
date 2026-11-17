@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <deque>
+#include <array>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -79,6 +80,15 @@ namespace terila::world {
         static constexpr int kRadius = 15;
         static constexpr int kMaxLevel = 15;
 
+        // A tiny direct-mapped memo of state -> packed light properties: a chunk uses only a
+        // handful of states, and every lookup otherwise walks the rules map.
+        struct PropMemo {
+            static constexpr std::size_t kSlots = 128;
+            std::array<std::int32_t, kSlots> states{};
+            std::array<std::uint16_t, kSlots> packed{};
+            std::array<bool, kSlots> filled{};
+        };
+
         // `sky_top(x, z)` is the y of the highest block of that column that keeps the sky
         // out (leaves, water, stone); `sample(x, y, z)` answers the block state of any
         // position, inside the chunk or in its halo.
@@ -149,6 +159,27 @@ namespace terila::world {
             constexpr std::uint16_t kSolid = static_cast<std::uint16_t>(1 | (15 << 4));
             constexpr std::uint16_t kOpenSky = static_cast<std::uint16_t>(1);
 
+            // The same handful of block states covers almost every cell of a chunk, and a
+            // rules lookup is a map probe; this memo turns the flood fill's lookups into an
+            // array index.
+            PropMemo memo{};
+
+            const auto pack = [&](std::int32_t state) -> std::uint16_t {
+                const std::size_t slot = static_cast<std::size_t>(
+                    (static_cast<std::uint32_t>(state) * 0x9E3779B1u) >> 16) &
+                    (PropMemo::kSlots - 1);
+                if (memo.filled[slot] && memo.states[slot] == state) {
+                    return memo.packed[slot];
+                }
+                const LightBlock info = rules.of(state);
+                const auto packed = static_cast<std::uint16_t>(1 | (info.opacity << 4) |
+                    (info.emission << 8));
+                memo.filled[slot] = true;
+                memo.states[slot] = state;
+                memo.packed[slot] = packed;
+                return packed;
+            };
+
             const auto props_at = [&](int x, int y, int z) -> std::uint16_t {
                 if (y > top_band) {
                     return kOpenSky;   // the band stops below every open sky column
@@ -161,15 +192,10 @@ namespace terila::world {
                     return slot;
                 }
 
-                LightBlock info;
-                if (x >= 0 && x < 16 && z >= 0 && z < 16) {
-                    info = rules.of(state_in_chunk(chunk, x, y, z));
-                }
-                else {
-                    info = rules.of(sample(chunk.x * 16 + x, y, chunk.z * 16 + z));
-                }
-                slot = static_cast<std::uint16_t>(1 | (info.opacity << 4) |
-                    (info.emission << 8));
+                const std::int32_t state = (x >= 0 && x < 16 && z >= 0 && z < 16)
+                    ? state_in_chunk(chunk, x, y, z)
+                    : sample(chunk.x * 16 + x, y, chunk.z * 16 + z);
+                slot = pack(state);
                 return slot;
             };
 

@@ -18,8 +18,11 @@ namespace terila::config {
         // error or warn.
         std::string   log_exit_level = "fatal";
 
+        // World seed. Empty (or "random") draws a fresh seed for a new world; the seed a
+        // world was created with is stored in its descriptor and reused on every restart.
+        std::string   level_seed = "";
+
         // Mojang session authentication. false lets cracked (offline) clients join.
-        std::string   level_seed = "terila";
 
         // World generator: "normal" streams the noise terrain, "flat" the superflat
         // layer cake. Unknown values fall back to normal with a warning.
@@ -43,6 +46,12 @@ namespace terila::config {
         // 0 survival, 1 creative, 2 adventure, 3 spectator. Creative is the default
         // because block placement needs the creative inventory.
         int           gamemode = 1;
+
+        // "random", "" or a blank seed means the world picks its own seed on creation.
+        bool random_seed() const {
+            return level_seed.empty() || level_seed == "random" ||
+                level_seed.find_first_not_of(' ') == std::string::npos;
+        }
 
         // Numeric seeds are kept as they are, anything else is hashed (FNV-1a) so the
         // same text always produces the same world.

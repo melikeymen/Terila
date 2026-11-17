@@ -17,14 +17,17 @@ namespace terila::world::trf {
     // Identity every region of one world carries, so a region file copied in from another
     // world is rejected instead of silently merged (§5, §5.1).
     struct WorldIdentity {
-        std::uint64_t seed = 0;
+        std::uint64_t seed = 0;   // the seed the world was created with
         std::array<std::byte, 16> world_uuid{};
         std::uint32_t generator_id = 0;
         std::uint16_t generator_version = 1;
     };
 
-    // Reads world/world.trfmeta, creating it with a fresh identity on first run.
-    std::expected<WorldIdentity, TrfError> load_or_create_world(const std::filesystem::path& world_root);
+    // Reads world/world.trfmeta, creating it with a fresh identity on first run. A
+    // non-zero seed is stored in that new descriptor; zero draws a random one, so a world
+    // keeps its seed across restarts while every new world starts somewhere else.
+    std::expected<WorldIdentity, TrfError> load_or_create_world(
+        const std::filesystem::path& world_root, std::uint32_t seed = 0);
 
     // §4 directory layout: world/dimensions/<namespace>/<path>/region/r.<cx>.<cz>.trf.
     std::filesystem::path default_region_directory(const std::filesystem::path& world_root,

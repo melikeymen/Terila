@@ -122,7 +122,10 @@ target_sources(terila PRIVATE
     "src/world/chunk_decoder.hpp"
     "src/world/chunk_encoder.hpp"
     "src/world/flat_generator.hpp"
+    "src/world/terrain_biomes.hpp"
+    "src/world/terrain_caves.hpp"
     "src/world/terrain_generator.hpp"
+    "src/world/terrain_noise.hpp"
     "src/world/world_generator.hpp"
 )
 

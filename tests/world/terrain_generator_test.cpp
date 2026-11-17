@@ -32,6 +32,21 @@ namespace {
         if (name == "minecraft:acacia_log")    return 152;
         if (name == "minecraft:acacia_leaves") return 300;
         if (name == "minecraft:cactus")        return 8599;
+        if (name == "minecraft:coarse_dirt")   return 14;
+        if (name == "minecraft:red_sand")      return 122;
+        if (name == "minecraft:terracotta")    return 678;
+        if (name == "minecraft:ice")           return 90;
+        if (name == "minecraft:birch_log")     return 141;
+        if (name == "minecraft:birch_leaves")  return 296;
+        if (name == "minecraft:jungle_log")    return 154;
+        if (name == "minecraft:jungle_leaves") return 302;
+        if (name == "minecraft:coal_ore")      return 2;
+        if (name == "minecraft:copper_ore")    return 3;
+        if (name == "minecraft:iron_ore")      return 4;
+        if (name == "minecraft:gold_ore")      return 5;
+        if (name == "minecraft:redstone_ore")  return 6;
+        if (name == "minecraft:lapis_ore")     return 8;
+        if (name == "minecraft:diamond_ore")   return 9;
         return std::nullopt;
     }
 
@@ -46,6 +61,15 @@ namespace {
         if (name == "minecraft:savanna")        return 8;
         if (name == "minecraft:stony_peaks")    return 9;
         if (name == "minecraft:deep_ocean")     return 10;
+        if (name == "minecraft:frozen_ocean")   return 11;
+        if (name == "minecraft:stony_shore")    return 12;
+        if (name == "minecraft:snowy_taiga")    return 13;
+        if (name == "minecraft:windswept_hills") return 14;
+        if (name == "minecraft:meadow")         return 15;
+        if (name == "minecraft:birch_forest")   return 16;
+        if (name == "minecraft:swamp")          return 17;
+        if (name == "minecraft:jungle")         return 18;
+        if (name == "minecraft:badlands")       return 19;
         return std::nullopt;
     }
 
@@ -231,22 +255,131 @@ TEST(WorldGeneratorTest, FlatWorldSpawnsInItsCentreColumn) {
     EXPECT_EQ(spawn.surface_y, generator.surface_height(8, 8));
 }
 
-TEST(TerrainGeneratorTest, GeneratesVegetationSomewhere) {
-    const auto generator = make_generator();
-    int plants = 0;
-    for (std::int32_t cz = 0; cz < 3; ++cz) {
-        for (std::int32_t cx = 0; cx < 3; ++cx) {
-            const auto chunk = generator.generate(cx, cz);
-            for (const auto& section : chunk.sections) {
-                for (int i = 0; i < 4096; ++i) {
-                    const auto state = section_state(section, i);
-                    if (state == 140 || state == 294 || state == 143 || state == 295 ||
-                        state == 152 || state == 300 || state == 8599) {
-                        ++plants;
+namespace {
+    // The map is mostly water around some seeds, so tests that need dry land look for it
+    // instead of assuming the chunk at the origin has any.
+    struct LandColumn {
+        std::int32_t x = 0;
+        std::int32_t z = 0;
+        int height = 0;
+        std::int32_t surface = 0;
+        int biome = -1;
+    };
+
+    LandColumn find_column(const terrain::Generator& generator, bool grass_only) {
+        for (std::int32_t radius = 0; radius <= 4096; radius += 16) {
+            for (std::int32_t z = -radius; z <= radius; z += 8) {
+                for (std::int32_t x = -radius; x <= radius; x += 8) {
+                    if (radius > 0 && std::abs(x) != radius && std::abs(z) != radius) {
+                        continue;
+                    }
+                    const int height = generator.surface_height(x, z);
+                    const auto surface = generator.state_at(x, height, z);
+                    if (surface == 42 || (!grass_only && height > generator.sea_level())) {
+                        return LandColumn{ x, z, height, surface, generator.biome_at(x, z) };
                     }
                 }
+            }
+        }
+        return LandColumn{};
+    }
+
+    bool is_plant(std::int32_t state) {
+        return state == 140 || state == 294 || state == 143 || state == 295 ||
+            state == 152 || state == 300 || state == 8599 || state == 141 ||
+            state == 296 || state == 154 || state == 302;
+    }
+
+    bool is_ore(std::int32_t state) {
+        return state == 2 || state == 3 || state == 4 || state == 5 || state == 6 ||
+            state == 8 || state == 9;
+    }
+} // namespace
+
+TEST(TerrainGeneratorTest, GeneratesVegetationSomewhere) {
+    const auto generator = make_generator();
+    const LandColumn land = find_column(generator, true);
+    ASSERT_NE(land.biome, -1) << "no grassy column within 4096 blocks";
+
+    int plants = 0;
+    const auto chunk = generator.generate(land.x / 16, land.z / 16);
+    for (const auto& section : chunk.sections) {
+        for (int i = 0; i < 4096; ++i) {
+            if (is_plant(section_state(section, i))) {
+                ++plants;
             }
         }
     }
     EXPECT_GT(plants, 0);
 }
+
+TEST(TerrainGeneratorTest, CarvesCavesUnderTheSurface) {
+    const auto generator = make_generator();
+    const LandColumn land = find_column(generator, false);
+    ASSERT_NE(land.biome, -1) << "no land within 4096 blocks";
+
+    int open_cells = 0;
+    const auto chunk = generator.generate(land.x / 16, land.z / 16);
+    for (int z = 0; z < 16; ++z) {
+        for (int x = 0; x < 16; ++x) {
+            const int surface = generator.surface_height(land.x - land.x % 16 + x,
+                land.z - land.z % 16 + z);
+            for (int y = chunk.min_y + 6; y <= surface - 8; ++y) {
+                if (section_block(chunk, x, y, z) == 0) {
+                    ++open_cells;
+                }
+            }
+        }
+    }
+    EXPECT_GT(open_cells, 0);
+}
+
+TEST(TerrainGeneratorTest, PlacesOreVeinsInTheDeep) {
+    const auto generator = make_generator();
+    const LandColumn land = find_column(generator, false);
+    ASSERT_NE(land.biome, -1) << "no land within 4096 blocks";
+
+    int ores = 0;
+    const auto chunk = generator.generate(land.x / 16, land.z / 16);
+    for (const auto& section : chunk.sections) {
+        for (int i = 0; i < 4096; ++i) {
+            if (is_ore(section_state(section, i))) {
+                ++ores;
+            }
+        }
+    }
+    EXPECT_GT(ores, 0);
+}
+
+TEST(TerrainGeneratorTest, CoversManyBiomesAcrossTheMap) {
+    const auto generator = make_generator();
+    std::array<bool, 32> seen{};
+    int distinct = 0;
+    for (std::int32_t z = -2048; z <= 2048; z += 64) {
+        for (std::int32_t x = -2048; x <= 2048; x += 64) {
+            const int biome = generator.biome_at(x, z);
+            if (biome >= 0 && biome < static_cast<int>(seen.size()) && !seen[biome]) {
+                seen[static_cast<std::size_t>(biome)] = true;
+                ++distinct;
+            }
+        }
+    }
+    EXPECT_GE(distinct, 6);
+}
+
+TEST(TerrainGeneratorTest, TerrainHasBothWaterAndHighGround) {
+    const auto generator = make_generator();
+    int lowest = 1000;
+    int highest = -1000;
+    for (std::int32_t z = -1024; z <= 1024; z += 32) {
+        for (std::int32_t x = -1024; x <= 1024; x += 32) {
+            const int height = generator.surface_height(x, z);
+            lowest = std::min(lowest, height);
+            highest = std::max(highest, height);
+        }
+    }
+    EXPECT_LT(lowest, generator.sea_level());
+    EXPECT_GT(highest, generator.sea_level() + 20);
+}
+
+
