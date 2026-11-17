@@ -98,6 +98,15 @@ namespace terila::world {
             return terrain_.surface_height(x, z);
         }
 
+        // Index into the biome table for a column: the spawn lists hang off the biome, so
+        // natural spawning reads it through here. A flat world is plains.
+        int biome_at(std::int32_t x, std::int32_t z) const {
+            if (type_ == WorldType::Flat) {
+                return terrain::kPlains;
+            }
+            return terrain_.biome_at(x, z);
+        }
+
         struct SpawnPoint {
             std::int32_t x = 8;
             std::int32_t z = 8;

@@ -131,6 +131,12 @@ namespace terila::protocol {
         set(ids.play_set_held_slot, find("play", "clientbound", "minecraft:set_held_slot"), "play_set_held_slot");
         set(ids.play_set_entity_data, find("play", "clientbound", "minecraft:set_entity_data"), "play_set_entity_data");
         set(ids.play_take_item_entity, find("play", "clientbound", "minecraft:take_item_entity"), "play_take_item_entity");
+        set(ids.play_set_health, find("play", "clientbound", "minecraft:set_health"), "play_set_health");
+        set(ids.play_set_time, find("play", "clientbound", "minecraft:set_time"), "play_set_time");
+        set(ids.play_player_combat_kill, find("play", "clientbound", "minecraft:player_combat_kill"), "play_player_combat_kill");
+        set(ids.play_respawn, find("play", "clientbound", "minecraft:respawn"), "play_respawn");
+        set(ids.play_client_command, find("play", "serverbound", "minecraft:client_command"), "play_client_command");
+        set(ids.play_interact, find("play", "serverbound", "minecraft:interact"), "play_interact");
 
         // Entity tracking
         set(ids.play_add_entity, find("play", "clientbound", "minecraft:add_entity"), "play_add_entity");

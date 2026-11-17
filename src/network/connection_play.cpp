@@ -182,6 +182,19 @@ namespace terila::network {
             handle_block_place(use->pos, use->face, use->sequence);
             return;
         }
+        if (id == ids.play_client_command) {
+            const auto action = terila::protocol::read_client_command(payload);
+            if (!action.has_value()) {
+                LOG_WARN(Network, "invalid client_command ({} bytes)", payload.size());
+                return;
+            }
+            handle_client_command(*action);
+            return;
+        }
+        if (id == ids.play_interact) {
+            handle_interact(payload);
+            return;
+        }
         if (id == ids.play_attack) {
             const auto target = terila::protocol::read_varint(payload.data(), payload.size());
             if (!target.has_value()) {

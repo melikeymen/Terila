@@ -57,6 +57,7 @@ target_sources(terila PRIVATE
     "src/network/connection_handshake.cpp"
     "src/network/connection_login.cpp"
     "src/network/connection_play.cpp"
+    "src/network/connection_health.cpp"
     "src/network/connection_chunks.cpp"
     "src/network/connection_world.cpp"
     "src/network/connection_inventory.cpp"
@@ -361,6 +362,7 @@ add_executable(protocol_tests
     "tests/protocol/chat_test.cpp"
     "src/item/components.cpp"
     "tests/protocol/entity_test.cpp"
+    "tests/protocol/player_state_test.cpp"
     "tests/protocol/block_test.cpp"
     "tests/protocol/player_info_test.cpp"
     "tests/async/task_test.cpp"
@@ -414,6 +416,7 @@ add_executable(chunk_tests
     "tests/world/terrain_generator_test.cpp"
     "tests/world/chunk_encoder_test.cpp"
     "tests/world/light_engine_test.cpp"
+    "tests/world/mob_test.cpp"
     "tests/world/relight_test.cpp"
     "src/log/logger.cpp"
 )

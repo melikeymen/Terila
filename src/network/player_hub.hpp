@@ -47,6 +47,10 @@ namespace terila::network {
         using Giver = std::function<bool(std::int32_t item_id, std::int32_t count,
             const terila::item::ComponentsPtr& components)>;
 
+        // A mob hit lands on a player, and only the connection that owns that player can
+        // apply it: its health, its health packet and its death screen all live there.
+        using Damager = std::function<bool(float amount, const std::string& cause)>;
+
         void set_view_distance(int chunks) { view_distance_ = chunks > 0 ? chunks : 10; }
 
         // minecraft:player is a registry entry too, and add_entity takes its id.
@@ -110,6 +114,30 @@ namespace terila::network {
             const auto it = players_.find(entity_id);
             if (it != players_.end()) {
                 it->second.give = std::move(giver);
+            }
+        }
+
+        void set_damager(std::int32_t entity_id, Damager damager)
+        {
+            const auto it = players_.find(entity_id);
+            if (it != players_.end()) {
+                it->second.hurt = std::move(damager);
+            }
+        }
+
+        // Applies a mob hit. False when nobody with that id is online (or the player is
+        // gone, e.g. disconnected between the tick and the delivery).
+        bool damage_player(std::int32_t entity_id, float amount, const std::string& cause)
+        {
+            const auto it = players_.find(entity_id);
+            return it != players_.end() && it->second.hurt && it->second.hurt(amount, cause);
+        }
+
+        // Every joined player receives the packet, e.g. the world clock once a second.
+        void broadcast(const std::vector<std::uint8_t>& packet)
+        {
+            for (const auto id : member_list()) {
+                send_to(id, packet);
             }
         }
 
@@ -274,6 +302,7 @@ namespace terila::network {
             Sender send;
             Giver give;
             Runner run;
+            Damager hurt;
         };
 
         // The member list changes only on join and leave, but it is needed on every move

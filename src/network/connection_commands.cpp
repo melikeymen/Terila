@@ -251,6 +251,98 @@ namespace terila::network {
         }
     }
 
+    namespace {
+
+        bool parse_i64(std::string_view text, std::int64_t& out) {
+            if (text.empty()) {
+                return false;
+            }
+            try {
+                std::size_t used = 0;
+                const auto parsed = std::stoll(std::string(text), &used);
+                if (used != text.size()) {
+                    return false;
+                }
+                out = parsed;
+                return true;
+            }
+            catch (...) {
+                return false;
+            }
+        }
+
+    } // namespace
+
+    // /time set day|noon|sunset|night|midnight|sunrise|<ticks>
+    // /time add <ticks>
+    // /time query daytime|gametime
+    void Connection::run_time(std::string_view arguments) {
+        if (clock_ == nullptr) {
+            send_system_message("This world has no clock");
+            return;
+        }
+
+        const auto split = arguments.find(' ');
+        const std::string action = lower(std::string(trim(arguments.substr(0, split))));
+        const std::string value = split == std::string_view::npos
+            ? std::string{}
+            : lower(std::string(trim(arguments.substr(split))));
+
+        if (action == "set" || action == "add") {
+            std::int64_t ticks = 0;
+            if (value == "day") ticks = 1000;
+            else if (value == "noon") ticks = 6000;
+            else if (value == "sunset") ticks = 12000;
+            else if (value == "night") ticks = 13000;
+            else if (value == "midnight") ticks = 18000;
+            else if (value == "sunrise") ticks = 23000;
+            else if (!parse_i64(value, ticks)) {
+                send_system_message("Usage: /time set <day|noon|sunset|night|midnight|sunrise|<ticks>>, "
+                    "/time add <ticks>, /time query <daytime|gametime>");
+                return;
+            }
+
+            if (action == "set") {
+                clock_->set_time_of_day(ticks);
+            }
+            else {
+                clock_->tick(ticks);
+            }
+
+            // Everyone's sky moves at once, so the change is broadcast rather than waiting
+            // for the next one-second sync.
+            std::vector<std::uint8_t> out;
+            if (terila::protocol::write_set_time(out, clock_->game_time, clock_->time_of_day)) {
+                if (hub_ != nullptr) {
+                    hub_->broadcast(out);
+                }
+                else {
+                    send(out);
+                }
+            }
+
+            send_system_message(std::format("Set the time to {} ({})", clock_->time_of_day,
+                clock_->night() ? "night" : "day"));
+            LOG_INFO(Network, "{} set the time to {} ({})", username_, clock_->time_of_day,
+                clock_->night() ? "night" : "day");
+            return;
+        }
+
+        if (action == "query") {
+            if (value == "gametime" || value.empty()) {
+                send_system_message(std::format("The world has run {} ticks", clock_->game_time));
+            }
+            else {
+                send_system_message(std::format("The time is {} ({})", clock_->time_of_day,
+                    clock_->night() ? "night" : "day"));
+            }
+            return;
+        }
+
+        send_system_message("Usage: /time set <day|noon|sunset|night|midnight|sunrise|<ticks>>, "
+            "/time add <ticks>, /time query <daytime|gametime>");
+    }
+
     // Commands:
     //   /give <item>[<component>=<value>,...] [count]
     //   /give <targets> <item>[<component>=<value>,...] [count]
@@ -349,9 +441,14 @@ namespace terila::network {
             return;
         }
 
+        if (name == "time") {
+            run_time(arguments);
+            return;
+        }
+
         send_system_message(
             "Commands: /give [@a|@s|@p|@r] <item>[<component>=<value>,...] [count], "
-            "/execute [as <targets>] run <command>");
+            "/execute [as <targets>] run <command>, /time set|add|query <value>");
     }
 
 } // namespace terila::network

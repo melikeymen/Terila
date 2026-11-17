@@ -346,7 +346,19 @@ namespace terila::network {
             const auto it = creative_slots_.find(hotbar_slot);
             held_item_id_ = (it == creative_slots_.end()) ? 0 : it->second;
         }
-        LOG_DEBUG(Network, "held item is now {} (hotbar slot {})", held_item_id_, carried_slot_);
+        // The name is what the mob goals compare against their food table; an empty name
+        // means the hand is empty.
+        held_item_name_.clear();
+        if (held_item_id_ != 0) {
+            for (const auto& [name, id] : data_.item_ids) {
+                if (id == held_item_id_) {
+                    held_item_name_ = name;
+                    break;
+                }
+            }
+        }
+        LOG_DEBUG(Network, "held item is now {} {} (hotbar slot {})", held_item_id_,
+            held_item_name_, carried_slot_);
     }
 
 } // namespace terila::network

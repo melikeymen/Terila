@@ -11,9 +11,11 @@
 #include "log/logger.hpp"
 #include "network/player_hub.hpp"
 #include "protocol/block.hpp"
+#include "protocol/player_state.hpp"
 #include "world/block_world.hpp"
 #include "world/world_context.hpp"
 #include "world/chunk_jobs.hpp"
+#include "world/world_clock.hpp"
 #include "world/world_generator.hpp"
 #include "world/trf/trf_store.hpp"
 
@@ -50,7 +52,8 @@ namespace terila::network {
             std::uint32_t world_seed, terila::world::WorldType world_type,
             std::int32_t spawn_x, std::int32_t spawn_z,
             int view_distance, int simulation_distance, int max_players,
-            std::int32_t entity_id, int gamemode)
+            std::int32_t entity_id, int gamemode,
+            std::shared_ptr<terila::world::WorldClock> clock, int sea_level)
             : socket_(std::move(socket)), keep_alive_timer_(socket_.get_executor()), data_(data),
               mobs_(mobs), world_(world), item_block_state_(item_block_state),
               hub_(std::move(hub)), store_(store), drops_(drops),
@@ -60,7 +63,8 @@ namespace terila::network {
               world_type_(world_type),               spawn_x_(spawn_x), spawn_z_(spawn_z),
               terrain_(terila::world::WorldContext::shared().generator()),
               view_distance_(view_distance), simulation_distance_(simulation_distance),
-              max_players_(max_players), entity_id_(entity_id), gamemode_(gamemode)
+              max_players_(max_players), entity_id_(entity_id), gamemode_(gamemode),
+              clock_(std::move(clock)), sea_level_(sea_level)
         {}
 
         void start();
@@ -71,6 +75,17 @@ namespace terila::network {
 
         // Called by the server tick for every connected player.
         void tick_entities();
+        // Sends the world clock once a second, which is what moves the client's sky.
+        void tick_time();
+        void send_time();
+
+        // A mob hit on this player. False when it did nothing (creative, spectator, already
+        // dead).
+        bool damage_player(float amount, const std::string& cause);
+        void send_health();
+        // Puts the player back at the world spawn after the death screen's respawn button.
+        void respawn_player();
+        bool dead() const { return dead_; }
 
         // Persists a few of the chunks generated while streaming, so the initial chunk
         // burst is not serialised behind region-file writes on the IO thread.
@@ -79,7 +94,14 @@ namespace terila::network {
         bool joined() const { return joined_; }
 
         terila::entity::PlayerPos player_position() const {
-            return terila::entity::PlayerPos{ player_x_, player_y_, player_z_, entity_id_ };
+            terila::entity::PlayerPos pos;
+            pos.x = player_x_;
+            pos.y = player_y_;
+            pos.z = player_z_;
+            pos.id = entity_id_;
+            pos.held_item = held_item_name_;
+            pos.creative = gamemode_ == 1 || gamemode_ == 3;
+            return pos;
         }
 
     private:
@@ -276,8 +298,14 @@ namespace terila::network {
             return menu_kind_ == kMenuCrafting ? 10 : 3;
         }
 
+        // --- connection_health.cpp -------------------------------------------------
+        void handle_client_command(std::int32_t action);
+        void handle_interact(const std::vector<std::uint8_t>& payload);
+
         // --- connection_commands.cpp -----------------------------------------------
         void handle_command(const std::string& command);
+        // /time set|add|query, the day cycle vanilla runs at 24000 ticks.
+        void run_time(std::string_view arguments);
         // Runs a command in this player's context. /execute nests through here, so the
         // depth guard lives with it.
         void run_command(std::string_view command);
@@ -394,6 +422,15 @@ namespace terila::network {
         float yaw_ = 0.0f;
         float pitch_ = 0.0f;
         int gamemode_ = 1;
+        float health_ = 20.0f;
+        std::int32_t food_ = 20;
+        float saturation_ = 5.0f;
+        bool dead_ = false;
+        int time_sync_ticks_ = 0;
+        int regen_ticks_ = 0;
+        std::string held_item_name_;
+        std::shared_ptr<terila::world::WorldClock> clock_;
+        int sea_level_ = 63;
         std::int32_t air_state_ = 0;
         std::int32_t carried_slot_ = 0;
         std::int32_t held_item_id_ = 0;

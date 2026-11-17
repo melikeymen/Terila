@@ -250,6 +250,10 @@ namespace terila::network {
             state_ = State::Play;
             joined_ = true;
             start_keep_alive();
+            // The client starts at full health, but the server has to say so once: the value
+            // it shows is the one set_health carried, not the one it guessed.
+            send_health();
+            send_time();
             LOG_INFO(Network, "{} joined the game", username_);
 
             // From here chunks stream in batches, both at spawn and while walking.
@@ -280,6 +284,14 @@ namespace terila::network {
                     if (const auto connection = weak_self.lock()) {
                         connection->run_command(nested);
                     }
+                });
+                // Mob hits arrive from the mob manager through the hub: it knows the entity
+                // ids, this connection owns the health behind one of them.
+                hub_->set_damager(entity_id_, [weak_self](float amount, const std::string& cause) {
+                    if (const auto connection = weak_self.lock()) {
+                        return connection->damage_player(amount, cause);
+                    }
+                    return false;
                 });
             }
         }

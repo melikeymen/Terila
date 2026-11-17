@@ -13,7 +13,9 @@
 #include "data/input_store.hpp"
 #include "protocol/packet_ids_loader.hpp"
 #include "entity/mob.hpp"
+#include "entity/natural_spawner.hpp"
 #include "world/block_world.hpp"
+#include "world/world_clock.hpp"
 #include "world/world_generator.hpp"
 #include "version/mc_version.hpp"
 #include "world/trf/trf_store.hpp"
@@ -330,63 +332,47 @@ int main() {
             static_cast<std::int32_t>(std::floor(x)),
             static_cast<std::int32_t>(std::floor(z))) + 1.0);
         });
-    mobs.set_roam_area(spawn.x + 0.5, spawn.z + 0.5, 128.0);
+    // No leash: a mob walks where its goals send it, and the natural spawner fills the
+    // world around the players, so the population grows with the explored area.
 
-    // Each animal gets its own column in a disc around the spawn point instead of the
-    // whole herd sharing one grid; columns under water are re-rolled so nothing stands on
-    // the sea floor.
-    static const std::vector<std::string> kPlainsMobs = {
-        "minecraft:cow", "minecraft:sheep", "minecraft:pig", "minecraft:chicken",
-        "minecraft:rabbit", "minecraft:horse", "minecraft:donkey", "minecraft:bee"
-    };
-    constexpr int kCopiesPerType = 8;
-    constexpr double kPi = 3.14159265358979323846;
-    constexpr double kHerdRadius = 96.0;
+    // The population a world starts with comes from the biome's own spawn list: weights,
+    // pack sizes and the per-category caps are all in input/worldgen/biomes.json.
+    mobs.set_entity_type_ids(&data.entity_type_ids);
 
-    std::mt19937 herd_rng(world_terrain.seed() ^ 0x9E3779B9u);
-    std::uniform_real_distribution<double> herd_angle(0.0, 2.0 * kPi);
-    std::uniform_real_distribution<double> herd_distance(8.0, kHerdRadius);
+    terila::entity::NaturalSpawner spawner;
+    terila::entity::SpawnWorld spawn_world;
+    spawn_world.biome_index = [&world_terrain](std::int32_t x, std::int32_t z) {
+        return world_terrain.biome_at(x, z);
+        };
+    spawn_world.surface_y = [&world_terrain](std::int32_t x, std::int32_t z) {
+        return world_terrain.surface_height(x, z) + 1;
+        };
+    spawn_world.is_water = [&world_terrain](std::int32_t x, std::int32_t z) {
+        return world_terrain.surface_height(x, z) + 1 <= world_terrain.sea_level();
+        };
+    spawn_world.block_light = [](std::int32_t, std::int32_t, std::int32_t) { return 0; };
+    spawn_world.sky_light = [](std::int32_t, std::int32_t, std::int32_t) { return 15; };
+    spawner.set_world(spawn_world);
 
-    std::size_t spawned = 0;
-    for (const std::string& name : kPlainsMobs) {
-        for (int copy = 0; copy < kCopiesPerType; ++copy) {
-            double x = spawn.x + 0.5;
-            double z = spawn.z + 0.5;
-            bool found_land = false;
-            for (int attempt = 0; attempt < 12 && !found_land; ++attempt) {
-                const double angle = herd_angle(herd_rng);
-                const double distance = herd_distance(herd_rng);
-                x = spawn.x + 0.5 + std::cos(angle) * distance;
-                z = spawn.z + 0.5 + std::sin(angle) * distance;
-                found_land = world_terrain.surface_height(
-                    static_cast<std::int32_t>(std::floor(x)),
-                    static_cast<std::int32_t>(std::floor(z))) >= world_terrain.sea_level();
-            }
-            if (!found_land) {
-                continue;
-            }
+    // Mobs that swim in the biome's water entries need to know when they are in it.
+    mobs.set_water_resolver([&world_terrain](double x, double z) {
+        return world_terrain.surface_height(
+            static_cast<std::int32_t>(std::floor(x)),
+            static_cast<std::int32_t>(std::floor(z))) + 1 <= world_terrain.sea_level();
+        });
 
-            if (mobs.spawn(name, data.entity_type_ids, x, z, false, 10)) {
-                ++spawned;
-            }
-            else {
-                LOG_WARN(Entity, "could not spawn {} at ({:.1f}, {:.1f})", name, x, z);
-            }
-        }
-    }
+    // The world clock: twenty ticks a second, 24000 ticks a day. It drives the sky the
+    // clients see and the monster rule of the natural spawner.
+    auto clock = std::make_shared<terila::world::WorldClock>();
+    clock->set_time_of_day(terila::world::WorldClock::kNoon);
+
+    std::uint32_t population_rng = static_cast<std::uint32_t>(world_terrain.seed()) ^ 0x5EED5EEDu;
+    const std::size_t spawned = spawner.spawn_initial(mobs, spawn.x, spawn.z, 96.0,
+        population_rng, clock->night());
+    LOG_INFO(Entity, "spawned {} mobs from the {} spawn list", spawned,
+        terila::world::terrain::kBiomeNames[world_terrain.biome_at(spawn.x, spawn.z)]);
     if (spawned == 0) {
-        // An all-ocean spawn would otherwise look like a broken entity registry.
-        for (const std::string& name : kPlainsMobs) {
-            if (mobs.spawn(name, data.entity_type_ids, spawn.x + 0.5, spawn.z + 0.5, false, 10)) {
-                ++spawned;
-            }
-        }
-    }
-    LOG_INFO(Entity, "spawned {} plains animals across the world around ({}, {})",
-        spawned, spawn.x, spawn.z);
-    if (spawned == 0) {
-        LOG_CRITICAL(Entity, "none of the planned plains animals spawned — the entity registry "
-            "is broken");
+        LOG_WARN(Entity, "the biome spawn list produced nothing — check the entity registry");
     }
 
     // Items whose id doubles as a placeable block, e.g. minecraft:stone.
@@ -515,7 +501,7 @@ int main() {
 
     auto do_accept = [&](auto&& self) -> void {
         acceptor.async_accept(
-            [&acceptor, &data, &mobs, &world, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, world_type, world_seed, &spawn, &srv, &players, &player_hub, &chunk_store, &next_player_entity_id, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
+            [&acceptor, &data, &mobs, &world, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, world_type, world_seed, &spawn, &srv, &players, &player_hub, &chunk_store, &next_player_entity_id, &world_terrain, clock, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
                 if (error) {
                     LOG_ERROR(Network, "accept failed: {} ({})", error.message(), error.value());
                     self(self);
@@ -531,7 +517,8 @@ int main() {
                     item_entity_type, &recipes, menu_blocks, furnace_states, furnace_item_id,
                     world_seed, world_type, spawn.x, spawn.z, srv.view_distance,
                     srv.simulation_distance, static_cast<int>(srv.max_players),
-                    next_player_entity_id++, srv.gamemode);
+                    next_player_entity_id++, srv.gamemode, clock,
+                    world_terrain.sea_level());
                 conn->start();
                 players.push_back(conn);
                 self(self);
@@ -549,22 +536,39 @@ int main() {
                 return;
             }
 
+            // One game tick per loop pass, the same twenty a second the client expects.
+            clock->tick();
+
             std::vector<terila::entity::PlayerPos> player_positions;
             player_positions.reserve(players.size());
             for (const auto& player : players) {
                 if (const auto conn = player.lock()) {
-                    if (conn->joined()) {
+                    // A dead player is not a target: the mobs lose interest until the
+                    // respawn button puts them back in the world.
+                    if (conn->joined() && !conn->dead()) {
                         player_positions.push_back(conn->player_position());
                     }
                 }
             }
 
+            spawner.tick(mobs, player_positions, clock->night(), mobs.rng());
             mobs.tick(player_positions);
+
+            // The mobs that landed a hit this tick: only the owning connection can take the
+            // damage, so the hub routes it by entity id.
+            if (player_hub) {
+                for (const auto& hit : mobs.hits()) {
+                    player_hub->damage_player(hit.player, static_cast<float>(hit.damage),
+                        hit.attacker);
+                }
+            }
+
             drops.tick(player_positions);
 
             for (auto it = players.begin(); it != players.end();) {
                 if (const auto conn = it->lock()) {
                     conn->tick_entities();
+                    conn->tick_time();
                     // Region writes block the io thread for everyone, so a connection
                     // drains a handful per tick instead of a whole burst.
                     conn->flush_pending_saves(8);

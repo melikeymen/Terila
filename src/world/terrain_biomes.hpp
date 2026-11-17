@@ -75,6 +75,30 @@ namespace terila::world::terrain {
         kBirchForest, kSwamp, kJungle, kSavanna, kBadlands, kDesert, kBiomeCount
     };
 
+    // The same order as ids, so a biome index can be looked up in the game data
+    // (spawn lists, biome attributes) by name.
+    inline constexpr const char* kBiomeNames[kBiomeCount] = {
+        "minecraft:deep_ocean",
+        "minecraft:ocean",
+        "minecraft:frozen_ocean",
+        "minecraft:beach",
+        "minecraft:stony_shore",
+        "minecraft:snowy_plains",
+        "minecraft:snowy_taiga",
+        "minecraft:taiga",
+        "minecraft:windswept_hills",
+        "minecraft:stony_peaks",
+        "minecraft:meadow",
+        "minecraft:plains",
+        "minecraft:forest",
+        "minecraft:birch_forest",
+        "minecraft:swamp",
+        "minecraft:jungle",
+        "minecraft:savanna",
+        "minecraft:badlands",
+        "minecraft:desert",
+    };
+
     inline std::optional<Blocks> resolve_blocks(const IdResolver& block) {
         Blocks blocks;
         bool complete = true;
