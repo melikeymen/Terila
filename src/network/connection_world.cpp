@@ -154,6 +154,22 @@ namespace terila::network {
             return;
         }
 
+        // What is in hand decides the pace, so switching tools mid-dig re-times the block
+        // instead of leaving the old tool's timer in place (a pickaxe swapped for a shovel
+        // has to dig at the shovel's speed from then on).
+        const int ticks = break_ticks_for(breaking_state_);
+        if (ticks < 0) {
+            abort_breaking();
+            return;
+        }
+        if (ticks == 0) {
+            const auto target = breaking_pos_;
+            abort_breaking();
+            break_now(target, 0);
+            return;
+        }
+        break_ticks_ = ticks;
+
         if (++break_progress_ < break_ticks_) {
             return;
         }

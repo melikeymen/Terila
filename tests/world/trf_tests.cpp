@@ -504,13 +504,26 @@ TEST(TrfChunkStoreTest, DrawsARandomSeedForANewWorld) {
     TempDir first_dir;
     TempDir second_dir;
 
-    const auto first = trf::load_or_create_world(first_dir.path(), 0);
-    const auto second = trf::load_or_create_world(second_dir.path(), 0);
+    const auto first = trf::load_or_create_world(first_dir.path(), std::nullopt);
+    const auto second = trf::load_or_create_world(second_dir.path(), std::nullopt);
     ASSERT_TRUE(first.has_value());
     ASSERT_TRUE(second.has_value());
 
     EXPECT_NE(first->seed, 0u);
     EXPECT_NE(first->seed, second->seed);
+}
+
+TEST(TrfChunkStoreTest, KeepsSeedZeroAsARealSeed) {
+    TempDir dir;
+
+    // level-seed=0 names a world, it does not ask for a random one.
+    const auto created = trf::load_or_create_world(dir.path(), 0u);
+    ASSERT_TRUE(created.has_value()) << trf::to_string(created.error().code);
+    EXPECT_EQ(created->seed, 0u);
+
+    const auto reopened = trf::load_or_create_world(dir.path(), std::nullopt);
+    ASSERT_TRUE(reopened.has_value());
+    EXPECT_EQ(reopened->seed, 0u) << "the descriptor seed was overwritten";
 }
 
 TEST(TrfFormatTest, RegionCoordinateFloorsTowardsMinusInfinity) {

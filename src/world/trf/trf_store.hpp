@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <memory>
 #include <span>
 #include <unordered_map>
@@ -23,11 +24,12 @@ namespace terila::world::trf {
         std::uint16_t generator_version = 1;
     };
 
-    // Reads world/world.trfmeta, creating it with a fresh identity on first run. A
-    // non-zero seed is stored in that new descriptor; zero draws a random one, so a world
-    // keeps its seed across restarts while every new world starts somewhere else.
+    // Reads world/world.trfmeta, creating it with a fresh identity on first run. The seed
+    // is stored in that new descriptor: an explicit value (including 0, which is a real
+    // seed) is used as given, and std::nullopt draws a random one, so a world keeps its
+    // seed across restarts while every new random world starts somewhere else.
     std::expected<WorldIdentity, TrfError> load_or_create_world(
-        const std::filesystem::path& world_root, std::uint32_t seed = 0);
+        const std::filesystem::path& world_root, std::optional<std::uint32_t> seed = std::nullopt);
 
     // §4 directory layout: world/dimensions/<namespace>/<path>/region/r.<cx>.<cz>.trf.
     std::filesystem::path default_region_directory(const std::filesystem::path& world_root,

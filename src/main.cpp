@@ -282,13 +282,18 @@ int main() {
         return it == data.biome_ids.end() ? std::nullopt
             : std::optional<std::int32_t>(it->second);
     };
-    // The seed belongs to the world, not to the config: a new world draws one (or takes the
-    // one from level-seed) and keeps it in its descriptor, so restarts replay the same
-    // terrain even after the config stops naming a seed.
-    const fs::path world_root = executable_directory() / "world" /
-        std::string(terila::world::world_type_name(world_type));
-    auto world_identity = terila::world::trf::load_or_create_world(world_root,
-        srv.random_seed() ? 0u : srv.seed_value());
+    // The seed belongs to the world: an explicit level-seed gets its own folder (so naming
+    // another seed starts another world instead of streaming the old one), while a random
+    // world keeps one folder and takes the seed drawn into its descriptor on first run.
+    const auto explicit_seed = srv.random_seed()
+        ? std::optional<std::uint32_t>{}
+        : std::optional<std::uint32_t>{ srv.seed_value() };
+    std::string world_name{ terila::world::world_type_name(world_type) };
+    if (explicit_seed) {
+        world_name += "-" + std::to_string(*explicit_seed);
+    }
+    const fs::path world_root = executable_directory() / "world" / world_name;
+    auto world_identity = terila::world::trf::load_or_create_world(world_root, explicit_seed);
     if (!world_identity) {
         LOG_FATAL(Main, "cannot prepare the world directory '{}': {}", world_root.string(),
             world_identity.error().detail);

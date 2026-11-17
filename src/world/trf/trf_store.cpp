@@ -40,6 +40,16 @@ namespace terila::world::trf {
             return uuid;
         }
 
+        // The seed a world gets when it did not name one. Drawing from the device keeps two
+        // freshly created worlds apart; the time term keeps a fast double create apart too.
+        std::uint32_t draw_seed() {
+            std::random_device device;
+            const std::uint64_t mixed = (static_cast<std::uint64_t>(device()) << 32) ^
+                static_cast<std::uint64_t>(device()) ^ now_ms();
+            const auto value = static_cast<std::uint32_t>(mixed ^ (mixed >> 32));
+            return value != 0 ? value : 1u;
+        }
+
         std::expected<WorldIdentity, TrfError> write_descriptor(const std::filesystem::path& path,
             const WorldIdentity& identity) {
 
@@ -111,7 +121,7 @@ namespace terila::world::trf {
     }
 
     std::expected<WorldIdentity, TrfError> load_or_create_world(
-        const std::filesystem::path& world_root, std::uint32_t seed) {
+        const std::filesystem::path& world_root, std::optional<std::uint32_t> seed) {
         std::error_code ec;
         std::filesystem::create_directories(world_root, ec);
         if (ec) {
@@ -126,15 +136,8 @@ namespace terila::world::trf {
 
         WorldIdentity identity;
         identity.world_uuid = random_uuid();
-        // A world without a seed in its config gets a random one, drawn once and then kept.
-        if (seed == 0) {
-            std::uint32_t drawn = 0;
-            for (std::size_t i = 0; i < 4; ++i) {
-                drawn = (drawn << 8) | static_cast<std::uint32_t>(identity.world_uuid[i]);
-            }
-            seed = drawn != 0 ? drawn : 0x51ED2C3u;
-        }
-        identity.seed = seed;
+        // A world that names no seed gets a random one, drawn once and then kept.
+        identity.seed = seed.value_or(draw_seed());
         identity.generator_id = static_cast<std::uint32_t>(crc32c(std::span<const std::byte>(
             reinterpret_cast<const std::byte*>("terila.noise.v1"), 15)));
         identity.generator_version = 2;
