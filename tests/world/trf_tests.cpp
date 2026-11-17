@@ -12,7 +12,12 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
+#include <random>
+#include <thread>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -577,3 +582,135 @@ TEST(TrfFileTest, RegionFilesStaySparseWhenTheyGrow) {
     EXPECT_EQ(allocated, 0u) << "the empty region allocated disk space";
 }
 #endif
+
+// The interactive numbers, not an assertion: run it with TERILA_BENCH=1 after touching the
+// region format or the store, because it writes and reads a 32 MiB region of its own.
+TEST(TrfBench, ReadSpeed) {
+    if (std::getenv("TERILA_BENCH") == nullptr) {
+        GTEST_SKIP() << "set TERILA_BENCH=1 to run the region benchmark";
+    }
+
+    TempDir dir;
+    const auto identity = trf::load_or_create_world(dir.path(), 42u);
+    ASSERT_TRUE(identity.has_value()) << trf::to_string(identity.error().code);
+    const auto region_dir = trf::default_region_directory(dir.path());
+
+    constexpr int kSide = 32;               // a region is 32 x 32 chunks
+    constexpr int kChunks = kSide * kSide;
+    constexpr std::size_t kPayload = 32 * 1024;
+
+    std::vector<std::vector<std::byte>> payloads(kChunks);
+    for (int i = 0; i < kChunks; ++i) {
+        payloads[static_cast<std::size_t>(i)].resize(kPayload);
+        for (std::size_t b = 0; b < kPayload; ++b) {
+            payloads[static_cast<std::size_t>(i)][b] =
+                static_cast<std::byte>((i * 31 + static_cast<int>(b)) & 0xFF);
+        }
+    }
+
+    const auto elapsed_ms = [](auto start) {
+        return std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+    };
+    const auto report = [&](const char* what, double ms, int reads, std::size_t bytes) {
+        const double mb = static_cast<double>(bytes) / (1024.0 * 1024.0);
+        std::printf("TRFBENCH %-26s %8.1f ms  %7.1f us/chunk  %7.1f MB/s  (%d chunks, %.1f MiB)\n",
+            what, ms, ms * 1000.0 / reads, mb / (ms / 1000.0), reads, mb);
+    };
+
+    {
+        trf::ChunkStore store(region_dir, *identity);
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < kChunks; ++i) {
+            const auto saved = store.save_chunk(i % kSide, i / kSide,
+                std::span<const std::byte>(payloads[static_cast<std::size_t>(i)]),
+                trf::chunk_flags(false, true, false));
+            ASSERT_TRUE(saved.has_value());
+        }
+        const double ms = elapsed_ms(t0);
+        ASSERT_TRUE(store.flush().has_value());
+        report("write (32 KiB payloads)", ms, kChunks, kPayload * kChunks);
+    }
+
+    // Let the pages written above reach the disk, so the first read measures reading and
+    // not the write-back the same buffer is still waiting for.
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+    {
+        const auto open_start = std::chrono::steady_clock::now();
+        trf::ChunkStore store(region_dir, *identity);
+        report("open region", elapsed_ms(open_start), 1, 0);
+
+        std::vector<std::byte> out;
+        std::size_t bytes = 0;
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < kChunks; ++i) {
+            auto loaded = store.load_chunk(i % kSide, i / kSide, out);
+            ASSERT_TRUE(loaded.has_value());
+            ASSERT_TRUE(loaded->present);
+            bytes += out.size();
+        }
+        report("read sequential (1st)", elapsed_ms(t0), kChunks, bytes);
+    }
+
+    {
+        trf::ChunkStore store(region_dir, *identity);
+        std::vector<std::byte> out;
+        std::size_t bytes = 0;
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < kChunks; ++i) {
+            auto loaded = store.load_chunk(i % kSide, i / kSide, out);
+            ASSERT_TRUE(loaded.has_value());
+            bytes += out.size();
+        }
+        report("read sequential (2nd)", elapsed_ms(t0), kChunks, bytes);
+    }
+
+    {
+        trf::ChunkStore store(region_dir, *identity);
+        std::vector<std::byte> out;
+        std::mt19937 rng(12345);
+        std::vector<int> order(kChunks);
+        for (int i = 0; i < kChunks; ++i) {
+            order[static_cast<std::size_t>(i)] = i;
+        }
+        std::shuffle(order.begin(), order.end(), rng);
+
+        std::size_t bytes = 0;
+        const auto t0 = std::chrono::steady_clock::now();
+        for (const int i : order) {
+            auto loaded = store.load_chunk(i % kSide, i / kSide, out);
+            ASSERT_TRUE(loaded.has_value());
+            bytes += out.size();
+        }
+        report("read random order", elapsed_ms(t0), kChunks, bytes);
+    }
+
+    {
+        trf::ChunkStore store(region_dir, *identity);
+        std::vector<std::byte> out;
+        const int chunk = 5 * kSide + 7;
+        constexpr int kReads = 2000;
+        std::size_t bytes = 0;
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < kReads; ++i) {
+            auto loaded = store.load_chunk(chunk % kSide, chunk / kSide, out);
+            ASSERT_TRUE(loaded.has_value());
+            bytes += out.size();
+        }
+        report("read same chunk", elapsed_ms(t0), kReads, bytes);
+    }
+
+#ifdef _WIN32
+    {
+        const auto path = region_dir / "r.0.0.trf";
+        std::uint32_t high = 0;
+        const auto low = GetCompressedFileSizeW(path.wstring().c_str(),
+            reinterpret_cast<LPDWORD>(&high));
+        std::printf("TRFBENCH region logical=%.2f MiB allocated=%.2f MiB\n",
+            static_cast<double>(std::filesystem::file_size(path)) / (1024.0 * 1024.0),
+            static_cast<double>((static_cast<std::uint64_t>(high) << 32) | low) /
+                (1024.0 * 1024.0));
+    }
+#endif
+}
