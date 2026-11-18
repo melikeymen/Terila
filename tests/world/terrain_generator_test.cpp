@@ -141,7 +141,8 @@ TEST(TerrainGeneratorTest, ColumnHasBedrockUnderSurfaceAndAirAbove) {
 
     const int surface = generator.surface_height(8, 8);
     EXPECT_EQ(section_block(chunk, 8, surface, 8), generator.state_at(8, surface, 8));
-    EXPECT_EQ(section_block(chunk, 8, generator.sea_level() + 60, 8), 0);  // air high up
+    // The top of the world is always air, whatever the column below it is.
+    EXPECT_EQ(section_block(chunk, 8, generator.min_y() + 24 * 16 - 1, 8), 0);
 }
 
 TEST(TerrainGeneratorTest, UnderwaterColumnsHoldWaterAtSeaLevel) {
@@ -314,12 +315,18 @@ TEST(TerrainGeneratorTest, GeneratesVegetationSomewhere) {
     const LandColumn land = find_column(generator, true);
     ASSERT_NE(land.biome, -1) << "no grassy column within 4096 blocks";
 
+    // Grass does not imply trees: a single grassy column can sit in a biome without any.
+    // Walk a few chunks around the first grassland and look for plants in any of them.
     int plants = 0;
-    const auto chunk = generator.generate(land.x / 16, land.z / 16);
-    for (const auto& section : chunk.sections) {
-        for (int i = 0; i < 4096; ++i) {
-            if (is_plant(section_state(section, i))) {
-                ++plants;
+    const std::int32_t base_x = land.x / 16;
+    const std::int32_t base_z = land.z / 16;
+    for (int i = 0; i < 9 && plants == 0; ++i) {
+        const auto chunk = generator.generate(base_x + (i % 3) - 1, base_z + (i / 3) - 1);
+        for (const auto& section : chunk.sections) {
+            for (int k = 0; k < 4096; ++k) {
+                if (is_plant(section_state(section, k))) {
+                    ++plants;
+                }
             }
         }
     }

@@ -1,62 +1,21 @@
 #pragma once
 
-// The two things that are carved into the noise terrain: caves, and the ore veins that sit
-// under the surface. Both are pure functions of position, so a single block lookup and a
-// whole chunk always agree.
+// Ore veins: each 8x8x8 cell of the world may hold one small blob of a single ore, chosen
+// from the band its height belongs to. A block belongs to the first vein that reaches it,
+// which keeps a lookup to the eight cells around it. Ores only replace the deep filler, so a
+// vein never shows up in dirt, sand or a cave.
 
-#include "world/terrain_noise.hpp"
 #include "world/terrain_biomes.hpp"
+#include "world/terrain_noise.hpp"
 
 #include <cstdint>
 #include <cstdlib>
 
-namespace terila::world::terrain {
+namespace terila::world::worldgen {
 
-    // Caves: a big "cheese" field that hollows out caverns where it crosses zero, and two
-    // tunnel fields whose ridges meet in thin passages. Neither is asked about a block close
-    // to the surface, so the ground above never turns into a floating shell.
-    class CaveCarver {
-    public:
-        void init(std::uint64_t seed, int min_y) {
-            min_y_ = min_y;
-            // A single octave per channel: caves are smooth enough that the extra detail is
-            // invisible, and this is the hottest sampler in chunk generation.
-            cheese_.init(seed ^ 0xC4E5Eull, 1, 1.0f / 58.0f);
-            tunnel_a_.init(seed ^ 0x71A5ull, 1, 1.0f / 26.0f);
-            tunnel_b_.init(seed ^ 0xB0B1ull, 1, 1.0f / 26.0f);
-        }
-
-        bool is_cave(std::int32_t x, std::int32_t y, std::int32_t z, int surface) const {
-            if (y <= min_y_ + 2 || y > surface - 5) {
-                return false;
-            }
-            const float fx = static_cast<float>(x);
-            const float fy = static_cast<float>(y);
-            const float fz = static_cast<float>(z);
-
-            const float cheese = cheese_.sample(fx, fy * 1.7f, fz);
-            if (std::abs(cheese) < 0.055f) {
-                return true;
-            }
-
-            const float a = tunnel_a_.sample(fx, fy * 1.8f, fz);
-            const float b = tunnel_b_.sample(fx, fy * 1.8f, fz);
-            return a * a + b * b < 0.0016f;
-        }
-
-    private:
-        detail::OctaveNoise cheese_;
-        detail::OctaveNoise tunnel_a_;
-        detail::OctaveNoise tunnel_b_;
-        int min_y_ = -64;
-    };
-
-    // Ore veins: each 8x8x8 cell of the world may hold one small blob of a single ore, chosen
-    // from the band its height belongs to. A block belongs to the first vein that reaches it,
-    // which keeps a lookup to the eight cells around it.
     class OreVeins {
     public:
-        void init(std::uint64_t seed, int min_y, const Blocks& blocks) {
+        void init(std::uint64_t seed, int min_y, const terrain::Blocks& blocks) {
             seed_ = seed;
             min_y_ = min_y;
             blocks_ = blocks;
@@ -64,15 +23,14 @@ namespace terila::world::terrain {
 
         std::int32_t replace_deep(std::int32_t x, std::int32_t y, std::int32_t z,
             std::int32_t deep) const {
-            if (deep != blocks_.stone) {
+            if (deep != blocks_.stone || blocks_.coal_ore == blocks_.stone) {
                 return deep;
             }
             const std::int32_t cell_x = x >> 3;
             const std::int32_t cell_y = y >> 3;
             const std::int32_t cell_z = z >> 3;
-            // A blob can only reach two blocks out of its own cell, so a neighbour only has
-            // to be looked at when the block sits on that side of its cell. Interior blocks
-            // cost one hash instead of twenty-seven.
+            // A blob reaches at most two blocks out of its cell, so a neighbour only has to be
+            // looked at when the block sits on that side of its cell.
             const int lx = x & 7;
             const int ly = y & 7;
             const int lz = z & 7;
@@ -95,7 +53,7 @@ namespace terila::world::terrain {
                             static_cast<std::uint64_t>(
                                 static_cast<std::uint32_t>(cell_z + dz));
                         const std::uint64_t hash =
-                            detail::hash64(key * 0x9E3779B97F4A7C15ull + seed_);
+                            terrain::detail::hash64(key * 0x9E3779B97F4A7C15ull + seed_);
                         const std::int32_t ore = ore_for_band(static_cast<int>(hash % 7),
                             cell_y * 8 + 4);
                         if (ore == 0) {
@@ -117,8 +75,8 @@ namespace terila::world::terrain {
         }
 
     private:
-        // Which ore a band holds; 0 means the vein is empty here. The bands are the ones the
-        // game uses: most ores live in a height window rather than everywhere.
+        // Which ore a band holds; 0 means the vein is empty here. The bands are the height
+        // windows the game uses rather than one ore everywhere.
         std::int32_t ore_for_band(int slot, int y) const {
             switch (slot) {
             case 0: return (y > min_y_ + 6 && y < 110) ? blocks_.coal_ore : 0;
@@ -132,9 +90,9 @@ namespace terila::world::terrain {
             }
         }
 
-        Blocks blocks_{};
+        terrain::Blocks blocks_{};
         std::uint64_t seed_ = 0;
         int min_y_ = -64;
     };
 
-} // namespace terila::world::terrain
+} // namespace terila::world::worldgen

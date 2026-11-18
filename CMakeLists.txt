@@ -131,9 +131,16 @@ target_sources(terila PRIVATE
     "src/world/chunk_encoder.hpp"
     "src/world/flat_generator.hpp"
     "src/world/terrain_biomes.hpp"
-    "src/world/terrain_caves.hpp"
     "src/world/terrain_generator.hpp"
     "src/world/terrain_noise.hpp"
+    "src/world/worldgen/climate.hpp"
+    "src/world/worldgen/density.hpp"
+    "src/world/worldgen/generator.hpp"
+    "src/world/worldgen/material.hpp"
+    "src/world/worldgen/noise.hpp"
+    "src/world/worldgen/ores.hpp"
+    "src/world/worldgen/settings.hpp"
+    "src/world/worldgen/vegetation.hpp"
     "src/world/world_generator.hpp"
 )
 
@@ -162,7 +169,13 @@ if(TERILA_EMBED_INPUT)
         "commands/tree.nbt"
         "blocks/state_ids.json"
         "worldgen/biomes.json"
+        "worldgen/biome_parameters.json"
+        "worldgen/density_functions.json"
+        "worldgen/noise_settings.json"
         "worldgen/dimensions.json"
+        "registries/dump/minecraft/worldgen/material_condition.json"
+        "registries/dump/minecraft/worldgen/material_rule.json"
+        "registries/dump/minecraft/worldgen/noise.json"
         "entities/minecraft.json"
         "items/minecraft.json"
     )
@@ -413,6 +426,7 @@ terila_copy_runtime(nbt_tests)
 
 add_executable(chunk_tests
     "src/world/chunk_jobs.cpp"
+    "src/data/input_store.cpp"
     "tests/world/block_break_test.cpp"
     "tests/world/falling_blocks_test.cpp"
     "tests/world/chunk_cache_test.cpp"
