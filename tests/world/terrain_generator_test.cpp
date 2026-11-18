@@ -289,7 +289,9 @@ namespace {
                     }
                     const int height = generator.surface_height(x, z);
                     const auto surface = generator.state_at(x, height, z);
-                    if (surface == 42 || (!grass_only && height > generator.sea_level())) {
+                    // Grass under the sea cannot grow a tree, so only dry grassland counts.
+                    const bool dry = height > generator.sea_level();
+                    if ((surface == 42 && dry) || (!grass_only && dry)) {
                         return LandColumn{ x, z, height, surface, generator.biome_at(x, z) };
                     }
                 }

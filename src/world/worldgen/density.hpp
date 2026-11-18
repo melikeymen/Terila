@@ -32,6 +32,7 @@ namespace terila::world::worldgen {
         Abs, Square, Cube, HalfNegative, QuarterNegative, Squeeze,
         Clamp, Gradient, Noise, Shift, ShiftA, ShiftB, Cache,
         Spline, RangeChoice, IntervalSelect, Lerp,
+        Interpolated,
         BlendDensity, BlendAlpha, BlendOffset, Beardifier,
         FindTopSurface, OldBlendedNoise, Slice, DistanceToPoint,
     };
@@ -51,17 +52,20 @@ namespace terila::world::worldgen {
     // the limits, 8 for the main field, y smearing) is part of the node's definition.
     class BlendedNoise {
     public:
-        void init(std::uint64_t seed, double xz_scale, double y_scale, double xz_factor,
-            double y_factor, double smear_scale) {
+        void init(const PositionalFactory& factory, double xz_scale, double y_scale,
+            double xz_factor, double y_factor, double smear_scale) {
             xz_multiplier_ = 684.412 * xz_scale;
             y_multiplier_ = 684.412 * y_scale;
             xz_factor_ = xz_factor;
             y_factor_ = y_factor;
             const double smear_y = y_multiplier_ * smear_scale;
 
-            build(min_noise_, mix64(seed ^ 0x1E5ull), -15, smear_y, 0.99998474);
-            build(max_noise_, mix64(seed ^ 0x2E5ull), -15, smear_y, 0.99998474);
-            build(main_noise_, mix64(seed ^ 0x3E5ull), -7, smear_y / y_factor, 12.75);
+            // The node always draws from the `minecraft:terrain` stream, so every blended
+            // noise of a world shares these three fields.
+            RandomSource random = factory.from_hash_of("minecraft:terrain");
+            build(min_noise_, random, -15, smear_y, 0.99998474);
+            build(max_noise_, random, -15, smear_y, 0.99998474);
+            build(main_noise_, random, -7, smear_y / y_factor, 12.75);
         }
 
         double sample(double x, double y, double z) const {
@@ -83,15 +87,14 @@ namespace terila::world::worldgen {
             double smear = 1.0;
         };
 
-        static void build(std::vector<Layer>& out, std::uint64_t seed, int first_octave,
+        static void build(std::vector<Layer>& out, RandomSource& random, int first_octave,
             double smear_y, double value_factor) {
             const int octaves = -first_octave + 1;
             double frequency = 1.0;
             double amplitude = value_factor / (std::pow(2.0, octaves) - 1.0);
             for (int i = octaves - 1; i >= 0; --i) {
                 Layer layer;
-                layer.perlin.init(mix64(seed + static_cast<std::uint64_t>(i) *
-                    0x9E3779B97F4A7C15ull));
+                layer.perlin.init(random);
                 layer.frequency = frequency;
                 layer.amplitude = amplitude;
                 layer.smear = smear_y * frequency;
@@ -103,16 +106,13 @@ namespace terila::world::worldgen {
 
         static double sample_stack(const std::vector<Layer>& stack, double x, double y,
             double z) {
-            double total = 0.0;
+            float total = 0.0f;
             for (const auto& layer : stack) {
-                // The smear makes a layer constant inside a thin horizontal slab, which is
-                // what keeps the classic terrain from looking vertically stripy.
-                double sample_y = y;
-                if (layer.smear > 1.0e-6) {
-                    sample_y = std::floor(y / layer.smear + 1.0e-7) * layer.smear;
-                }
-                total += layer.perlin.sample(x * layer.frequency, sample_y * layer.frequency,
-                    z * layer.frequency) * layer.amplitude;
+                const double layer_x = x * layer.frequency;
+                const double layer_y = y * layer.frequency;
+                const double layer_z = z * layer.frequency;
+                total += layer.perlin.get_smeared(layer_x, layer_y, layer_z, layer.smear) *
+                    static_cast<float>(layer.amplitude);
             }
             return total;
         }
@@ -151,8 +151,11 @@ namespace terila::world::worldgen {
         double xz_scale = 1.0;
         double y_scale = 1.0;
         int cell_height = 8;
+        int cell_xz = 4;
         // Index into the per-evaluation cache slots, for `minecraft:cache`.
         int cache_index = -1;
+        // Index into the per-chunk interpolation lattices, for `minecraft:interpolated`.
+        int interp_index = -1;
 
         std::shared_ptr<const BlendedNoise> blended;
     };
@@ -172,6 +175,10 @@ namespace terila::world::worldgen {
         // Column tops, shared per chunk: material rules ask for the same column many times.
         std::unordered_map<std::uint64_t, double>* column_tops = nullptr;
         std::vector<CacheSlot>* slots = nullptr;
+        // An interpolated node blends the eight corners of its cell, and neighbouring blocks
+        // share those corners. Keeping the lattice points of the chunk turns that into one
+        // evaluation per grid point instead of eight per block.
+        std::vector<std::unordered_map<std::uint64_t, double>>* lattices = nullptr;
         int recursion = 0;
 
         void reset(int slot_count) {
@@ -184,8 +191,22 @@ namespace terila::world::worldgen {
             recursion = 0;
         }
 
+        // Called once per generated chunk: the lattices belong to the chunk's neighbourhood.
+        void begin_chunk(int lattice_count) {
+            if (lattices == nullptr) {
+                lattices = &owned_lattices;
+            }
+            if (owned_lattices.size() < static_cast<std::size_t>(lattice_count)) {
+                owned_lattices.resize(static_cast<std::size_t>(lattice_count));
+            }
+            for (auto& lattice : owned_lattices) {
+                lattice.clear();
+            }
+        }
+
     private:
         std::vector<CacheSlot> owned;
+        std::vector<std::unordered_map<std::uint64_t, double>> owned_lattices;
     };
 
     class DensityGraph {
@@ -198,6 +219,7 @@ namespace terila::world::worldgen {
             raw_.clear();
             resolved_.clear();
             world_seed_ = world_seed;
+            factory_ = RandomSource::from_seed(world_seed).fork_positional();
 
             const nlohmann::json* entries = entries_of(functions);
             if (entries == nullptr) {
@@ -217,6 +239,7 @@ namespace terila::world::worldgen {
         std::size_t noise_count() const noexcept { return noises_.size(); }
         std::size_t function_count() const noexcept { return raw_.size(); }
         int cache_slot_count() const noexcept { return next_cache_index_; }
+        int interp_slot_count() const noexcept { return next_interp_index_; }
 
         DfPtr find(std::string_view id) {
             const std::string key(id);
@@ -307,6 +330,15 @@ namespace terila::world::worldgen {
 
             const std::string type = value.value("type", std::string());
             auto node = std::make_shared<DfNode>();
+
+            // A spline nested inside another spline's points is written without its type
+            // wrapper, so the shape is the only thing that identifies it.
+            if (type.empty() && value.contains("points") && value.contains("coordinate")) {
+                node->kind = DfKind::Spline;
+                parse_spline(value, *node, depth + 1);
+                return node;
+            }
+
             node->kind = kind_of(type);
             node->axis = axis_of(value.value("axis", std::string("y")));
 
@@ -364,6 +396,12 @@ namespace terila::world::worldgen {
             case DfKind::Cache:
                 node->cache_index = next_cache_index_++;
                 break;
+            case DfKind::Interpolated:
+                node->interp_index = next_interp_index_++;
+                node->a = parse_field(value, "input", depth + 1);
+                node->cell_xz = std::max(1, value.value("cell_size_xz", 4));
+                node->cell_height = std::max(1, value.value("cell_size_y", 8));
+                break;
             case DfKind::Spline:
                 parse_spline(value["spline"], *node, depth + 1);
                 break;
@@ -402,9 +440,9 @@ namespace terila::world::worldgen {
                 break;
             case DfKind::OldBlendedNoise: {
                 auto blended = std::make_shared<BlendedNoise>();
-                blended->init(mix64(static_cast<std::uint64_t>(world_seed_) * 0x9E3779B97F4A7C15ull),
-                    value.value("xz_scale", 1.0), value.value("y_scale", 1.0),
-                    value.value("xz_factor", 80.0), value.value("y_factor", 160.0),
+                blended->init(factory_, value.value("xz_scale", 1.0),
+                    value.value("y_scale", 1.0), value.value("xz_factor", 80.0),
+                    value.value("y_factor", 160.0),
                     value.value("smear_scale_multiplier", 8.0));
                 node->blended = blended;
                 break;
@@ -502,7 +540,7 @@ namespace terila::world::worldgen {
             if (type == "minecraft:slice") return DfKind::Slice;
             if (type == "minecraft:distance_to_point") return DfKind::DistanceToPoint;
             if (type == "minecraft:cache") return DfKind::Cache;
-            if (type == "minecraft:interpolated") return DfKind::BlendDensity;
+            if (type == "minecraft:interpolated") return DfKind::Interpolated;
             if (type == "minecraft:constant") return DfKind::Constant;
             if (type == "minecraft:zero") return DfKind::Zero;
             return DfKind::Zero;
@@ -598,10 +636,15 @@ namespace terila::world::worldgen {
                 slot = EvalContext::CacheSlot{ x, y, z, value, true };
                 return value;
             }
+            // Nothing is blended while a chunk is generated from scratch, so the weight is
+            // one and the offset zero: the second branch is taken verbatim.
             case DfKind::BlendAlpha:
+                return 1.0;
             case DfKind::BlendOffset:
             case DfKind::Beardifier:
                 return 0.0;
+            case DfKind::Interpolated:
+                return interpolated(node, x, y, z, context);
             case DfKind::Spline:
                 return spline(node, x, y, z, context);
             case DfKind::RangeChoice: {
@@ -695,7 +738,92 @@ namespace terila::world::worldgen {
             const double y2 = eval_of(second.value, x, y, z, context);
             const double a = first.derivative * span - (y2 - y1);
             const double b = -second.derivative * span + (y2 - y1);
-            return (y1 + (y2 - y1) * t) + t * (1.0 - t) * (a + (b - a) * t);
+            const double result = (y1 + (y2 - y1) * t) + t * (1.0 - t) * (a + (b - a) * t);
+            return result;
+        }
+
+        static std::uint64_t lattice_key(double x, double y, double z) {
+            const auto ix = static_cast<std::int64_t>(x);
+            const auto iy = static_cast<std::int64_t>(y);
+            const auto iz = static_cast<std::int64_t>(z);
+            return (static_cast<std::uint64_t>(ix & 0x1FFFFF) << 42) |
+                (static_cast<std::uint64_t>(iy & 0x1FFFFF) << 21) |
+                static_cast<std::uint64_t>(iz & 0x1FFFFF);
+        }
+
+        // Reads the eight corners of an interpolation cell, keeping every lattice point the
+        // chunk has already asked for. Returns false when no chunk lattice is open, in which
+        // case the caller samples the corners directly.
+        bool lattice_corners(const DfNode& node, EvalContext& context, double x0, double y0,
+            double z0, double cell_x, double cell_y, double corners[8]) const {
+            if (context.lattices == nullptr || node.interp_index < 0) {
+                return false;
+            }
+            if (static_cast<std::size_t>(node.interp_index) >= context.lattices->size()) {
+                return false;
+            }
+            auto& lattice = (*context.lattices)[static_cast<std::size_t>(node.interp_index)];
+            if (lattice.size() > (1u << 18)) {
+                lattice.clear();
+            }
+            for (int corner = 0; corner < 8; ++corner) {
+                const double cx = x0 + ((corner & 1) != 0 ? cell_x : 0.0);
+                const double cy = y0 + ((corner & 4) != 0 ? cell_y : 0.0);
+                const double cz = z0 + ((corner & 2) != 0 ? cell_x : 0.0);
+                const std::uint64_t key = lattice_key(cx, cy, cz);
+                const auto hit = lattice.find(key);
+                if (hit != lattice.end()) {
+                    corners[corner] = hit->second;
+                    continue;
+                }
+                const double value = eval_of(node.a, cx, cy, cz, context);
+                lattice.emplace(key, value);
+                corners[corner] = value;
+            }
+            return true;
+        }
+
+        // A nested interpolated node has its own cell grid, coarser than the block it is
+        // asked about. Sampling the eight corners of that cell and blending them is what the
+        // game does when it prefills the grid a spline is evaluated on.
+        double interpolated(const DfNode& node, double x, double y, double z,
+            EvalContext& context) const {
+            const double cell_x = static_cast<double>(node.cell_xz);
+            const double cell_y = static_cast<double>(node.cell_height);
+            const double x0 = std::floor(x / cell_x) * cell_x;
+            const double y0 = std::floor(y / cell_y) * cell_y;
+            const double z0 = std::floor(z / cell_x) * cell_x;
+            if (x0 == x && y0 == y && z0 == z) {
+                return eval_of(node.a, x, y, z, context);
+            }
+            const double tx = (x - x0) / cell_x;
+            const double ty = (y - y0) / cell_y;
+            const double tz = (z - z0) / cell_x;
+
+            double corners[8] = {};
+            if (!lattice_corners(node, context, x0, y0, z0, cell_x, cell_y, corners)) {
+                corners[0] = eval_of(node.a, x0, y0, z0, context);
+                corners[1] = eval_of(node.a, x0 + cell_x, y0, z0, context);
+                corners[2] = eval_of(node.a, x0, y0, z0 + cell_x, context);
+                corners[3] = eval_of(node.a, x0 + cell_x, y0, z0 + cell_x, context);
+                corners[4] = eval_of(node.a, x0, y0 + cell_y, z0, context);
+                corners[5] = eval_of(node.a, x0 + cell_x, y0 + cell_y, z0, context);
+                corners[6] = eval_of(node.a, x0, y0 + cell_y, z0 + cell_x, context);
+                corners[7] = eval_of(node.a, x0 + cell_x, y0 + cell_y, z0 + cell_x, context);
+            }
+            const double c000 = corners[0];
+            const double c100 = corners[1];
+            const double c010 = corners[2];
+            const double c110 = corners[3];
+            const double c001 = corners[4];
+            const double c101 = corners[5];
+            const double c011 = corners[6];
+            const double c111 = corners[7];
+            const double bottom = (c000 + (c100 - c000) * tx) +
+                ((c010 + (c110 - c010) * tx) - (c000 + (c100 - c000) * tx)) * tz;
+            const double top = (c001 + (c101 - c001) * tx) +
+                ((c011 + (c111 - c011) * tx) - (c001 + (c101 - c001) * tx)) * tz;
+            return bottom + (top - bottom) * ty;
         }
 
         // The top of the noise surface: walk down in cells while the density is positive and
@@ -741,7 +869,9 @@ namespace terila::world::worldgen {
         std::unordered_map<std::string, nlohmann::json> raw_;
         mutable         std::unordered_map<std::string, DfPtr> resolved_;
         int next_cache_index_ = 0;
+        int next_interp_index_ = 0;
         std::uint32_t world_seed_ = 0;
+        PositionalFactory factory_;
     };
 
 } // namespace terila::world::worldgen

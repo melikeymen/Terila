@@ -35,6 +35,8 @@ namespace terila::world::worldgen {
         int stone_above = 0;      // solid blocks between the surface and this cell
         int stone_below = 1 << 20;
         int water_height = std::numeric_limits<int>::min();   // first water block
+        int surface_depth = 0;      // noise driven thickness of the surface layer
+        double surface_secondary = 0.0;
         double temperature = 0.0;
         int biome = -1;
         double steepness = 0.0;
@@ -458,27 +460,25 @@ namespace terila::world::worldgen {
                 if (node.noise == nullptr) {
                     return false;
                 }
-                const double value = node.noise->sample(context.x, context.y, context.z);
+                // Surface noise is a two dimensional field sampled at the column origin.
+                const double value = node.noise->sample(context.x, 0.0, context.z);
                 return value >= node.f0 && value < node.f1;
             }
             case Kind::StoneDepth: {
-                if (node.v2 != 0) {
-                    // Ceilings are not modelled (caves are painted by density alone).
-                    return false;
-                }
-                const int depth = context.surface_y - context.y;
-                const int low = (node.flag ? 1 : 0) + node.v0;
-                const int high = (node.flag ? 1 + node.v1 : 0) + node.v0;
-                return depth >= low && depth <= high;
+                const int depth = node.v2 != 0 ? context.stone_below : context.stone_above;
+                const int surface = node.flag ? context.surface_depth : 0;
+                const int secondary = node.v1 == 0 ? 0 : static_cast<int>(
+                    (context.surface_secondary + 1.0) * 0.5 * node.v1);
+                return depth <= 1 + node.v0 + surface + secondary;
             }
-            case Kind::Water: {
-                if (context.water_height == std::numeric_limits<int>::min()) {
-                    return node.v0 <= 0;
-                }
-                return context.y >= context.water_height + node.v0;
-            }
+            case Kind::Water:
+                return context.water_height == std::numeric_limits<int>::min() ||
+                    context.y + (node.flag ? context.stone_above : 0) >=
+                    context.water_height + node.v0 +
+                    context.surface_depth * node.v1;
             case Kind::YAbove:
-                return context.y + (node.flag ? context.stone_above : 0) > node.v0;
+                return context.y + (node.flag ? context.stone_above : 0) >=
+                    node.v0 + context.surface_depth * node.v1;
             case Kind::Steep:
                 return context.steepness > 0.55;
             case Kind::AbovePreliminarySurface:

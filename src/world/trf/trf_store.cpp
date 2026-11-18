@@ -139,8 +139,8 @@ namespace terila::world::trf {
         // A world that names no seed gets a random one, drawn once and then kept.
         identity.seed = seed.value_or(draw_seed());
         identity.generator_id = static_cast<std::uint32_t>(crc32c(std::span<const std::byte>(
-            reinterpret_cast<const std::byte*>("terila.noise.v1"), 15)));
-        identity.generator_version = 2;
+            reinterpret_cast<const std::byte*>("terila.noise.v2"), 15)));
+        identity.generator_version = 3;
         return write_descriptor(path, identity);
     }
 
