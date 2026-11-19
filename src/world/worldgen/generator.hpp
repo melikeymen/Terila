@@ -366,7 +366,9 @@ namespace terila::world::worldgen {
                     for (int y = world_top_ - 1; y >= min_y_; --y) {
                         const int index = y - min_y_;
                         const bool is_solid = solid[static_cast<std::size_t>(index)] != 0;
-                        const bool under_sea = y <= sea_level_;
+                        // Sea level is the first air block above the ocean: water ends one
+                        // below it, exactly like the fluid level the game fills to.
+                        const bool under_sea = y < sea_level_;
 
                         std::int32_t state = blocks_.air;
                         if (is_solid) {
@@ -389,7 +391,7 @@ namespace terila::world::worldgen {
                                 water_height = y + 1;
                             }
                             const auto& biome = biome_of(col);
-                            state = (y == sea_level_ && biome.ice_top)
+                            state = (y == sea_level_ - 1 && biome.ice_top)
                                 ? blocks_.ice : blocks_.water;
                         }
                         else {
@@ -904,15 +906,15 @@ namespace terila::world::worldgen {
         // The material rules compare a block against the first water block of the column:
         // one above the sea surface when this column is flooded.
         int water_height_of(const Column& col) const {
-            return col.height < sea_level_ ? sea_level_ + 1
+            return col.height < sea_level_ ? sea_level_
                 : std::numeric_limits<int>::min();
         }
 
         std::int32_t fluid_at(std::int32_t y, const Column& col) const {
-            if (y > sea_level_ || col.height >= sea_level_) {
+            if (y >= sea_level_ || col.height >= sea_level_) {
                 return blocks_.air;
             }
-            return (y == sea_level_ && biome_of(col).ice_top) ? blocks_.ice : blocks_.water;
+            return (y == sea_level_ - 1 && biome_of(col).ice_top) ? blocks_.ice : blocks_.water;
         }
 
         const terrain::Biome& biome_of(const Column& col) const {

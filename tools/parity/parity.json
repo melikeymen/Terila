@@ -1,0 +1,110 @@
+{
+  "blocks": {
+    "compared": 98304,
+    "matched": 89441,
+    "percent": 90.98
+  },
+  "bands": [
+    {
+      "band": "y 0-63",
+      "wrong": 4696,
+      "total": 16384,
+      "percent": 28.66
+    },
+    {
+      "band": "y 64-127",
+      "wrong": 0,
+      "total": 16384,
+      "percent": 0.0
+    },
+    {
+      "band": "y < 0",
+      "wrong": 4167,
+      "total": 16384,
+      "percent": 25.43
+    },
+    {
+      "band": "y >= 128",
+      "wrong": 0,
+      "total": 49152,
+      "percent": 0.0
+    }
+  ],
+  "pairs": [
+    {
+      "vanilla": "granite",
+      "terila": "stone",
+      "count": 1347
+    },
+    {
+      "vanilla": "tuff",
+      "terila": "deepslate",
+      "count": 1294
+    },
+    {
+      "vanilla": "air",
+      "terila": "deepslate",
+      "count": 936
+    },
+    {
+      "vanilla": "diorite",
+      "terila": "stone",
+      "count": 720
+    },
+    {
+      "vanilla": "clay",
+      "terila": "stone",
+      "count": 602
+    },
+    {
+      "vanilla": "clay",
+      "terila": "deepslate",
+      "count": 535
+    },
+    {
+      "vanilla": "deepslate",
+      "terila": "stone",
+      "count": 324
+    },
+    {
+      "vanilla": "andesite",
+      "terila": "stone",
+      "count": 315
+    },
+    {
+      "vanilla": "gravel",
+      "terila": "stone",
+      "count": 290
+    },
+    {
+      "vanilla": "gravel",
+      "terila": "deepslate",
+      "count": 283
+    }
+  ],
+  "biomes": {
+    "compared": 1280,
+    "matched": 1136,
+    "percent": 88.75,
+    "pairs": [
+      {
+        "vanilla": "lush_caves",
+        "terila": "ocean",
+        "count": 144
+      }
+    ]
+  },
+  "surface": [
+    {
+      "delta": 0,
+      "columns": 256
+    }
+  ],
+  "measured_at": "2026-11-19",
+  "minecraft_version": "26.3",
+  "seed": 12345,
+  "chunk": [
+    0,
+    0
+  ]
+}

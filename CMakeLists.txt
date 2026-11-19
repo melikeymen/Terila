@@ -469,6 +469,8 @@ target_include_directories(chunk_tests PRIVATE
 )
 target_link_libraries(chunk_tests PRIVATE GTest::gtest_main nlohmann_json::nlohmann_json terila_asio)
 
+include(cmake/parity_dump.cmake)
+
 add_executable(trf_tests
     "tests/world/trf_tests.cpp"
     "tests/world/fuzz_smoke_test.cpp"

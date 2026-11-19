@@ -1,0 +1,46 @@
+# Regenerates status.md from the checked in measurement in tools/parity/parity.json and
+# commits it back, so the repository always answers "how close is the world to vanilla?".
+#
+# Re-measuring needs the vanilla server and its region files, so that stays a local step:
+#   python tools/status/update_status.py --measure <vanilla-dump> <terila-dump>
+# and the resulting tools/parity/parity.json is what this workflow renders.
+
+name: Update Status
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-status
+  cancel-in-progress: true
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Write status.md
+        run: python tools/status/update_status.py
+
+      - name: Commit the report when it changed
+        run: |
+          if git diff --quiet -- status.md; then
+            echo "status.md is up to date"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add status.md
+          git commit -m "docs(status): refresh the world generation parity report"
+          git push
