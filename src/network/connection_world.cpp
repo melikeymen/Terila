@@ -198,6 +198,7 @@ namespace terila::network {
         world_.set(target, air_state_);
         // Whatever stood on it may now be hanging, so it and the cell above get a tick.
         falling_.block_changed(target);
+        fluids_.block_changed(target);
         // Creative breaks leave nothing behind: a drop would only be collected into the
         // inventory the player is arranging by hand, landing on whatever stack sits first.
         if (gamemode_ == 0) {
@@ -218,6 +219,21 @@ namespace terila::network {
         const terila::world::BlockPos clicked_pos{ clicked.x, clicked.y, clicked.z };
         if (const int menu = menu_kind_for_state(state_at(clicked_pos)); menu != kMenuNone) {
             open_menu(menu, menu == kMenuCrafting ? "Crafting" : "Furnace");
+            return;
+        }
+
+        // A bucket is not a block item: it pours its fluid instead of placing a block.
+        if (fluid_items_.water_bucket != 0 && held_item_id_ == fluid_items_.water_bucket) {
+            place_from_bucket(clicked, face, sequence,
+                terila::world::FluidFlow::Kind::Water);
+            return;
+        }
+        if (fluid_items_.lava_bucket != 0 && held_item_id_ == fluid_items_.lava_bucket) {
+            place_from_bucket(clicked, face, sequence, terila::world::FluidFlow::Kind::Lava);
+            return;
+        }
+        if (fluid_items_.bucket != 0 && held_item_id_ == fluid_items_.bucket) {
+            pickup_with_bucket(clicked, sequence);
             return;
         }
 
@@ -264,12 +280,74 @@ namespace terila::network {
         }
 
         world_.set(target, placed);
-        // A placed sand is scheduled like any other block that might not stay up.
+        // A placed sand is scheduled like any other block that might not stay up, and the
+        // water around a placement checks whether it can flow into the new gap.
         falling_.block_changed(target);
+        fluids_.block_changed(target);
         persist_block_change(target);
         send_block_change(target, placed, sequence);
         LOG_DEBUG(Network, "{} placed block state {} at ({}, {}, {})",
             username_, placed, target.x, target.y, target.z);
+    }
+
+    void Connection::place_from_bucket(const terila::protocol::BlockPosValue& clicked,
+        std::int32_t face, std::int32_t sequence, terila::world::FluidFlow::Kind kind) {
+        if (!can_place_blocks() || face < 0 || face > 5) {
+            return;
+        }
+
+        static constexpr std::int32_t kFaceOffset[6][3] = {
+            { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }, { -1, 0, 0 }, { 1, 0, 0 }
+        };
+        const terila::world::BlockPos clicked_pos{ clicked.x, clicked.y, clicked.z };
+        const terila::world::BlockPos faced{ clicked.x + kFaceOffset[face][0],
+                                             clicked.y + kFaceOffset[face][1],
+                                             clicked.z + kFaceOffset[face][2] };
+        // A bucket fills the cell it was clicked on when that cell can take fluid (air,
+        // plants, snow layers) and the cell the face points at otherwise.
+        const auto target = fluids_.can_hold(clicked_pos) ? clicked_pos : faced;
+        if (!inside_world(target.y)) {
+            return;
+        }
+
+        if (!fluids_.place_source(target, kind)) {
+            // Pouring was refused, so the client's predicted fluid has to go away again.
+            send_block_change(target, state_at(target), sequence);
+            return;
+        }
+        set_held_bucket(fluid_items_.bucket);
+        send_block_change(target, state_at(target), sequence);
+        LOG_DEBUG(Network, "{} poured {} at ({}, {}, {})", username_,
+            kind == terila::world::FluidFlow::Kind::Water ? "water" : "lava",
+            target.x, target.y, target.z);
+    }
+
+    void Connection::pickup_with_bucket(const terila::protocol::BlockPosValue& clicked,
+        std::int32_t sequence) {
+        const terila::world::BlockPos target{ clicked.x, clicked.y, clicked.z };
+        if (!inside_world(target.y)) {
+            return;
+        }
+
+        terila::world::FluidFlow::Kind kind{};
+        if (!fluids_.remove_source(target, kind)) {
+            return;
+        }
+        set_held_bucket(kind == terila::world::FluidFlow::Kind::Water
+            ? fluid_items_.water_bucket : fluid_items_.lava_bucket);
+        send_block_change(target, state_at(target), sequence);
+        LOG_DEBUG(Network, "{} filled a bucket at ({}, {}, {})",
+            username_, target.x, target.y, target.z);
+    }
+
+    // Vanilla keeps the bucket in creative and hands back the other one otherwise.
+    void Connection::set_held_bucket(std::int32_t item_id) {
+        if (gamemode_ == 1 || item_id == 0) {
+            return;
+        }
+        const std::int32_t slot = 36 + carried_slot_;
+        set_inventory_slot(slot, item_id, 1);
+        send_inventory_slot(slot);
     }
 
     // Drops fall onto the surface under the block that produced them, not onto the height

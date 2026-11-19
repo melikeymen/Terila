@@ -16,6 +16,7 @@
 #include "entity/natural_spawner.hpp"
 #include "world/block_world.hpp"
 #include "world/falling_blocks.hpp"
+#include "world/fluid_flow.hpp"
 #include "world/world_clock.hpp"
 #include "world/world_generator.hpp"
 #include "version/mc_version.hpp"
@@ -27,8 +28,10 @@
 #include <fstream>
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
+#include <iostream>
 #include <random>
 #include <functional>
 #include <vector>
@@ -70,6 +73,46 @@ static fs::path find_input_dir() {
 }
 #endif
 
+// The EULA is an agreement, not a config value: a first run writes eula=false and the server
+// keeps its console open, so typing the agreement there rewrites the file instead of leaving
+// the operator with nothing but an exit code.
+static bool accept_eula_on_console(const fs::path& eula_path) {
+    std::fputs("eula.txt says eula=false. Type 'eula=true' and press Enter to accept the "
+        "Minecraft EULA (https://aka.ms/MinecraftEULA), or 'stop' to quit.\n> ", stdout);
+    std::fflush(stdout);
+
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        std::string answer = line;
+        answer.erase(answer.begin(), std::find_if(answer.begin(), answer.end(),
+            [](unsigned char c) { return !std::isspace(c); }));
+        answer.erase(std::find_if(answer.rbegin(), answer.rend(),
+            [](unsigned char c) { return !std::isspace(c); }).base(), answer.end());
+        for (char& c : answer) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+
+        if (answer == "stop" || answer == "quit" || answer == "exit") {
+            return false;
+        }
+        if (answer == "eula=true" || answer == "eula true" || answer == "eula=accept" ||
+            answer == "eula accept" || answer == "accept" || answer == "yes") {
+            if (!terila::config::write_eula_accepted(eula_path)) {
+                std::fputs("cannot write eula.txt, the agreement was not saved\n", stderr);
+                return false;
+            }
+            std::fputs("eula.txt now says eula=true\n", stdout);
+            return true;
+        }
+
+        std::fputs("Type 'eula=true' to accept the Minecraft EULA or 'stop' to quit.\n> ",
+            stdout);
+        std::fflush(stdout);
+    }
+    // A console that closed without an answer is not an agreement.
+    return false;
+}
+
 int main() {
 #ifdef TERILA_EMBEDDED_INPUT
     // The data travels in the binary, so there is no input/ directory to find; the executable's
@@ -84,8 +127,8 @@ int main() {
     }
 #endif
 
-    // A first run has neither file. Write them instead of failing, and read eula.txt back
-    // so an explicit eula=false still refuses to start.
+    // A first run has neither file. Write both instead of failing, and read eula.txt back:
+    // eula=false keeps the world closed until the console accepts the agreement.
     const fs::path properties_path = base / "server.properties";
     const fs::path eula_path = base / "eula.txt";
     bool properties_created = false;
@@ -100,7 +143,7 @@ int main() {
             base.string().c_str());
         return 7;
     }
-    const bool eula_ok = terila::config::eula_accepted(eula_path);
+    bool eula_ok = terila::config::eula_accepted(eula_path);
 
     terila::config::ServerConfig srv;
     terila::config::load(srv, properties_path.string());
@@ -122,13 +165,18 @@ int main() {
             properties_path.string());
     }
     if (eula_created) {
-        LOG_INFO(Config, "eula.txt was missing, wrote it with eula=true ({})",
+        LOG_INFO(Config, "eula.txt was missing, wrote it with eula=false ({})",
             eula_path.string());
     }
     if (!eula_ok) {
-        LOG_FATAL(Config, "eula.txt says eula=false — accepting the Minecraft EULA is required "
-            "to run the server; set eula=true and start again");
-        return 8;
+        // The server stays up and asks, so the first run ends with a world instead of a wall.
+        if (!accept_eula_on_console(eula_path)) {
+            LOG_INFO(Config, "stopped without accepting the Minecraft EULA");
+            terila::log::shutdown();
+            return 0;
+        }
+        eula_ok = true;
+        LOG_INFO(Config, "EULA accepted, starting the world");
     }
     LOG_DEBUG(Main, "config: bind={} port={} log_level={} log_exit_level={} online_mode={} network_encryption={} view_distance={} simulation_distance={} level_type={}",
         srv.bind_address, srv.port, srv.log_level, srv.log_exit_level, srv.online_mode,
@@ -457,6 +505,14 @@ int main() {
     const auto furnace_item = data.item_ids.find("minecraft:furnace");
     const std::int32_t furnace_item_id =
         furnace_item == data.item_ids.end() ? 0 : furnace_item->second;
+
+    // The bucket trio: pouring a fluid or scooping a source turns one into the other.
+    terila::network::FluidItems fluid_items;
+    for (const auto& entry : data.item_ids) {
+        if (entry.first == "minecraft:bucket") fluid_items.bucket = entry.second;
+        else if (entry.first == "minecraft:water_bucket") fluid_items.water_bucket = entry.second;
+        else if (entry.first == "minecraft:lava_bucket") fluid_items.lava_bucket = entry.second;
+    }
     LOG_DEBUG(Data, "blocks with a window: {}, furnace variants: {}", menu_blocks.size(),
         std::count_if(furnace_states.begin(), furnace_states.end(),
             [](std::int32_t state) { return state >= 0; }));
@@ -494,6 +550,83 @@ int main() {
             });
         LOG_DEBUG(Chunk, "block physics: {} falling states, {} states they fall through",
             falling_count, through_count);
+    }
+
+    // Fluid physics: water and lava each carry their own levels. The state ids come from the
+    // registry, so both fluids and their sixteen levels match whatever the data dump
+    // carries instead of a guessed offset.
+    terila::world::FluidFlow fluids;
+    {
+        const auto load_levels = [&data](std::string_view name,
+            terila::world::FluidFlow::Fluid& out) {
+            const auto block = data.block_states.find(std::string(name));
+            if (block == data.block_states.end()) {
+                return false;
+            }
+            for (const auto& variant : block->second) {
+                int value = 0;
+                const auto level = variant.properties.find("level");
+                if (level != variant.properties.end()) {
+                    try {
+                        value = std::stoi(level->second);
+                    }
+                    catch (...) {
+                        continue;
+                    }
+                }
+                if (value >= 0 && value < terila::world::FluidFlow::kLevels) {
+                    out.states[static_cast<std::size_t>(value)] = variant.id;
+                }
+            }
+            return out.states[0] >= 0;
+        };
+
+        terila::world::FluidFlow::Fluid water;
+        if (!load_levels("minecraft:water", water)) {
+            LOG_CRITICAL(Chunk, "minecraft:water is missing from the registry - water physics "
+                "stays off");
+        }
+        water.drop_off = 1;
+        water.slope_find = 4;
+        water.tick_delay = 5;
+        water.source_conversion = true;
+        fluids.set_fluid(terila::world::FluidFlow::Kind::Water, water);
+
+        terila::world::FluidFlow::Fluid lava;
+        if (!load_levels("minecraft:lava", lava)) {
+            LOG_CRITICAL(Chunk, "minecraft:lava is missing from the registry - lava physics "
+                "stays off");
+        }
+        // Overworld lava: two levels per block, three blocks of reach, thirty ticks a step.
+        lava.drop_off = 2;
+        lava.slope_find = 2;
+        lava.tick_delay = 30;
+        lava.source_conversion = false;
+        fluids.set_fluid(terila::world::FluidFlow::Kind::Lava, lava);
+
+        std::unordered_set<std::int32_t> replaceable;
+        for (const auto& [name, variants] : data.block_states) {
+            const auto tags = data.block_tags.find(name);
+            if (tags == data.block_tags.end() ||
+                tags->second.count("minecraft:washed_away_by_fluids") == 0) {
+                continue;
+            }
+            for (const auto& variant : variants) {
+                replaceable.insert(variant.id);
+            }
+        }
+        const auto replaceable_count = replaceable.size();
+        fluids.set_world(&world, resolve_block_id("minecraft:air").value_or(0),
+            data.overworld.min_y, data.overworld.min_y + data.overworld.height - 1);
+        fluids.set_replaceable(std::move(replaceable));
+        fluids.set_solids(resolve_block_id("minecraft:obsidian").value_or(-1),
+            resolve_block_id("minecraft:cobblestone").value_or(-1),
+            resolve_block_id("minecraft:stone").value_or(-1));
+        fluids.set_state_at([&world_terrain](const terila::world::BlockPos& pos) {
+            return world_terrain.state_at(pos.x, pos.y, pos.z);
+            });
+        LOG_DEBUG(Chunk, "fluid physics: water level 0 is state {}, lava level 0 is state {}, "
+            "{} states can hold fluid", water.states[0], lava.states[0], replaceable_count);
     }
 
     // TRF region files live beside the executable, one folder per generator so a flat world
@@ -545,6 +678,16 @@ int main() {
             terila::world::BlockWorld::chunk_key(pos.x >> 4, pos.z >> 4));
         });
 
+    fluids.set_change_sink([&](const terila::world::BlockPos& pos, std::int32_t state) {
+        for (const auto& player : players) {
+            if (const auto conn = player.lock()) {
+                conn->send_world_block(pos, state);
+            }
+        }
+        falling_dirty_chunks.insert(
+            terila::world::BlockWorld::chunk_key(pos.x >> 4, pos.z >> 4));
+        });
+
     // One registry for the whole server: connections register themselves when
     // they join, which is what lets players see each other and the status
     // response report a real online count.
@@ -559,7 +702,7 @@ int main() {
 
     auto do_accept = [&](auto&& self) -> void {
         acceptor.async_accept(
-            [&acceptor, &data, &mobs, &world, &falling, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, world_type, world_seed, &spawn, &srv, &players, &player_hub, &chunk_store, &next_player_entity_id, &world_terrain, clock, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
+            [&acceptor, &data, &mobs, &world, &falling, &fluids, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, fluid_items, world_type, world_seed, &spawn, &srv, &players, &player_hub, &chunk_store, &next_player_entity_id, &world_terrain, clock, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
                 if (error) {
                     LOG_ERROR(Network, "accept failed: {} ({})", error.message(), error.value());
                     self(self);
@@ -571,9 +714,9 @@ int main() {
                     LOG_DEBUG(Network, "new connection from {}:{}", remote_ep.address().to_string(), remote_ep.port());
                 }
                 auto conn = std::make_shared<terila::network::Connection>(std::move(socket), data, mobs,
-                    world, falling, item_block_state, player_hub, &chunk_store, &drops, block_state_item,
+                    world, falling, fluids, item_block_state, player_hub, &chunk_store, &drops, block_state_item,
                     item_entity_type, &recipes, menu_blocks, furnace_states, furnace_item_id,
-                    world_seed, world_type, spawn.x, spawn.z, srv.view_distance,
+                    fluid_items, world_seed, world_type, spawn.x, spawn.z, srv.view_distance,
                     srv.simulation_distance, static_cast<int>(srv.max_players),
                     next_player_entity_id++, srv.gamemode, clock,
                     world_terrain.sea_level());
@@ -624,12 +767,14 @@ int main() {
             drops.tick(player_positions);
 
             falling.tick();
+            fluids.tick();
             if (!falling_dirty_chunks.empty()) {
                 ++falling_dirty_ticks;
                 // Re-encoding a column re-lights it and generates its neighbours, so the
                 // save waits for the end of the cascade (or a second of continuous falling)
                 // and then writes every touched column once.
-                if (falling.pending() == 0 || falling_dirty_ticks >= 20) {
+                if ((falling.pending() == 0 && fluids.pending() == 0) ||
+                    falling_dirty_ticks >= 20) {
                     for (const auto& player : players) {
                         if (const auto conn = player.lock()) {
                             for (const auto chunk : falling_dirty_chunks) {

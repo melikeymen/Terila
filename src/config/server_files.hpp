@@ -44,10 +44,18 @@ namespace terila::config {
         "max-players=20\n"
         "gamemode=1\n";
 
-    // eula.txt is Minecraft's acceptance marker: true starts the server, false refuses.
+    // eula.txt is Minecraft's acceptance marker. A first run writes it as false and the
+    // server waits on its console instead of exiting, so the agreement is typed in there.
     inline constexpr const char* kDefaultEula =
         "# By setting eula=true you confirm you accept the Minecraft EULA\n"
-        "# (https://aka.ms/MinecraftEULA). eula=false makes the server refuse to start.\n"
+        "# (https://aka.ms/MinecraftEULA). Type 'eula=true' on the server console to\n"
+        "# accept it there, which rewrites this file; eula=false keeps the world closed.\n"
+        "eula=false\n";
+
+    // The same header, with the agreement in place.
+    inline constexpr const char* kAcceptedEula =
+        "# By setting eula=true you confirm you accept the Minecraft EULA\n"
+        "# (https://aka.ms/MinecraftEULA). eula=true starts the world.\n"
         "eula=true\n";
 
     // A first run has neither file, and failing with \"input not found\" because a config
@@ -74,7 +82,7 @@ namespace terila::config {
         return out.good();
     }
 
-    // Only an explicit eula=false refuses to start; the file we write says true.
+    // Only an explicit eula=false keeps the world closed.
     inline bool eula_accepted(const std::filesystem::path& path) {
         std::ifstream in(path);
         if (!in) {
@@ -108,6 +116,16 @@ namespace terila::config {
             return value != "false" && value != "0" && value != "no" && value != "off";
         }
         return true;
+    }
+
+    // Written after the operator agrees on the console, so the next start needs no input.
+    inline bool write_eula_accepted(const std::filesystem::path& path) {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            return false;
+        }
+        out << kAcceptedEula;
+        return out.good();
     }
 
 } // namespace terila::config

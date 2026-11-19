@@ -14,6 +14,7 @@
 #include "protocol/player_state.hpp"
 #include "world/block_world.hpp"
 #include "world/falling_blocks.hpp"
+#include "world/fluid_flow.hpp"
 #include "world/world_context.hpp"
 #include "world/chunk_jobs.hpp"
 #include "world/world_clock.hpp"
@@ -34,6 +35,13 @@
 
 namespace terila::network {
 
+    // The three bucket items, so pouring and scooping fluids never guesses from names.
+    struct FluidItems {
+        std::int32_t bucket = 0;
+        std::int32_t water_bucket = 0;
+        std::int32_t lava_bucket = 0;
+    };
+
     // One TCP peer. The class only declares the state machine: framing and the handshake,
     // status, login, configuration and play handlers live in their own translation units.
     class Connection : public std::enable_shared_from_this<Connection> {
@@ -41,6 +49,7 @@ namespace terila::network {
         explicit Connection(asio::ip::tcp::socket socket, const terila::data::RegistryData& data,
             terila::entity::MobManager& mobs, terila::world::BlockWorld& world,
             terila::world::FallingBlocks& falling,
+            terila::world::FluidFlow& fluids,
             const std::unordered_map<std::int32_t, std::int32_t>& item_block_state,
             std::shared_ptr<PlayerHub> hub,
             terila::world::trf::ChunkStore* store,
@@ -51,17 +60,19 @@ namespace terila::network {
             const std::unordered_map<std::int32_t, std::int32_t>& menu_blocks,
             const std::array<std::int32_t, 8>& furnace_states,
             std::int32_t furnace_item_id,
+            FluidItems fluid_items,
             std::uint32_t world_seed, terila::world::WorldType world_type,
             std::int32_t spawn_x, std::int32_t spawn_z,
             int view_distance, int simulation_distance, int max_players,
             std::int32_t entity_id, int gamemode,
             std::shared_ptr<terila::world::WorldClock> clock, int sea_level)
             : socket_(std::move(socket)), keep_alive_timer_(socket_.get_executor()), data_(data),
-              mobs_(mobs), world_(world), falling_(falling), item_block_state_(item_block_state),
+              mobs_(mobs), world_(world), falling_(falling), fluids_(fluids), item_block_state_(item_block_state),
               hub_(std::move(hub)), store_(store), drops_(drops),
               block_state_item_(block_state_item), item_entity_type_(item_entity_type),
               recipes_(recipes), menu_blocks_(menu_blocks), furnace_states_(furnace_states),
-              furnace_item_id_(furnace_item_id), world_seed_(world_seed),
+              furnace_item_id_(furnace_item_id), fluid_items_(fluid_items),
+              world_seed_(world_seed),
               world_type_(world_type),               spawn_x_(spawn_x), spawn_z_(spawn_z),
               terrain_(terila::world::WorldContext::shared().generator()),
               view_distance_(view_distance), simulation_distance_(simulation_distance),
@@ -250,6 +261,14 @@ namespace terila::network {
             std::int32_t face, std::int32_t sequence);
         void refresh_held_item();
 
+        // --- fluids (connection_world.cpp) -----------------------------------------
+        // A bucket pours its source into the clicked cell and turns into the empty bucket.
+        void place_from_bucket(const terila::protocol::BlockPosValue& clicked, std::int32_t face,
+            std::int32_t sequence, terila::world::FluidFlow::Kind kind);
+        void pickup_with_bucket(const terila::protocol::BlockPosValue& clicked,
+            std::int32_t sequence);
+        void set_held_bucket(std::int32_t item_id);
+
         // --- survival breaking (connection_world.cpp) -------------------------------
         // Survival waits out the block's hardness; creative still removes it at once.
         int break_ticks_for(std::int32_t state) const;
@@ -386,6 +405,7 @@ namespace terila::network {
         terila::entity::MobManager& mobs_;
         terila::world::BlockWorld& world_;
         terila::world::FallingBlocks& falling_;
+        terila::world::FluidFlow& fluids_;
         const std::unordered_map<std::int32_t, std::int32_t>& item_block_state_;
         std::shared_ptr<PlayerHub> hub_;
         terila::world::trf::ChunkStore* store_ = nullptr;
@@ -422,6 +442,7 @@ namespace terila::network {
         // Furnace variants indexed [facing * 2 + lit]: 0 north, 1 south, 2 west, 3 east.
         const std::array<std::int32_t, 8>& furnace_states_;
         std::int32_t furnace_item_id_ = 0;
+        FluidItems fluid_items_;
         std::uint32_t world_seed_ = 0;
         terila::world::WorldType world_type_ = terila::world::WorldType::Terrain;
         terila::item::ComponentIds component_ids_{};
