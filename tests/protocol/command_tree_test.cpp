@@ -38,9 +38,9 @@ TEST(CommandTreeTest, EncodesCountRootIndexAndGreedyArguments) {
 
 TEST(CommandTreeTest, BuiltinTreeStartsWithARootNode) {
     const auto nodes = protocol::builtin_command_tree(14, 3, 6, 20);
-    ASSERT_EQ(nodes.size(), 14u);
+    ASSERT_EQ(nodes.size(), 28u);
     EXPECT_EQ(nodes[0].kind, protocol::CommandNode::Root);
-    EXPECT_EQ(nodes[0].children, (std::vector<std::int32_t>{ 1, 7 }));
+    EXPECT_EQ(nodes[0].children, (std::vector<std::int32_t>{ 1, 7, 14 }));
     EXPECT_EQ(nodes[1].name, "give");
     EXPECT_EQ(nodes[1].children, (std::vector<std::int32_t>{ 2, 4 }));
     EXPECT_EQ(nodes[2].name, "item");
@@ -51,10 +51,39 @@ TEST(CommandTreeTest, BuiltinTreeStartsWithARootNode) {
 
     const auto bytes = protocol::write_command_tree(nodes, 0);
     ASSERT_GT(bytes.size(), 5u);
-    EXPECT_EQ(bytes[0], 14);     // fourteen nodes
+    EXPECT_EQ(bytes[0], 28);     // twenty eight nodes
     EXPECT_EQ(bytes[1], 0x00);   // root flags
-    EXPECT_EQ(bytes[2], 2);      // give and execute
+    EXPECT_EQ(bytes[2], 3);      // give, execute and time
     EXPECT_EQ(bytes[3], 1);
+}
+
+TEST(CommandTreeTest, TimeIsInTheTreeWithItsKeywords) {
+    const auto nodes = protocol::builtin_command_tree(14, 3, 6, 20);
+
+    // /time offers set, add and query right away, so the client lists it after "/".
+    EXPECT_EQ(nodes[14].kind, protocol::CommandNode::Literal);
+    EXPECT_EQ(nodes[14].name, "time");
+    EXPECT_EQ(nodes[14].children, (std::vector<std::int32_t>{ 15, 23, 25 }));
+
+    EXPECT_EQ(nodes[15].name, "set");
+    ASSERT_EQ(nodes[15].children.size(), 7u);
+    EXPECT_EQ(nodes[16].name, "day");
+    EXPECT_TRUE(nodes[16].executable);
+    EXPECT_EQ(nodes[19].name, "night");
+    EXPECT_TRUE(nodes[19].executable);
+    EXPECT_EQ(nodes[22].name, "ticks");
+    EXPECT_EQ(nodes[22].parser, 3);   // brigadier:integer
+    EXPECT_TRUE(nodes[22].executable);
+
+    EXPECT_EQ(nodes[23].name, "add");
+    EXPECT_EQ(nodes[24].name, "ticks");
+    EXPECT_TRUE(nodes[24].executable);
+
+    EXPECT_EQ(nodes[25].name, "query");
+    EXPECT_EQ(nodes[26].name, "daytime");
+    EXPECT_EQ(nodes[27].name, "gametime");
+    EXPECT_TRUE(nodes[26].executable);
+    EXPECT_TRUE(nodes[27].executable);
 }
 
 TEST(CommandTreeTest, ExecuteOffersRunAndAsBranches) {

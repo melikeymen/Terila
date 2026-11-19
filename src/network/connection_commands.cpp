@@ -1,132 +1,16 @@
 #include "network/connection.hpp"
 
-#include "network/command_parse.hpp"
-
-#include "item/item_parser.hpp"
+#include "commands/dispatch.hpp"
+#include "commands/text.hpp"
 #include "protocol/chat.hpp"
+#include "protocol/player_state.hpp"
 
-#include <algorithm>
-#include <cctype>
-#include <format>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace terila::network {
-
-    namespace {
-
-        std::string lower(std::string value) {
-            for (char& c : value) {
-                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            }
-            return value;
-        }
-
-        bool parse_int(const std::string& text, std::int32_t& out) {
-            try {
-                std::size_t used = 0;
-                const auto parsed = std::stoll(text, &used);
-                if (used != text.size()) {
-                    return false;
-                }
-                out = static_cast<std::int32_t>(parsed);
-                return true;
-            }
-            catch (...) {
-                return false;
-            }
-        }
-
-        std::string_view trim(std::string_view text) {
-            while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front())) != 0) {
-                text.remove_prefix(1);
-            }
-            while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back())) != 0) {
-                text.remove_suffix(1);
-            }
-            return text;
-        }
-
-        // The item argument can hold a quoted name (minecraft:custom_name='"Big Sword"'),
-        // so it is read from the raw text instead of a whitespace split: spaces inside
-        // quotes or brackets belong to the argument.
-        std::string_view read_item_token(std::string_view text, std::string_view& rest) {
-            // The caller usually hands over the rest of the line, which starts with the
-            // separator that ended the previous argument.
-            std::size_t lead = 0;
-            while (lead < text.size() &&
-                std::isspace(static_cast<unsigned char>(text[lead])) != 0) {
-                ++lead;
-            }
-            text.remove_prefix(lead);
-
-            int depth = 0;
-            char quote = 0;
-            std::size_t i = 0;
-            for (; i < text.size(); ++i) {
-                const char c = text[i];
-                if (quote != 0) {
-                    if (c == '\\') {
-                        ++i;
-                    }
-                    else if (c == quote) {
-                        quote = 0;
-                    }
-                    continue;
-                }
-                if (c == '"' || c == '\'') {
-                    quote = c;
-                }
-                else if (c == '[' || c == '{') {
-                    ++depth;
-                }
-                else if (c == ']' || c == '}') {
-                    --depth;
-                }
-                else if (depth == 0 && std::isspace(static_cast<unsigned char>(c)) != 0) {
-                    break;
-                }
-            }
-            rest = text.substr(i);
-            return text.substr(0, i);
-        }
-
-        // A short recap of what the patch carries, for the confirmation message.
-        std::string describe(const terila::item::Components& components) {
-            std::vector<std::string> parts;
-            for (const auto& enchantment : components.enchantments) {
-                parts.push_back(std::format("{} {}", enchantment.id, enchantment.level));
-            }
-            if (!components.custom_name_nbt.empty() || !components.custom_name.empty()) {
-                parts.push_back("custom_name");
-            }
-            if (!components.item_name_nbt.empty() || !components.item_name.empty()) {
-                parts.push_back("item_name");
-            }
-            if (components.damage.has_value()) {
-                parts.push_back(std::format("damage {}", *components.damage));
-            }
-            if (components.max_stack_size.has_value()) {
-                parts.push_back(std::format("max_stack_size {}", *components.max_stack_size));
-            }
-            if (components.unbreakable) {
-                parts.push_back("unbreakable");
-            }
-            if (!components.removed.empty()) {
-                parts.push_back(std::format("{} removed", components.removed.size()));
-            }
-            std::string text;
-            for (const auto& part : parts) {
-                if (!text.empty()) {
-                    text += ", ";
-                }
-                text += part;
-            }
-            return text;
-        }
-
-    } // namespace
 
     void Connection::send_system_message(std::string_view text) {
         std::vector<std::uint8_t> out;
@@ -135,41 +19,78 @@ namespace terila::network {
         }
     }
 
-    std::int32_t Connection::resolve_item(std::string_view name) const {
-        const std::string id = terila::item::namespaced(lower(std::string(name)));
-        const auto it = data_.item_ids.find(id);
-        return it == data_.item_ids.end() ? 0 : it->second;
-    }
-
     bool Connection::give_item(std::int32_t item_id, std::int32_t count,
         const terila::item::ComponentsPtr& components) {
         return add_to_inventory(item_id, count, components);
     }
 
-    // A selector picks who receives the item; an empty one means "me". The hub knows the
-    // other players and each connection knows how to fill its own inventory, so the two
-    // meet on the giver callback the hub keeps for every member.
-    std::size_t Connection::give_to_targets(std::string_view selector, std::int32_t item_id,
-        std::int32_t count, const terila::item::ComponentsPtr& components) {
-        if (selector.empty() || selector == "@s") {
-            return give_item(item_id, count, components) ? 1 : 0;
+    // Every command reaches the game through this context: the selector module gets the
+    // player list, /give the inventory, /time the clock and /execute the nesting runner.
+    commands::Context Connection::command_context() {
+        commands::Context context;
+        context.self = commands::Target{ entity_id_, username_, player_x_, player_y_, player_z_ };
+
+        context.players = [this]() -> std::vector<commands::Target> {
+            std::vector<commands::Target> out;
+            if (hub_ != nullptr) {
+                for (const auto& member : hub_->member_info()) {
+                    out.push_back(commands::Target{ member.entity, member.name, member.x,
+                        member.y, member.z });
+                }
+            }
+            if (out.empty()) {
+                out.push_back(commands::Target{ entity_id_, username_, player_x_, player_y_,
+                    player_z_ });
+            }
+            return out;
+            };
+
+        context.reply = [this](std::string_view text) { send_system_message(text); };
+
+        context.give = [this](std::int32_t entity, std::int32_t item_id, std::int32_t count,
+            const terila::item::ComponentsPtr& components) {
+            if (entity == entity_id_ || hub_ == nullptr) {
+                return give_item(item_id, count, components);
+            }
+            return hub_->give_to(entity, item_id, count, components);
+            };
+
+        context.run = [this](std::string_view line) { run_command(line); };
+
+        context.run_as = [this](std::int32_t entity, std::string_view line) {
+            if (entity == entity_id_) {
+                run_command(line);
+                return true;
+            }
+            return hub_ != nullptr && hub_->run_as(entity, std::string(line));
+            };
+
+        context.item_ids = &data_.item_ids;
+        context.component_ids = &component_ids_;
+
+        if (clock_ != nullptr) {
+            time_api_.game_time = [this] { return clock_->game_time; };
+            time_api_.time_of_day = [this] { return clock_->time_of_day; };
+            time_api_.night = [this] { return clock_->night(); };
+            time_api_.set = [this](std::int64_t ticks) { clock_->set_time_of_day(ticks); };
+            time_api_.add = [this](std::int64_t ticks) { clock_->tick(ticks); };
+            // Everyone's sky moves at once, so the new time is broadcast instead of waiting
+            // for the next one-second sync.
+            time_api_.sync = [this] {
+                std::vector<std::uint8_t> out;
+                if (terila::protocol::write_set_time(out, clock_->game_time,
+                        clock_->time_of_day)) {
+                    if (hub_ != nullptr) {
+                        hub_->broadcast(out);
+                    }
+                    else {
+                        send(out);
+                    }
+                }
+                };
+            context.time = &time_api_;
         }
-        if (hub_ == nullptr) {
-            return give_item(item_id, count, components) ? 1 : 0;
-        }
-        if (selector == "@a" || selector == "@e") {
-            return hub_->give_to_all(item_id, count, components);
-        }
-        if (selector == "@p") {
-            const auto nearest = hub_->nearest_to(player_x_, player_z_);
-            return hub_->give_to(nearest, item_id, count, components) ? 1 : 0;
-        }
-        if (selector == "@r") {
-            const auto picked = hub_->random_member();
-            return hub_->give_to(picked, item_id, count, components) ? 1 : 0;
-        }
-        LOG_DEBUG(Network, "unknown selector '{}' in /give", selector);
-        return 0;
+        return context;
     }
 
     // A command that runs another command shares one guard, so
@@ -180,272 +101,15 @@ namespace terila::network {
             return;
         }
         ++command_depth_;
-        handle_command(std::string(trim(command)));
+        handle_command(std::string(commands::trim(command)));
         --command_depth_;
     }
 
-    // Who `execute as` means. The selectors are the ones /give understands, plus a plain
-    // player name; @e is every player because the server has no other entities to run as.
-    std::vector<std::int32_t> Connection::execute_targets(std::string_view selector) const {
-        const auto none = std::vector<std::int32_t>{};
-        if (selector.empty() || selector == "@s") {
-            return { entity_id_ };
-        }
-        if (hub_ == nullptr) {
-            return none;
-        }
-        if (selector == "@a" || selector == "@e") {
-            return hub_->members();
-        }
-        if (selector == "@p") {
-            const auto nearest = hub_->nearest_to(player_x_, player_z_);
-            return nearest < 0 ? none : std::vector<std::int32_t>{ nearest };
-        }
-        if (selector == "@r") {
-            const auto picked = hub_->random_member();
-            return picked < 0 ? none : std::vector<std::int32_t>{ picked };
-        }
-        if (selector.front() == '@') {
-            return none;
-        }
-        const auto by_name = hub_->find_by_name(selector);
-        return by_name < 0 ? none : std::vector<std::int32_t>{ by_name };
-    }
-
-    void Connection::execute_as(std::int32_t target, std::string_view command) {
-        if (target == entity_id_) {
-            run_command(command);
-            return;
-        }
-        if (hub_ == nullptr || !hub_->run_as(target, std::string(trim(command)))) {
-            send_system_message("No player to run that command as");
-        }
-    }
-
-    // /execute [as <targets>] run <command>
-    //
-    // The rest of the game's grammar (at, positioned, if, store) is not implemented: every
-    // command this server runs acts on the player, not on a position, so the only context
-    // that changes anything is whose player it is.
-    void Connection::run_execute(std::string_view arguments) {
-        static constexpr const char* kUsage = "Usage: /execute [as <targets>] run <command>";
-
-        const auto parsed = commands::parse_execute(arguments);
-        if (!parsed) {
-            send_system_message(kUsage);
-            return;
-        }
-
-        if (parsed->selector.empty()) {
-            run_command(parsed->command);
-            return;
-        }
-
-        const auto targets = execute_targets(parsed->selector);
-        if (targets.empty()) {
-            send_system_message("No player matched '" + parsed->selector + "'");
-            return;
-        }
-        for (const auto target : targets) {
-            execute_as(target, parsed->command);
-        }
-    }
-
-    namespace {
-
-        bool parse_i64(std::string_view text, std::int64_t& out) {
-            if (text.empty()) {
-                return false;
-            }
-            try {
-                std::size_t used = 0;
-                const auto parsed = std::stoll(std::string(text), &used);
-                if (used != text.size()) {
-                    return false;
-                }
-                out = parsed;
-                return true;
-            }
-            catch (...) {
-                return false;
-            }
-        }
-
-    } // namespace
-
-    // /time set day|noon|sunset|night|midnight|sunrise|<ticks>
-    // /time add <ticks>
-    // /time query daytime|gametime
-    void Connection::run_time(std::string_view arguments) {
-        if (clock_ == nullptr) {
-            send_system_message("This world has no clock");
-            return;
-        }
-
-        const auto split = arguments.find(' ');
-        const std::string action = lower(std::string(trim(arguments.substr(0, split))));
-        const std::string value = split == std::string_view::npos
-            ? std::string{}
-            : lower(std::string(trim(arguments.substr(split))));
-
-        if (action == "set" || action == "add") {
-            std::int64_t ticks = 0;
-            if (value == "day") ticks = 1000;
-            else if (value == "noon") ticks = 6000;
-            else if (value == "sunset") ticks = 12000;
-            else if (value == "night") ticks = 13000;
-            else if (value == "midnight") ticks = 18000;
-            else if (value == "sunrise") ticks = 23000;
-            else if (!parse_i64(value, ticks)) {
-                send_system_message("Usage: /time set <day|noon|sunset|night|midnight|sunrise|<ticks>>, "
-                    "/time add <ticks>, /time query <daytime|gametime>");
-                return;
-            }
-
-            if (action == "set") {
-                clock_->set_time_of_day(ticks);
-            }
-            else {
-                clock_->tick(ticks);
-            }
-
-            // Everyone's sky moves at once, so the change is broadcast rather than waiting
-            // for the next one-second sync.
-            std::vector<std::uint8_t> out;
-            if (terila::protocol::write_set_time(out, clock_->game_time, clock_->time_of_day)) {
-                if (hub_ != nullptr) {
-                    hub_->broadcast(out);
-                }
-                else {
-                    send(out);
-                }
-            }
-
-            send_system_message(std::format("Set the time to {} ({})", clock_->time_of_day,
-                clock_->night() ? "night" : "day"));
-            LOG_INFO(Network, "{} set the time to {} ({})", username_, clock_->time_of_day,
-                clock_->night() ? "night" : "day");
-            return;
-        }
-
-        if (action == "query") {
-            if (value == "gametime" || value.empty()) {
-                send_system_message(std::format("The world has run {} ticks", clock_->game_time));
-            }
-            else {
-                send_system_message(std::format("The time is {} ({})", clock_->time_of_day,
-                    clock_->night() ? "night" : "day"));
-            }
-            return;
-        }
-
-        send_system_message("Usage: /time set <day|noon|sunset|night|midnight|sunrise|<ticks>>, "
-            "/time add <ticks>, /time query <daytime|gametime>");
-    }
-
-    // Commands:
-    //   /give <item>[<component>=<value>,...] [count]
-    //   /give <targets> <item>[<component>=<value>,...] [count]
-    //   /execute [as <targets>] run <command>
     void Connection::handle_command(const std::string& command) {
-        std::string_view rest = trim(command);
-        if (rest.empty()) {
+        const auto context = command_context();
+        if (commands::dispatch(context, command)) {
             return;
         }
-
-        const auto name_end = rest.find_first_of(" \t");
-        const std::string name = lower(std::string(rest.substr(0, name_end)));
-        const std::string_view arguments = name_end == std::string_view::npos
-            ? std::string_view{}
-            : trim(rest.substr(name_end));
-
-        if (name == "give") {
-            if (arguments.empty()) {
-                send_system_message(
-                    "Usage: /give [@a|@s|@p|@r] <item>[<component>=<value>,...] [count]");
-                return;
-            }
-
-            std::string_view after_item;
-            std::string_view item_token = read_item_token(arguments, after_item);
-
-            // A target selector only makes sense in front of the item, so it is the first
-            // token or it is not there at all.
-            std::string selector;
-            if (!item_token.empty() && item_token.front() == '@') {
-                selector = lower(std::string(item_token));
-                std::string_view tail;
-                item_token = read_item_token(after_item, tail);
-                after_item = tail;
-                if (item_token.empty()) {
-                    send_system_message("Usage: /give " + selector +
-                        " <item>[<component>=<value>,...] [count]");
-                    return;
-                }
-            }
-            const std::string_view count_text = trim(after_item);
-
-            std::string error;
-            auto parsed = terila::item::parse_item(item_token, component_ids_, error);
-            if (!parsed) {
-                send_system_message(error.empty() ? std::string("Cannot read that item") : error);
-                return;
-            }
-
-            const std::int32_t item_id = resolve_item(parsed->id);
-            if (item_id == 0) {
-                send_system_message("Unknown item: " + parsed->id);
-                return;
-            }
-
-            std::int32_t count = 1;
-            if (!count_text.empty()) {
-                std::int32_t requested = 0;
-                if (!parse_int(std::string(count_text), requested)) {
-                    send_system_message("Count must be a number");
-                    return;
-                }
-                count = std::clamp(requested, 1, kMaxStackSize);
-            }
-
-            terila::item::ComponentsPtr components;
-            if (!parsed->components.empty()) {
-                components = std::make_shared<terila::item::Components>(
-                    std::move(parsed->components));
-            }
-
-            const auto delivered = give_to_targets(selector, item_id, count, components);
-            if (delivered == 0) {
-                send_system_message(selector.empty()
-                    ? std::string("Your inventory is full")
-                    : "No player could take " + parsed->id);
-                return;
-            }
-
-            std::string message = selector.empty()
-                ? std::format("Gave {} x{}", parsed->id, count)
-                : std::format("Gave {} x{} to {} player{}", parsed->id, count, delivered,
-                    delivered == 1 ? "" : "s");
-            if (components != nullptr) {
-                const auto detail = describe(*components);
-                if (!detail.empty()) {
-                    message += " with " + detail;
-                }
-            }
-            send_system_message(message);
-            return;
-        }
-
-        if (name == "execute") {
-            run_execute(arguments);
-            return;
-        }
-
-        if (name == "time") {
-            run_time(arguments);
-            return;
-        }
-
         send_system_message(
             "Commands: /give [@a|@s|@p|@r] <item>[<component>=<value>,...] [count], "
             "/execute [as <targets>] run <command>, /time set|add|query <value>");

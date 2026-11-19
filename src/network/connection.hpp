@@ -15,6 +15,7 @@
 #include "world/block_world.hpp"
 #include "world/falling_blocks.hpp"
 #include "world/fluid_flow.hpp"
+#include "commands/command_context.hpp"
 #include "world/world_context.hpp"
 #include "world/chunk_jobs.hpp"
 #include "world/world_clock.hpp"
@@ -331,23 +332,16 @@ namespace terila::network {
 
         // --- connection_commands.cpp -----------------------------------------------
         void handle_command(const std::string& command);
-        // /time set|add|query, the day cycle vanilla runs at 24000 ticks.
-        void run_time(std::string_view arguments);
+        // The command module asks the connection for players, inventory and clock through
+        // this context, so no command touches the network itself.
+        commands::Context command_context();
+        commands::TimeApi time_api_;
         // Runs a command in this player's context. /execute nests through here, so the
         // depth guard lives with it.
         void run_command(std::string_view command);
-        void run_execute(std::string_view arguments);
-        // Who /execute as means: @s, @p, @a, @e, @r or a player name.
-        std::vector<std::int32_t> execute_targets(std::string_view selector) const;
-        void execute_as(std::int32_t target, std::string_view command);
         void send_system_message(std::string_view text);
-        std::int32_t resolve_item(std::string_view name) const;
         bool give_item(std::int32_t item_id, std::int32_t count,
             const terila::item::ComponentsPtr& components);
-        // /give target selector: "" or "@s" is this player, "@a"/"@e" every player,
-        // "@p" the closest, "@r" one at random. Returns how many were served.
-        std::size_t give_to_targets(std::string_view selector, std::int32_t item_id,
-            std::int32_t count, const terila::item::ComponentsPtr& components);
 
         // --- connection_entities.cpp -----------------------------------------------
         // Spawns and removes mobs as they enter or leave the view distance and sends

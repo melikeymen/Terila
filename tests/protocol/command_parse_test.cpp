@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
 
-#include "network/command_parse.hpp"
+#include "commands/command_parse.hpp"
 
-using terila::network::commands::parse_execute;
+using terila::commands::parse_execute;
 
 TEST(CommandParseTest, RunsACommandAsTheCaller) {
     const auto parsed = parse_execute("run give minecraft:stone 3");

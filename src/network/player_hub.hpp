@@ -168,6 +168,27 @@ namespace terila::network {
         // connection and rebuild the stored list.
         std::vector<std::int32_t> members() const { return member_list(); }
 
+        // A player as a selector sees it: the id, the name and where distance= and sort=
+        // are measured from.
+        struct MemberInfo {
+            std::int32_t entity = 0;
+            std::string name;
+            double x = 0.0;
+            double y = 0.0;
+            double z = 0.0;
+        };
+
+        std::vector<MemberInfo> member_info() const
+        {
+            std::vector<MemberInfo> out;
+            out.reserve(players_.size());
+            for (const auto& [id, member] : players_) {
+                out.push_back(MemberInfo{ id, member.name, member.position.x,
+                    member.position.y, member.position.z });
+            }
+            return out;
+        }
+
         // A player named in a command, matched without regard to case. -1 when nobody is
         // called that.
         std::int32_t find_by_name(std::string_view name) const
