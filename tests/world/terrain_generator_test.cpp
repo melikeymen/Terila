@@ -2,11 +2,13 @@
 
 #include "world/block_cache.hpp"
 #include "world/chunk_jobs.hpp"
+#include "data/input_store.hpp"
 #include "world/light_engine.hpp"
 #include "world/world_context.hpp"
 
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <future>
 #include <iostream>
 #include <utility>
@@ -20,9 +22,13 @@
 
 #include <cstdlib>
 #include <optional>
+#include <string>
 #include <string_view>
 
 using namespace terila::world;
+
+// Skips a test whose worldgen settings are not on disk.
+#define REQUIRE_VANILLA_DATA()                                              if (!vanilla_data_available()) {                                            GTEST_SKIP() << "input/ with the worldgen settings is missing";     }
 
 namespace {
 
@@ -86,6 +92,29 @@ namespace {
         return std::nullopt;
     }
 
+    // The world generator reads the vanilla worldgen settings from input/, an extracted
+    // data directory the repository does not carry, so a checkout without it (CI) skips the
+    // tests that need it instead of building a generator that cannot generate.
+    bool vanilla_data_available() {
+        static const bool available = [] {
+            std::error_code ec;
+            for (const char* prefix : { "input/", "", "../input/", "../../input/",
+                     "../../../input/" }) {
+                const std::filesystem::path root(prefix);
+                if (std::filesystem::is_regular_file(root / "worldgen" / "noise_settings.json",
+                        ec) && !ec) {
+                    // The generator reads through the input store as well, so pointing it at
+                    // the directory makes the build tree independent of the working one.
+                    terila::data::input::mount(root.string());
+                    return true;
+                }
+                ec.clear();
+            }
+            return false;
+            }();
+        return available;
+    }
+
     terrain::Generator make_generator(std::uint32_t seed = 1337) {
         terrain::Generator generator;
         EXPECT_TRUE(generator.init(-64, 24, seed, mock_block, mock_biome));
@@ -105,6 +134,7 @@ namespace {
 } // namespace
 
 TEST(TerrainGeneratorTest, FailsWhenABlockIsUnknown) {
+    REQUIRE_VANILLA_DATA();
     terrain::Generator generator;
     const auto missing = [](std::string_view name) -> std::optional<std::int32_t> {
         if (name == "minecraft:cactus") return std::nullopt;
@@ -114,6 +144,7 @@ TEST(TerrainGeneratorTest, FailsWhenABlockIsUnknown) {
 }
 
 TEST(TerrainGeneratorTest, FailsWhenABiomeIsUnknown) {
+    REQUIRE_VANILLA_DATA();
     terrain::Generator generator;
     const auto missing = [](std::string_view name) -> std::optional<std::int32_t> {
         if (name == "minecraft:taiga") return std::nullopt;
@@ -123,18 +154,21 @@ TEST(TerrainGeneratorTest, FailsWhenABiomeIsUnknown) {
 }
 
 TEST(TerrainGeneratorTest, SameSeedGeneratesTheSameChunk) {
+    REQUIRE_VANILLA_DATA();
     const auto first = make_generator(1337);
     const auto second = make_generator(1337);
     EXPECT_EQ(encode::encode(first.generate(3, -2)), encode::encode(second.generate(3, -2)));
 }
 
 TEST(TerrainGeneratorTest, DifferentSeedsGenerateDifferentTerrain) {
+    REQUIRE_VANILLA_DATA();
     const auto first = make_generator(1337);
     const auto second = make_generator(7331);
     EXPECT_NE(encode::encode(first.generate(0, 0)), encode::encode(second.generate(0, 0)));
 }
 
 TEST(TerrainGeneratorTest, ColumnHasBedrockUnderSurfaceAndAirAbove) {
+    REQUIRE_VANILLA_DATA();
     const auto generator = make_generator();
     const auto chunk = generator.generate(0, 0);
     EXPECT_EQ(section_block(chunk, 8, generator.min_y(), 8), 7);   // bedrock
@@ -146,6 +180,7 @@ TEST(TerrainGeneratorTest, ColumnHasBedrockUnderSurfaceAndAirAbove) {
 }
 
 TEST(TerrainGeneratorTest, UnderwaterColumnsHoldWaterAtSeaLevel) {
+    REQUIRE_VANILLA_DATA();
     const auto generator = make_generator();
     const auto chunk = generator.generate(0, 0);
 
@@ -162,6 +197,7 @@ TEST(TerrainGeneratorTest, UnderwaterColumnsHoldWaterAtSeaLevel) {
 }
 
 TEST(TerrainGeneratorTest, StateAtMatchesTheGeneratedChunk) {
+    REQUIRE_VANILLA_DATA();
     const auto generator = make_generator();
     for (const auto& position : { std::pair{ 0, 0 }, std::pair{ 4, -3 } }) {
         const auto chunk = generator.generate(position.first, position.second);
@@ -195,6 +231,7 @@ TEST(TerrainGeneratorTest, StateAtMatchesTheGeneratedChunk) {
 }
 
 TEST(TerrainGeneratorTest, ChunkSurvivesAnEncodeDecodeRoundTrip) {
+    REQUIRE_VANILLA_DATA();
     const auto generator = make_generator();
     const auto chunk = generator.generate(2, 5);
     const auto wire = encode::encode(chunk);
@@ -241,6 +278,7 @@ TEST(WorldGeneratorTest, LevelTypeNamesParse) {
 }
 
 TEST(WorldGeneratorTest, SpawnPointIsDryLandNearSeaLevel) {
+    REQUIRE_VANILLA_DATA();
     terila::world::WorldGenerator generator;
     ASSERT_TRUE(generator.init(terila::world::WorldType::Terrain, -64, 24, 1337,
         mock_block, mock_biome));
@@ -313,6 +351,7 @@ namespace {
 } // namespace
 
 TEST(TerrainGeneratorTest, GeneratesVegetationSomewhere) {
+    REQUIRE_VANILLA_DATA();
     const auto generator = make_generator();
     const LandColumn land = find_column(generator, true);
     ASSERT_NE(land.biome, -1) << "no grassy column within 4096 blocks";
@@ -336,6 +375,7 @@ TEST(TerrainGeneratorTest, GeneratesVegetationSomewhere) {
 }
 
 TEST(TerrainGeneratorTest, CarvesCavesUnderTheSurface) {
+    REQUIRE_VANILLA_DATA();
     const auto generator = make_generator();
     const LandColumn land = find_column(generator, false);
     ASSERT_NE(land.biome, -1) << "no land within 4096 blocks";
@@ -357,6 +397,7 @@ TEST(TerrainGeneratorTest, CarvesCavesUnderTheSurface) {
 }
 
 TEST(TerrainGeneratorTest, PlacesOreVeinsInTheDeep) {
+    REQUIRE_VANILLA_DATA();
     const auto generator = make_generator();
     const LandColumn land = find_column(generator, false);
     ASSERT_NE(land.biome, -1) << "no land within 4096 blocks";
@@ -374,6 +415,7 @@ TEST(TerrainGeneratorTest, PlacesOreVeinsInTheDeep) {
 }
 
 TEST(TerrainGeneratorTest, CoversManyBiomesAcrossTheMap) {
+    REQUIRE_VANILLA_DATA();
     const auto generator = make_generator();
     std::array<bool, 32> seen{};
     int distinct = 0;
@@ -390,6 +432,7 @@ TEST(TerrainGeneratorTest, CoversManyBiomesAcrossTheMap) {
 }
 
 TEST(TerrainGeneratorTest, TerrainHasBothWaterAndHighGround) {
+    REQUIRE_VANILLA_DATA();
     const auto generator = make_generator();
     int lowest = 1000;
     int highest = -1000;
@@ -408,6 +451,7 @@ TEST(TerrainGeneratorTest, TerrainHasBothWaterAndHighGround) {
 // that buys over asking for the same columns one after another; it is a measurement, not an
 // assertion, so it only runs when asked for.
 TEST(ChunkJobsBench, BatchGenerationRunsInParallel) {
+    REQUIRE_VANILLA_DATA();
     if (std::getenv("TERILA_BENCH") == nullptr) {
         GTEST_SKIP() << "set TERILA_BENCH=1 to run the chunk job benchmark";
     }
@@ -462,6 +506,7 @@ namespace {
 // chunks and the tops are precomputed, so this measures the engine (fill, flood fill and
 // packing) and not the terrain sampling it is handed in the server.
 TEST(LightBench, ComputePerChunk) {
+    REQUIRE_VANILLA_DATA();
     if (std::getenv("TERILA_BENCH") == nullptr) {
         GTEST_SKIP() << "set TERILA_BENCH=1 to run the light engine benchmark";
     }
