@@ -787,3 +787,30 @@ TEST(MobAiTest, AttackCapabilityIsDerivedOnceAtSpawn) {
     EXPECT_FALSE(cow.needs_attack_fallback);
     EXPECT_FALSE(cow.undead);
 }
+
+TEST(MobTest, TheIdIndexFollowsRemovals) {
+    entity::MobManager mobs;
+    make_manager(mobs);
+    ASSERT_TRUE(mobs.spawn("minecraft:zombie", 0.0, 0.0));
+    ASSERT_TRUE(mobs.spawn("minecraft:cow", 5.0, 0.0));
+    ASSERT_TRUE(mobs.spawn("minecraft:zombie", 10.0, 0.0));
+
+    const std::int32_t first = mobs.mobs()[0].id;
+    const std::int32_t cow = mobs.mobs()[1].id;
+    const std::int32_t last = mobs.mobs()[2].id;
+    ASSERT_NE(mobs.find(cow), nullptr);
+
+    // Kill the last zombie and let its body leave, which renumbers every index behind it.
+    ASSERT_TRUE(mobs.damage(last, 100, 0.0f));
+    for (int tick = 0; tick < 25; ++tick) {
+        mobs.tick({});
+    }
+    ASSERT_EQ(mobs.mobs().size(), 2u);
+    EXPECT_EQ(mobs.find(last), nullptr) << "a removed id is gone from the index";
+
+    ASSERT_NE(mobs.find(first), nullptr);
+    ASSERT_NE(mobs.find(cow), nullptr);
+    EXPECT_EQ(mobs.find(cow)->type_name, "minecraft:cow");
+    EXPECT_TRUE(mobs.damage(first, 1, 0.0f)) << "hits still resolve by id";
+    EXPECT_TRUE(mobs.feed(cow, "minecraft:wheat")) << "feeding still resolves by id";
+}

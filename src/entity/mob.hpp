@@ -218,6 +218,7 @@ namespace terila::entity {
             mob.uuid[8] = static_cast<std::uint8_t>((mob.uuid[8] & 0x3F) | 0x80);
 
             mobs_.push_back(std::move(mob));
+            id_index_[mobs_.back().id] = mobs_.size() - 1;
             const auto& spawned = mobs_.back();
             LOG_DEBUG(Entity, "spawned {} (type {} / entity {}){} at ({:.1f}, {:.1f}, {:.1f}) "
                 "hp={:.0f} speed={:.2f} damage={:.1f} follow={:.0f}",
@@ -251,68 +252,69 @@ namespace terila::entity {
         }
 
         const Mob* find(std::int32_t id) const {
-            for (const auto& mob : mobs_) {
-                if (mob.id == id) return &mob;
+            const auto found = id_index_.find(id);
+            if (found == id_index_.end()) {
+                return nullptr;
             }
-            return nullptr;
+            return &mobs_[found->second];
         }
 
         // Vanilla's hurt path: armour soaks part of the hit, the mob remembers who hit it and
         // panics or turns on them, and a hit that empties its health starts the death.
         bool damage(std::int32_t id, std::int32_t amount, float away_yaw) {
-            for (auto& mob : mobs_) {
-                if (mob.id != id) continue;
-                if (mob.dead) return false;
-
-                const double dealt = std::max(1.0, armor_reduction(mob.armor, amount));
-                mob.health -= dealt;
-                ++mob.hurt_serial;
-                mob.hurt_ticks = 10;
-                mob.knockback = kKnockbackDistance;
-                mob.knockback_yaw = away_yaw;
-                mob.panic_ticks = kPanicTicks;
-                mob.love_ticks = 0;
-
-                if (mob.health <= 0.0) {
-                    mob.health = 0.0;
-                    mob.dead = true;
-                    mob.death_ticks = kDeathTicks;
-                    LOG_DEBUG(Entity, "{} (id={}) died", mob.type_name, mob.id);
-                }
-                else {
-                    LOG_DEBUG(Entity, "{} (id={}) hit for {:.1f}, hp={:.1f}/{:.1f}",
-                        mob.type_name, mob.id, dealt, mob.health, mob.max_health);
-                }
-                return true;
+            auto* found = by_id(id);
+            if (found == nullptr || found->dead) {
+                return false;
             }
-            return false;
+            auto& mob = *found;
+
+            const double dealt = std::max(1.0, armor_reduction(mob.armor, amount));
+            mob.health -= dealt;
+            ++mob.hurt_serial;
+            mob.hurt_ticks = 10;
+            mob.knockback = kKnockbackDistance;
+            mob.knockback_yaw = away_yaw;
+            mob.panic_ticks = kPanicTicks;
+            mob.love_ticks = 0;
+
+            if (mob.health <= 0.0) {
+                mob.health = 0.0;
+                mob.dead = true;
+                mob.death_ticks = kDeathTicks;
+                LOG_DEBUG(Entity, "{} (id={}) died", mob.type_name, mob.id);
+            }
+            else {
+                LOG_DEBUG(Entity, "{} (id={}) hit for {:.1f}, hp={:.1f}/{:.1f}",
+                    mob.type_name, mob.id, dealt, mob.health, mob.max_health);
+            }
+            return true;
         }
 
         // Feeding: a player right-clicks the mob with one of its food items. Adults in love
         // look for a partner, and a fed baby grows up a little faster.
         bool feed(std::int32_t id, std::string_view item) {
-            for (auto& mob : mobs_) {
-                if (mob.id != id || mob.dead) {
-                    continue;
+            auto* found = by_id(id);
+            if (found == nullptr || found->dead) {
+                return false;
+            }
+            auto& mob = *found;
+
+            if (!mob.eats(item)) {
+                return false;
+            }
+            if (mob.baby) {
+                mob.age_ticks += kFeedingAgeBoost;
+                if (mob.age_ticks >= kBabyAge) {
+                    grow_up(mob);
                 }
-                if (!mob.eats(item)) {
-                    return false;
-                }
-                if (mob.baby) {
-                    mob.age_ticks += kFeedingAgeBoost;
-                    if (mob.age_ticks >= kBabyAge) {
-                        grow_up(mob);
-                    }
-                    return true;
-                }
-                if (mob.love_ticks > 0 || mob.breed_cooldown > 0) {
-                    return false;
-                }
-                mob.love_ticks = kLoveTicks;
-                LOG_DEBUG(Entity, "{} (id={}) is in love", mob.type_name, mob.id);
                 return true;
             }
-            return false;
+            if (mob.love_ticks > 0 || mob.breed_cooldown > 0) {
+                return false;
+            }
+            mob.love_ticks = kLoveTicks;
+            LOG_DEBUG(Entity, "{} (id={}) is in love", mob.type_name, mob.id);
+            return true;
         }
 
         void tick(const std::vector<PlayerPos>& players,
@@ -377,8 +379,12 @@ namespace terila::entity {
                 physics(mob);
             }
 
+            const auto before_removal = mobs_.size();
             mobs_.erase(std::remove_if(mobs_.begin(), mobs_.end(),
                 [](const Mob& mob) { return mob.dead && mob.death_ticks <= 0; }), mobs_.end());
+            if (mobs_.size() != before_removal) {
+                rebuild_id_index();
+            }
         }
 
         // The three ways a mob leaves the world without dying: peace, distance, and standing
@@ -1193,12 +1199,28 @@ namespace terila::entity {
             }
         }
 
+        Mob* by_id(std::int32_t id) {
+            const auto found = id_index_.find(id);
+            return found == id_index_.end() ? nullptr : &mobs_[found->second];
+        }
+
+        // Erasing shifts every index behind the removed mob, so the table is rebuilt once per
+        // tick that actually removed something instead of being patched per entry.
+        void rebuild_id_index() {
+            id_index_.clear();
+            id_index_.reserve(mobs_.size());
+            for (std::size_t i = 0; i < mobs_.size(); ++i) {
+                id_index_[mobs_[i].id] = i;
+            }
+        }
+
         std::uint32_t next_random() {
             rng_state_ = rng_state_ * 1664525u + 1013904223u;
             return rng_state_ >> 8;
         }
 
         std::vector<Mob> mobs_;
+        std::unordered_map<std::int32_t, std::size_t> id_index_;
         std::vector<MobHit> hits_;
         GroundResolver ground_resolver_;
         WaterResolver water_resolver_;
