@@ -147,7 +147,10 @@ namespace terila::async {
         // and are already off the tick.
         template<class U = T>
         U wait() {
-            std::coroutine_handle<> current = handle_;
+            // A task that was already stepped may be parked inside a child; the wait has to
+            // pick that child up instead of resuming the parent at its await point.
+            std::coroutine_handle<> current =
+                suspended_ != nullptr && !suspended_.done() ? suspended_ : handle_;
             while (!finished()) {
                 detail::Context context;
                 auto* previous = detail::active;
@@ -244,8 +247,9 @@ namespace terila::async {
         bool finished() const noexcept { return task_.finished(); }
 
         void restart(Task<void> task) {
-            task_ = std::move(task);
+            // Drop the old frame only after the cursor into it is gone.
             current_ = nullptr;
+            task_ = std::move(task);
         }
 
     private:

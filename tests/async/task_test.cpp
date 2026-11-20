@@ -19,6 +19,14 @@ namespace {
         co_return middle * 2;
     }
 
+    async::Task<void> yield_steps(int& steps) {
+        while (steps > 0) {
+            --steps;
+            co_await async::Yield{};
+        }
+        co_return;
+    }
+
     async::Task<std::string> countdown(int& steps) {
         while (steps > 0) {
             --steps;
@@ -81,4 +89,26 @@ TEST(AsyncTaskTest, SteppingReportsFinishedOnlyAfterTheChildReturned) {
     }
     EXPECT_EQ(seen, 2) << "one step per yield";
     EXPECT_EQ(task.take(), std::string("done"));
+}
+
+TEST(AsyncTaskTest, WaitContinuesFromTheChildThatSuspended) {
+    auto task = chain(3);
+    // The first step parks inside add_after_yield. Waiting now has to resume that child;
+    // resuming the parent instead would read a value the child has not produced.
+    EXPECT_TRUE(task.step());
+    EXPECT_EQ(task.wait(), 8);
+}
+
+TEST(AsyncTaskTest, RestartingAStreamDropsTheOldTask) {
+    int first_steps = 2;
+    async::Stream stream(yield_steps(first_steps));
+    EXPECT_TRUE(stream.resume());
+    EXPECT_FALSE(stream.finished());
+
+    int second_steps = 1;
+    stream.restart(yield_steps(second_steps));
+    EXPECT_FALSE(stream.finished()) << "a fresh task starts before its body runs";
+    EXPECT_TRUE(stream.resume());
+    EXPECT_FALSE(stream.resume()) << "one yield, then the result";
+    EXPECT_TRUE(stream.finished());
 }
