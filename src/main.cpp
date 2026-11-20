@@ -420,6 +420,13 @@ int main() {
     spawner.set_spawn_point(spawn.x, spawn.z);
     spawner.set_difficulty(world_difficulty);
 
+    // Undead keep out of the sun: a column whose sky top is above the mob is shaded.
+    mobs.set_shade_resolver([&world_terrain](double x, double y, double z) {
+        return y < static_cast<double>(world_terrain.sky_top(
+            static_cast<std::int32_t>(std::floor(x)),
+            static_cast<std::int32_t>(std::floor(z))));
+        });
+
     // Mobs that swim in the biome's water entries need to know when they are in it.
     mobs.set_water_resolver([&world_terrain](double x, double z) {
         return world_terrain.surface_height(
@@ -765,7 +772,7 @@ int main() {
             // difficulty decides what may live and what leaves.
             spawner.set_moon_brightness(clock->sky_darken());
             spawner.tick(mobs, player_positions, clock->night(), mobs.rng(), clock->game_time);
-            mobs.tick(player_positions, world_difficulty);
+            mobs.tick(player_positions, world_difficulty, clock->night());
 
             // The mobs that landed a hit this tick: only the owning connection can take the
             // damage, so the hub routes it by entity id.

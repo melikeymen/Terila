@@ -13,8 +13,9 @@
 namespace terila::entity {
 
     // Goal classes this server implements. Everything else the decompiled source registers
-    // (villager trading, raids, sitting on a boat, ...) is ignored: those need systems this
-    // server does not have yet, and a mob without them simply keeps its lower goals.
+    // (villager trading, raids, taming, sitting, boss spells, ...) is ignored: those need
+    // systems this server does not have yet, and a mob without them simply keeps its lower
+    // goals.
     enum class GoalKind : std::uint8_t {
         Float,                  // swim up in water
         Panic,                  // run from whatever hurt us
@@ -32,36 +33,89 @@ namespace terila::entity {
         HurtByTarget,           // remember who hit us
         Leap,                   // jump at the target
         Climb,                  // climb when in a climbable block
+        RestrictSun,            // undead that keeps out of the sun
+        FleeSun,                // undead that runs from the sun
+        WaterMove,              // fish, squid and dolphins: swim in three dimensions
+        Hop,                    // slime family: keep hopping towards the target
+        HopDirection,           // slime family: pick the random hop direction
+        Swell,                  // creeper: swell up, then explode
+        Stand,                  // horse family: the idle stand animation
         Unsupported,
     };
 
     inline GoalKind goal_kind_from(std::string_view name) noexcept {
-        if (name == "FloatGoal") return GoalKind::Float;
-        if (name == "PanicGoal" || name == "MountPanicGoal" || name == "PanicGoalBaby") {
+        if (name == "FloatGoal" || name == "CubeMobFloatGoal" || name == "FoxFloatGoal" ||
+            name == "BreathAirGoal" || name == "ClimbOnTopOfPowderSnowGoal") {
+            return GoalKind::Float;
+        }
+        if (name == "PanicGoal" || name == "MountPanicGoal" || name == "PanicGoalBaby" ||
+            name == "TamableAnimalPanicGoal" || name == "FoxPanicGoal" ||
+            name == "RunAroundLikeCrazyGoal" || name == "RabbitPanicGoal" ||
+            name == "TurtlePanicGoal" || name == "PandaPanicGoal") {
             return GoalKind::Panic;
         }
-        if (name == "MeleeAttackGoal" || name == "ZombieAttackGoal" || name == "SpearUseGoal") {
+        if (name == "MeleeAttackGoal" || name == "ZombieAttackGoal" ||
+            name == "SpiderAttackGoal" || name == "OcelotAttackGoal" ||
+            name == "GuardianAttackGoal" || name == "HoldGroundAttackGoal" ||
+            name == "LlamaAttackWolfGoal" || name == "SpearUseGoal" ||
+            name == "FoxMeleeAttackGoal" || name == "PandaAttackGoal" ||
+            name == "PolarBearMeleeAttackGoal" || name == "PolarBearAttackPlayersGoal") {
             return GoalKind::Melee;
         }
-        if (name == "RangedAttackGoal" || name == "RangedBowAttackGoal") return GoalKind::Ranged;
+        if (name == "RangedAttackGoal" || name == "RangedBowAttackGoal" ||
+            name == "RangedCrossbowAttackGoal" || name == "BlazeAttackGoal") {
+            return GoalKind::Ranged;
+        }
         if (name == "RandomStrollGoal" || name == "MoveTowardsRestrictionGoal" ||
-            name == "MoveThroughVillageGoal") {
+            name == "MoveThroughVillageGoal" || name == "RaiderMoveThroughVillageGoal" ||
+            name == "StalkPreyGoal" || name == "MoveToItemGoal" ||
+            name == "PlayWithItemsGoal" || name == "BeeWanderGoal" ||
+            name == "FoxStrollThroughVillageGoal" || name == "TurtleRandomStrollGoal" ||
+            name == "ParrotWanderGoal" || name == "FollowMobGoal") {
             return GoalKind::Stroll;
         }
         if (name == "WaterAvoidingRandomStrollGoal") return GoalKind::WaterAvoidingStroll;
-        if (name == "LookAtPlayerGoal") return GoalKind::LookAtPlayer;
+        if (name == "LookAtPlayerGoal" || name == "FoxLookAtPlayerGoal") {
+            return GoalKind::LookAtPlayer;
+        }
         if (name == "RandomLookAroundGoal") return GoalKind::LookAround;
-        if (name == "FollowParentGoal") return GoalKind::FollowParent;
-        if (name == "TemptGoal") return GoalKind::Tempt;
-        if (name == "BreedGoal") return GoalKind::Breed;
+        if (name == "FollowParentGoal" || name == "FoxFollowParentGoal") {
+            return GoalKind::FollowParent;
+        }
+        if (name == "TemptGoal" || name == "BegGoal") return GoalKind::Tempt;
+        if (name == "BreedGoal" || name == "FoxBreedGoal" || name == "PandaBreedGoal" ||
+            name == "TurtleBreedGoal") {
+            return GoalKind::Breed;
+        }
         if (name == "AvoidEntityGoal") return GoalKind::Avoid;
         if (name == "NearestAttackableTargetGoal" || name == "NonTameRandomTargetGoal" ||
-            name == "ResetUniversalAngerTargetGoal") {
+            name == "ResetUniversalAngerTargetGoal" || name == "NearestAttackableWitchTargetGoal" ||
+            name == "DefendVillageTargetGoal") {
             return GoalKind::AttackTarget;
         }
-        if (name == "HurtByTargetGoal") return GoalKind::HurtByTarget;
-        if (name == "LeapAtTargetGoal") return GoalKind::Leap;
-        if (name == "ClimbOnTopOfPowderSnowGoal") return GoalKind::Climb;
+        if (            name == "HurtByTargetGoal" || name == "LlamaHurtByTargetGoal" ||
+            name == "BeeHurtByOtherGoal" || name == "PandaHurtByTargetGoal" ||
+            name == "PolarBearHurtByTargetGoal") {
+            return GoalKind::HurtByTarget;
+        }
+        if (name == "LeapAtTargetGoal" || name == "FoxPounceGoal") return GoalKind::Leap;
+        if (name == "RestrictSunGoal") return GoalKind::RestrictSun;
+        if (name == "FleeSunGoal") return GoalKind::FleeSun;
+        if (name == "FishSwimGoal" || name == "RandomSwimmingGoal" ||
+            name == "SquidRandomMovementGoal" || name == "SquidFleeGoal" ||
+            name == "DolphinSwimToTreasureGoal" || name == "DolphinSwimWithPlayerGoal" ||
+            name == "DolphinJumpGoal" || name == "RandomFloatAroundGoal" ||
+            name == "TryFindLiquidGoal" || name == "FollowFlockLeaderGoal") {
+            return GoalKind::WaterMove;
+        }
+        if (name == "CubeMobKeepOnJumpingGoal" || name == "SlimeKeepOnJumpingGoal") {
+            return GoalKind::Hop;
+        }
+        // The direction goal only chooses where the next hop goes; the hop goal below it
+        // does the jumping, so both map to the same behaviour here.
+        if (name == "CubeMobRandomDirectionGoal") return GoalKind::Hop;
+        if (name == "SwellGoal") return GoalKind::Swell;
+        if (name == "RandomStandGoal") return GoalKind::Stand;
         return GoalKind::Unsupported;
     }
 
@@ -75,8 +129,9 @@ namespace terila::entity {
     // How a goal measures things, straight out of the Java defaults.
     inline constexpr double kMeleeReach = 2.0;
     inline constexpr int kMeleeCooldownTicks = 20;     // attack speed 4
-    inline constexpr int kRangedCooldownTicks = 40;    // bow draw
+    inline constexpr int kRangedCooldownTicks = 20;    // skeleton RangedAttackGoal interval
     inline constexpr double kRangedRange = 15.0;
+    inline constexpr double kRangedKeepAway = 6.0;     // backs off inside this
     inline constexpr int kPanicTicks = 100;
     inline constexpr double kPanicSpeed = 1.25;        // PanicGoal(this, 1.25)
     inline constexpr int kStrollIntervalTicks = 120;   // RandomStrollGoal every 120 ticks
@@ -84,6 +139,29 @@ namespace terila::entity {
     inline constexpr int kLookIntervalTicks = 40;
     inline constexpr double kLookDistance = 8.0;
     inline constexpr int kBabyAge = 24000;             // vanilla baby -> adult
+
+    // Creeper: 30 ticks of swelling from three blocks, then a 3 block blast.
+    inline constexpr int kSwellTicks = 30;
+    inline constexpr double kSwellRange = 3.0;
+    inline constexpr double kExplosionRadius = 3.0;
+    inline constexpr double kExplosionDamage = 12.0;
+
+    // Slime family hop cadence.
+    inline constexpr int kHopIntervalTicks = 30;
+    inline constexpr double kHopVelocity = 0.42;
+
+    // Undead burn in daylight: one point every twenty ticks, like the fire tick.
+    inline constexpr int kBurnIntervalTicks = 20;
+    inline constexpr double kBurnDamage = 1.0;
+
+    // Undead burn in sunlight and keep out of it; the list is the game's own family.
+    inline bool is_undead(std::string_view type) noexcept {
+        return type == "minecraft:zombie" || type == "minecraft:zombie_villager" ||
+            type == "minecraft:husk" || type == "minecraft:drowned" ||
+            type == "minecraft:skeleton" || type == "minecraft:stray" ||
+            type == "minecraft:wither_skeleton" || type == "minecraft:zombie_horse" ||
+            type == "minecraft:skeleton_horse" || type == "minecraft:phantom";
+    }
 
     // Vanilla armour: 0..20 points, each 4% up to 80%, then dimishing with the hit size.
     inline double armor_reduction(float armor, double damage) noexcept {

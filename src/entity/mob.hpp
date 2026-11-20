@@ -109,6 +109,16 @@ namespace terila::entity {
         double knockback = 0.0;
         float knockback_yaw = 0.0f;
 
+        // The speed modifier the running goal was registered with (GoalSpec::speed).
+        double goal_speed = 1.0;
+        int ranged_charge = 0;
+        int swell_ticks = 0;
+        int hop_ticks = 0;
+        double hop_x = 0.0;
+        double hop_z = 0.0;
+        bool in_sun = false;
+        int sun_ticks = 0;
+
         data::MobCategory category() const noexcept { return kind; }
         bool is_monster() const noexcept { return kind == data::MobCategory::Monster; }
         bool adult() const noexcept { return !baby; }
@@ -134,6 +144,11 @@ namespace terila::entity {
         // The surface a mob stands on and whether a column is under water.
         void set_ground_resolver(GroundResolver resolver) { ground_resolver_ = std::move(resolver); }
         void set_water_resolver(WaterResolver resolver) { water_resolver_ = std::move(resolver); }
+
+        // Whether a position has a roof over it. Undead use it to keep out of the sun; the
+        // server wires it to the column's sky top.
+        using ShadeResolver = std::function<bool(double x, double y, double z)>;
+        void set_shade_resolver(ShadeResolver resolver) { shade_resolver_ = std::move(resolver); }
         void set_ground(double y) { ground_y_ = y; }
         void set_roam_area(double center_x, double center_z, double radius) {
             roam_x_ = center_x;
@@ -291,7 +306,7 @@ namespace terila::entity {
         }
 
         void tick(const std::vector<PlayerPos>& players,
-            Difficulty difficulty = Difficulty::Normal) {
+            Difficulty difficulty = Difficulty::Normal, bool night = true) {
             hits_.clear();
 
             for (auto& mob : mobs_) {
@@ -306,6 +321,22 @@ namespace terila::entity {
                     continue;
                 }
                 ++mob.no_action_ticks;
+
+                // Daylight decides two things for undead: they keep out of it, and being in
+                // it burns them once a second.
+                mob.in_sun = !night && shade_resolver_ && !shade_resolver_(mob.x, mob.y, mob.z) &&
+                    is_undead(mob.type_name);
+                if (mob.in_sun && (++mob.sun_ticks % kBurnIntervalTicks) == 0) {
+                    mob.health -= kBurnDamage;
+                    mob.hurt_ticks = 10;
+                    ++mob.hurt_serial;
+                    if (mob.health <= 0.0) {
+                        mob.health = 0.0;
+                        mob.dead = true;
+                        mob.death_ticks = kDeathTicks;
+                        continue;
+                    }
+                }
 
                 if (mob.hurt_ticks > 0) --mob.hurt_ticks;
                 if (mob.attack_cooldown > 0) --mob.attack_cooldown;
@@ -328,6 +359,7 @@ namespace terila::entity {
                     apply_move(mob, mob.knockback_yaw, step, false);
                 }
                 else {
+                    forget_lost_target(mob, players);
                     choose_goal(mob, players);
                     run_goal(mob, players);
                 }
@@ -413,8 +445,25 @@ namespace terila::entity {
                 mob.goal = GoalKind::Stroll;
                 return;
             }
+
+            // Every hostile mob in the game acquires players as targets, but the class that
+            // registers the target goal is not always the concrete one (a zombie's
+            // NearestAttackableTargetGoal is chained with a setter, the skeleton's bow is
+            // chosen at runtime from the held item). Those two are supplied here so the
+            // behaviour is the same even though the extracted list cannot name them.
+            if (mob.is_monster() && mob.target_id == 0) {
+                acquire_target(mob, players);
+            }
+            const bool synthetic_attack = mob.is_monster() && mob.target_id != 0 &&
+                !has_attack_goal(mob);
+            const GoalKind synthetic_kind = default_attack_kind(mob.type_name);
+
             for (int i = 0; i < mob.spec->goal_count; ++i) {
                 const auto& spec = data::kGoals[mob.spec->goal_begin + i];
+                if (synthetic_attack && spec.priority > kSyntheticAttackPriority) {
+                    set_goal(mob, synthetic_kind, 1.0);
+                    return;
+                }
                 const GoalKind kind = goal_kind_from(spec.kind);
                 if (kind == GoalKind::Unsupported) {
                     continue;
@@ -422,14 +471,49 @@ namespace terila::entity {
                 if (!can_use(mob, kind, spec, players)) {
                     continue;
                 }
-                if (mob.goal != kind) {
-                    mob.goal = kind;
-                    mob.goal_age = 0;
-                }
+                set_goal(mob, kind, static_cast<double>(spec.speed));
+                return;
+            }
+            if (synthetic_attack) {
+                set_goal(mob, synthetic_kind, 1.0);
                 return;
             }
             // Nothing applies: the mob stands still, like vanilla with an empty selector.
             mob.goal = GoalKind::Unsupported;
+        }
+
+        static constexpr int kSyntheticAttackPriority = 2;
+
+        void set_goal(Mob& mob, GoalKind kind, double speed) {
+            if (mob.goal != kind) {
+                mob.goal = kind;
+                mob.goal_age = 0;
+            }
+            // The per-goal speed modifier is part of the data, and it is why a cow's stroll
+            // and a wolf's chase do not run at the same rate.
+            mob.goal_speed = speed;
+        }
+
+        static bool has_attack_goal(const Mob& mob) {
+            for (int i = 0; i < mob.spec->goal_count; ++i) {
+                const auto kind = goal_kind_from(data::kGoals[mob.spec->goal_begin + i].kind);
+                if (kind == GoalKind::Melee || kind == GoalKind::Ranged ||
+                    kind == GoalKind::Swell || kind == GoalKind::Hop) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // The families that fight at range in the game hold a bow or a crossbow, and the
+        // ranged goals are added when the weapon is equipped rather than in registerGoals.
+        static GoalKind default_attack_kind(std::string_view type) {
+            if (type.find("skeleton") != std::string_view::npos ||
+                type.find("pillager") != std::string_view::npos ||
+                type.find("illusioner") != std::string_view::npos) {
+                return GoalKind::Ranged;
+            }
+            return GoalKind::Melee;
         }
 
         bool can_use(const Mob& mob, GoalKind kind, const data::GoalSpec& spec,
@@ -444,11 +528,17 @@ namespace terila::entity {
                 return target_player(mob, players) != nullptr;
             case GoalKind::AttackTarget:
                 // The goal targets a class; a player is the only thing we have to offer.
-                return spec.target == "Player" && target_player(mob, players) != nullptr;
+                // Acquiring once is enough, which is what lets the attack goal below it run.
+                return spec.target == "Player" && mob.target_id == 0 &&
+                    target_player(mob, players) != nullptr;
             case GoalKind::HurtByTarget:
                 return mob.attacker_id != 0 && mob.panic_ticks > 0;
             case GoalKind::Avoid:
-                return nearest_player_within(mob, players, 6.0) != nullptr;
+                // AvoidEntityGoal keeps a distance from a class it fears; a player is the
+                // only candidate here, and the creatures that fear players are the passive
+                // ones. A creeper's version is about cats, not about running from people.
+                return mob.kind != data::MobCategory::Monster &&
+                    nearest_player_within(mob, players, 6.0) != nullptr;
             case GoalKind::Tempt:
                 return tempting_player(mob, players) != nullptr;
             case GoalKind::Breed:
@@ -462,8 +552,23 @@ namespace terila::entity {
                 // Nothing in this world is climbable yet, so the goal only shows up when the
                 // mob is standing in water, where swimming up is what vanilla's climb does.
                 return mob.in_water;
+            case GoalKind::RestrictSun:
+            case GoalKind::FleeSun:
+                return mob.in_sun;
+            case GoalKind::WaterMove:
+                return mob.in_water;
+            case GoalKind::Swell:
+                // SwellGoal is only usable while the target is close enough to hit.
+                return mob.target_id != 0 &&
+                    nearest_player_within(mob, players, kSwellRange) != nullptr;
+            case GoalKind::Hop:
+            case GoalKind::HopDirection:
+                // KeepOnJumpingGoal hops all the time, target or no target.
+                return true;
             case GoalKind::LookAtPlayer:
                 return nearest_player_within(mob, players, kLookDistance) != nullptr;
+            case GoalKind::Stand:
+                return true;
             case GoalKind::LookAround:
             case GoalKind::Stroll:
             case GoalKind::WaterAvoidingStroll:
@@ -475,47 +580,71 @@ namespace terila::entity {
 
         void run_goal(Mob& mob, const std::vector<PlayerPos>& players) {
             ++mob.goal_age;
+            const double speed = mob.speed_now() * mob.goal_speed;
             switch (mob.goal) {
             case GoalKind::Float:
                 mob.vy = std::max(mob.vy, 0.04);   // swim up
                 break;
             case GoalKind::Panic:
-                wander_away(mob, kPanicSpeed * mob.speed_now());
+                wander_away(mob, speed * kPanicSpeed);
                 break;
             case GoalKind::Melee:
-                chase(mob, players, mob.speed_now());
+                chase(mob, players, speed);
                 break;
             case GoalKind::Ranged:
-                ranged(mob, players);
+                ranged(mob, players, speed);
                 break;
             case GoalKind::AttackTarget:
+                acquire_target(mob, players);
+                break;
             case GoalKind::HurtByTarget:
-                chase(mob, players, mob.speed_now());
+                // HurtByTargetGoal copies the hurt-by attacker into the attack target.
+                mob.target_id = mob.attacker_id;
+                chase(mob, players, speed);
                 break;
             case GoalKind::Avoid:
-                wander_away(mob, mob.speed_now());
+                wander_away(mob, speed);
                 break;
             case GoalKind::Tempt:
-                tempt(mob, players);
+                tempt(mob, players, speed);
                 break;
             case GoalKind::Breed:
-                breed(mob);
+                breed(mob, speed);
                 break;
             case GoalKind::FollowParent:
-                follow_parent(mob);
+                follow_parent(mob, speed);
                 break;
             case GoalKind::Leap:
                 leap(mob, players);
                 break;
             case GoalKind::Climb:
                 mob.vy = std::max(mob.vy, 0.05);
-                stroll(mob, mob.speed_now(), false);
+                stroll(mob, speed, false);
+                break;
+            case GoalKind::RestrictSun:
+            case GoalKind::FleeSun:
+                sun_move(mob, speed);
+                break;
+            case GoalKind::WaterMove:
+                water_move(mob, speed);
+                break;
+            case GoalKind::Hop:
+                hop(mob, players, speed);
+                break;
+            case GoalKind::HopDirection:
+                hop_direction(mob);
+                break;
+            case GoalKind::Swell:
+                swell(mob, players);
+                break;
+            case GoalKind::Stand:
+                // The horse family's idle stand is an animation; there is nothing to move.
                 break;
             case GoalKind::Stroll:
-                stroll(mob, mob.speed_now(), false);
+                stroll(mob, speed, false);
                 break;
             case GoalKind::WaterAvoidingStroll:
-                stroll(mob, mob.speed_now(), true);
+                stroll(mob, speed, true);
                 break;
             case GoalKind::LookAtPlayer:
                 look_at_player(mob, players);
@@ -526,6 +655,170 @@ namespace terila::entity {
             default:
                 break;
             }
+        }
+
+        // ---------------------------------------------------------------- goal behaviours
+
+        // A target that died, left the follow range or turned creative is dropped; the next
+        // target goal can pick a new one.
+        void forget_lost_target(Mob& mob, const std::vector<PlayerPos>& players) {
+            if (mob.target_id == 0) {
+                return;
+            }
+            const double limit = static_cast<double>(mob.follow_range) * 1.5;
+            for (const auto& player : players) {
+                if (player.id != mob.target_id || player.creative) {
+                    continue;
+                }
+                if (distance_squared(mob.x, mob.z, player.x, player.z) <= limit * limit) {
+                    return;
+                }
+            }
+            mob.target_id = 0;
+        }
+
+        void acquire_target(Mob& mob, const std::vector<PlayerPos>& players) {
+            if (mob.target_id != 0) {
+                return;
+            }
+            for (const auto& player : players) {
+                if (player.creative) {
+                    continue;
+                }
+                if (distance_squared(mob.x, mob.z, player.x, player.z) <=
+                    static_cast<double>(mob.follow_range) * mob.follow_range) {
+                    mob.target_id = player.id;
+                    return;
+                }
+            }
+        }
+
+        // Undead in daylight look for a roof instead of standing in the open; with no shade
+        // to find they simply walk away from the column they are in.
+        void sun_move(Mob& mob, double speed) {
+            if (mob.wander_ticks <= 0) {
+                constexpr double kPi = 3.14159265358979323846;
+                bool found = false;
+                double target_x = mob.x;
+                double target_z = mob.z;
+                for (int i = 0; i < 8 && shade_resolver_; ++i) {
+                    const double angle = kPi * 0.25 * static_cast<double>(i);
+                    const double x = mob.x + std::sin(angle) * 4.0;
+                    const double z = mob.z + std::cos(angle) * 4.0;
+                    if (shade_resolver_(x, surface_at(x, z) + 1.0, z)) {
+                        target_x = x;
+                        target_z = z;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    const double angle =
+                        kPi * static_cast<double>(next_random() % 360) / 180.0;
+                    target_x = mob.x + std::sin(angle) * 6.0;
+                    target_z = mob.z + std::cos(angle) * 6.0;
+                }
+                mob.wander_x = target_x;
+                mob.wander_z = target_z;
+                mob.wander_ticks = 20;
+            }
+            --mob.wander_ticks;
+            move_towards(mob, mob.wander_x, mob.wander_z, speed);
+        }
+
+        // Fish, squid and dolphins swim in three dimensions instead of walking a surface.
+        void water_move(Mob& mob, double speed) {
+            if (mob.wander_ticks <= 0) {
+                constexpr double kPi = 3.14159265358979323846;
+                const double angle =
+                    kPi * static_cast<double>(next_random() % 360) / 180.0;
+                const double radius = 2.0 + static_cast<double>(next_random() % 6);
+                mob.wander_x = mob.x + std::sin(angle) * radius;
+                mob.wander_z = mob.z + std::cos(angle) * radius;
+                mob.hop_x = mob.y + static_cast<double>(next_random() % 5) - 2.0;
+                mob.wander_ticks = 40 + static_cast<int>(next_random() % 40);
+            }
+            --mob.wander_ticks;
+            move_towards(mob, mob.wander_x, mob.wander_z, speed * 0.7);
+            const double climb = std::clamp((mob.hop_x - mob.y) * 0.05, -0.04, 0.04);
+            mob.vy = climb;
+        }
+
+        // Slimes keep hopping whether or not anything is around, and hit what they land on.
+        void hop(Mob& mob, const std::vector<PlayerPos>& players, double speed) {
+            if (mob.hop_ticks > 0) {
+                --mob.hop_ticks;
+            }
+            else if (mob.on_ground) {
+                mob.hop_ticks = kHopIntervalTicks / 2 +
+                    static_cast<int>(next_random() % kHopIntervalTicks);
+                mob.vy = kHopVelocity;
+            }
+
+            if (const auto* target = target_player(mob, players)) {
+                move_towards(mob, target->x, target->z, speed);
+                const double distance =
+                    std::sqrt(distance_squared(mob.x, mob.z, target->x, target->z));
+                if (distance <= 1.5 && mob.attack_cooldown <= 0) {
+                    attack(mob, *target, false);
+                }
+            }
+            else if (mob.hop_x != 0.0 || mob.hop_z != 0.0) {
+                move_towards(mob, mob.hop_x, mob.hop_z, speed);
+            }
+        }
+
+        void hop_direction(Mob& mob) {
+            if (mob.wander_ticks > 0) {
+                --mob.wander_ticks;
+                return;
+            }
+            constexpr double kPi = 3.14159265358979323846;
+            const double angle = kPi * static_cast<double>(next_random() % 360) / 180.0;
+            mob.hop_x = mob.x + std::sin(angle) * kStrollRadius;
+            mob.hop_z = mob.z + std::cos(angle) * kStrollRadius;
+            mob.wander_ticks = kStrollIntervalTicks;
+        }
+
+        // Creeper: close in, swell, and take everything nearby with it. The blast damages
+        // players; block damage belongs to the explosion work this server does not have.
+        void swell(Mob& mob, const std::vector<PlayerPos>& players) {
+            const auto* target = target_player(mob, players);
+            if (target == nullptr) {
+                mob.swell_ticks = std::max(0, mob.swell_ticks - 1);
+                return;
+            }
+            const double distance =
+                std::sqrt(distance_squared(mob.x, mob.z, target->x, target->z));
+            face(mob, yaw_between(mob.x, mob.z, target->x, target->z));
+            if (distance > kSwellRange) {
+                mob.swell_ticks = std::max(0, mob.swell_ticks - 1);
+                return;
+            }
+
+            if (++mob.swell_ticks < kSwellTicks) {
+                return;
+            }
+            for (const auto& player : players) {
+                if (player.creative) {
+                    continue;
+                }
+                const double squared = distance_squared(mob.x, mob.z, player.x, player.z);
+                if (squared > kExplosionRadius * kExplosionRadius) {
+                    continue;
+                }
+                const double falloff =
+                    1.0 - std::sqrt(squared) / (kExplosionRadius * 2.0);
+                MobHit hit;
+                hit.player = player.id;
+                hit.damage = kExplosionDamage * std::max(0.0, falloff);
+                hit.ranged = false;
+                hit.attacker = mob.type_name;
+                hits_.push_back(std::move(hit));
+            }
+            mob.dead = true;
+            mob.death_ticks = 0;
+            mob.swell_ticks = 0;
         }
 
         // ---------------------------------------------------------------- movement
@@ -544,18 +837,28 @@ namespace terila::entity {
             }
         }
 
-        void ranged(Mob& mob, const std::vector<PlayerPos>& players) {
+        void ranged(Mob& mob, const std::vector<PlayerPos>& players, double speed) {
             if (const auto* target = target_player(mob, players)) {
-                const double distance = std::sqrt(distance_squared(mob.x, mob.z, target->x, target->z));
-                // Vanilla's RangedAttackGoal keeps its distance instead of closing in.
-                if (distance > kRangedRange * 0.6) {
-                    move_towards(mob, target->x, target->z, mob.speed_now());
+                const double distance =
+                    std::sqrt(distance_squared(mob.x, mob.z, target->x, target->z));
+                // RangedAttackGoal approaches until the target is in range, then holds its
+                // ground, and backs off when the target gets too close.
+                if (distance > kRangedRange) {
+                    move_towards(mob, target->x, target->z, speed);
+                }
+                else if (distance < kRangedKeepAway) {
+                    move_away_from(mob, target->x, target->z, speed);
                 }
                 face(mob, yaw_between(mob.x, mob.z, target->x, target->z));
                 if (distance <= kRangedRange && mob.attack_cooldown <= 0) {
                     attack(mob, *target, true);
                 }
             }
+        }
+
+        void move_away_from(Mob& mob, double from_x, double from_z, double speed) {
+            const float away = yaw_between(from_x, from_z, mob.x, mob.z);
+            apply_move(mob, away, speed, true);
         }
 
         void attack(Mob& mob, const PlayerPos& target, bool ranged) {
@@ -578,24 +881,24 @@ namespace terila::entity {
                 ranged ? "shoots" : "hits", target.id, mob.attack_damage);
         }
 
-        void tempt(Mob& mob, const std::vector<PlayerPos>& players) {
+        void tempt(Mob& mob, const std::vector<PlayerPos>& players, double speed) {
             if (const auto* player = tempting_player(mob, players)) {
                 const double distance = std::sqrt(distance_squared(mob.x, mob.z, player->x, player->z));
                 if (distance > 2.0) {
-                    move_towards(mob, player->x, player->z, kTemptSpeed * mob.speed_now());
+                    move_towards(mob, player->x, player->z, speed * kTemptSpeed);
                 }
                 face(mob, yaw_between(mob.x, mob.z, player->x, player->z));
             }
         }
 
-        void breed(Mob& mob) {
+        void breed(Mob& mob, double speed) {
             const auto* partner = breeding_partner(mob);
             if (partner == nullptr) {
                 return;
             }
             const double distance = std::sqrt(distance_squared(mob.x, mob.z, partner->x, partner->z));
             if (distance > kBreedDistance) {
-                move_towards(mob, partner->x, partner->z, mob.speed_now());
+                move_towards(mob, partner->x, partner->z, speed);
                 return;
             }
             // Two adults in love that meet make one child; both lose their love and wait out
@@ -603,14 +906,14 @@ namespace terila::entity {
             spawn_child(mob, *partner);
         }
 
-        void follow_parent(Mob& mob) {
+        void follow_parent(Mob& mob, double speed) {
             const auto* parent = parent_of(mob);
             if (parent == nullptr) {
                 return;
             }
             const double distance = std::sqrt(distance_squared(mob.x, mob.z, parent->x, parent->z));
             if (distance > 3.0) {
-                move_towards(mob, parent->x, parent->z, mob.speed_now() * 1.1);
+                move_towards(mob, parent->x, parent->z, speed * 1.1);
             }
         }
 
@@ -661,9 +964,11 @@ namespace terila::entity {
             move_towards(mob, mob.wander_x, mob.wander_z, speed);
         }
 
+        // LookAtPlayerGoal turns the head, not the body: the mob keeps walking where it was
+        // going and only its head follows the player.
         void look_at_player(Mob& mob, const std::vector<PlayerPos>& players) {
             if (const auto* player = nearest_player_within(mob, players, kLookDistance)) {
-                face(mob, yaw_between(mob.x, mob.z, player->x, player->z));
+                mob.head_yaw = yaw_between(mob.x, mob.z, player->x, player->z);
                 mob.pitch = static_cast<float>(std::clamp(
                     -(player->y - (mob.y + 1.6)) * 10.0, -40.0, 40.0));
             }
@@ -792,6 +1097,10 @@ namespace terila::entity {
             const PlayerPos* best = nullptr;
             double best_sq = static_cast<double>(mob.follow_range) * mob.follow_range;
             for (const auto& player : players) {
+                // Creative and spectator players are not a target.
+                if (player.creative) {
+                    continue;
+                }
                 if (mob.target_id != 0 && player.id != mob.target_id) {
                     continue;
                 }
@@ -884,6 +1193,7 @@ namespace terila::entity {
         std::vector<MobHit> hits_;
         GroundResolver ground_resolver_;
         WaterResolver water_resolver_;
+        ShadeResolver shade_resolver_;
         double ground_y_ = 0.0;
         double roam_x_ = 0.0;
         double roam_z_ = 0.0;

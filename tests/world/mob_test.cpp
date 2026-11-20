@@ -574,3 +574,151 @@ TEST(DifficultyTest, DifficultyNamesRoundTrip) {
     EXPECT_FALSE(entity::difficulty_from("impossible").has_value());
     EXPECT_STREQ(entity::difficulty_name(Difficulty::Hard), "hard");
 }
+
+TEST(MobAiTest, MostGoalRegistrationsAreImplemented) {
+    std::size_t total = 0;
+    std::size_t mapped = 0;
+    std::size_t ranged = 0;
+    for (const auto& mob : data::kMobs) {
+        for (int i = 0; i < mob.goal_count; ++i) {
+            const auto kind = entity::goal_kind_from(data::kGoals[mob.goal_begin + i].kind);
+            ++total;
+            if (kind != entity::GoalKind::Unsupported) {
+                ++mapped;
+            }
+            if (kind == entity::GoalKind::Ranged) {
+                ++ranged;
+            }
+        }
+    }
+    ASSERT_GT(total, 400u);
+    // The remainder is raids, taming, trading, boss spells and the nether/end families.
+    EXPECT_GT(mapped * 100 / total, 60u) << mapped << " of " << total << " goal rows";
+    EXPECT_GT(ranged, 0u);
+}
+
+TEST(MobAiTest, ASkeletonShootsThePlayerItSees) {
+    entity::MobManager mobs;
+    make_manager(mobs);
+    ASSERT_TRUE(mobs.spawn("minecraft:skeleton", 0.0, 0.0));
+
+    const std::vector<entity::PlayerPos> players = { { 0.0, 64.0, 10.0, 9 } };
+    bool shot = false;
+    for (int tick = 0; tick < 120 && !shot; ++tick) {
+        mobs.tick(players);
+        for (const auto& hit : mobs.hits()) {
+            if (hit.player != 9) {
+                continue;
+            }
+            EXPECT_TRUE(hit.ranged) << "a skeleton's hit is an arrow";
+            EXPECT_EQ(hit.attacker, "minecraft:skeleton");
+            EXPECT_GT(hit.damage, 0.0);
+            shot = true;
+        }
+    }
+    EXPECT_TRUE(shot) << "the bow is added at runtime, so the AI supplies it";
+    EXPECT_EQ(mobs.mobs().front().goal, entity::GoalKind::Ranged);
+}
+
+TEST(MobAiTest, ASkeletonKeepsItsDistance) {
+    entity::MobManager mobs;
+    make_manager(mobs);
+    ASSERT_TRUE(mobs.spawn("minecraft:skeleton", 0.0, 0.0));
+
+    const std::vector<entity::PlayerPos> players = { { 0.0, 64.0, 2.0, 9 } };
+    for (int tick = 0; tick < 80; ++tick) {
+        mobs.tick(players);
+    }
+    const auto& skeleton = mobs.mobs().front();
+    const double distance = std::sqrt(skeleton.x * skeleton.x + skeleton.z * skeleton.z);
+    EXPECT_GT(distance, 3.0) << "RangedAttackGoal backs away from a target that is too close";
+}
+
+TEST(MobAiTest, ACreeperSwellsAndExplodes) {
+    entity::MobManager mobs;
+    make_manager(mobs);
+    ASSERT_TRUE(mobs.spawn("minecraft:creeper", 0.0, 0.0));
+
+    const std::vector<entity::PlayerPos> players = { { 0.0, 64.0, 1.5, 11 } };
+    double damage = 0.0;
+    for (int tick = 0; tick < 80; ++tick) {
+        mobs.tick(players);
+        for (const auto& hit : mobs.hits()) {
+            EXPECT_EQ(hit.player, 11);
+            EXPECT_FALSE(hit.ranged);
+            damage = std::max(damage, hit.damage);
+        }
+    }
+    EXPECT_GT(damage, 4.0) << "the blast hits harder than a punch";
+    EXPECT_TRUE(mobs.mobs().empty()) << "the creeper is gone after the explosion";
+}
+
+TEST(MobAiTest, ASlimeHopsAround) {
+    entity::MobManager mobs;
+    make_manager(mobs);
+    ASSERT_TRUE(mobs.spawn("minecraft:slime", 0.0, 0.0));
+
+    double highest = 64.0;
+    for (int tick = 0; tick < 120; ++tick) {
+        mobs.tick({});
+        highest = std::max(highest, mobs.mobs().front().y);
+    }
+    EXPECT_GT(highest, 64.05) << "KeepOnJumpingGoal keeps a slime in the air";
+}
+
+TEST(MobAiTest, UndeadBurnInTheOpenSunAndSeekShade) {
+    entity::MobManager mobs;
+    make_manager(mobs);
+    mobs.set_shade_resolver([](double, double, double) { return false; });
+    ASSERT_TRUE(mobs.spawn("minecraft:skeleton", 0.0, 0.0));
+
+    for (int tick = 0; tick < 60; ++tick) {
+        mobs.tick({}, entity::Difficulty::Normal, false);
+    }
+    EXPECT_LT(mobs.mobs().front().health, 20.0) << "daylight burns undead";
+
+    // Under a roof, or at night, nothing burns.
+    entity::MobManager sheltered;
+    make_manager(sheltered);
+    sheltered.set_shade_resolver([](double, double, double) { return true; });
+    ASSERT_TRUE(sheltered.spawn("minecraft:skeleton", 0.0, 0.0));
+    for (int tick = 0; tick < 60; ++tick) {
+        sheltered.tick({}, entity::Difficulty::Normal, false);
+    }
+    EXPECT_DOUBLE_EQ(sheltered.mobs().front().health, 20.0);
+}
+
+TEST(MobAiTest, ACreativePlayerIsNotATarget) {
+    entity::MobManager mobs;
+    make_manager(mobs);
+    ASSERT_TRUE(mobs.spawn("minecraft:zombie", 0.0, 0.0));
+
+    entity::PlayerPos creative;
+    creative.z = 5.0;
+    creative.id = 3;
+    creative.creative = true;
+    for (int tick = 0; tick < 40; ++tick) {
+        mobs.tick({ creative });
+        EXPECT_TRUE(mobs.hits().empty());
+    }
+    EXPECT_NE(mobs.mobs().front().goal, entity::GoalKind::Melee);
+    EXPECT_EQ(mobs.mobs().front().target_id, 0);
+}
+
+TEST(MobAiTest, TheGoalSpeedModifierIsApplied) {
+    entity::MobManager mobs;
+    make_manager(mobs);
+    ASSERT_TRUE(mobs.spawn("minecraft:cow", 0.0, 0.0));
+    mobs.tick({});
+
+    // The first runnable goal of a cow is its water-avoiding stroll, registered at 1.0.
+    double expected = 1.0;
+    for (int i = 0; i < mobs.mobs().front().spec->goal_count; ++i) {
+        const auto& goal = data::kGoals[mobs.mobs().front().spec->goal_begin + i];
+        if (entity::goal_kind_from(goal.kind) == mobs.mobs().front().goal) {
+            expected = goal.speed;
+            break;
+        }
+    }
+    EXPECT_DOUBLE_EQ(mobs.mobs().front().goal_speed, expected);
+}
