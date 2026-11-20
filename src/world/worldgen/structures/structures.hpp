@@ -12,8 +12,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -47,7 +50,7 @@ namespace terila::world::worldgen {
     class Structures {
     public:
         bool init(std::uint64_t seed, const terrain::IdResolver& block,
-            std::vector<StructureKind> kinds) {
+            const std::function<int(std::string_view)>& biome_id, std::vector<StructureKind> kinds) {
             seed_ = seed;
             kinds_.clear();
             const StateTextResolver resolve = [&block](std::string_view text) {
@@ -76,6 +79,8 @@ namespace terila::world::worldgen {
                     continue;
                 }
                 item.id = std::move(kind.id);
+                // A structure only goes where its biome tag allows it to.
+                item.biomes = biomes_of(item.id, biome_id);
                 kinds_.push_back(std::move(item));
             }
             return !kinds_.empty();
@@ -85,9 +90,9 @@ namespace terila::world::worldgen {
 
         // Writes every structure that reaches into the chunk. `min_ground` keeps a structure
         // out of the water: a site whose surface is below it is left alone.
-        template<class SurfaceFn, class Write>
+        template<class SurfaceFn, class BiomeFn, class Write>
         int apply(std::int32_t chunk_x, std::int32_t chunk_z, std::int32_t min_ground,
-            SurfaceFn&& surface, Write&& write) const {
+            SurfaceFn&& surface, BiomeFn&& biome_of, Write&& write) const {
             int placed = 0;
             for (const Item& item : kinds_) {
                 const std::int32_t base_x = spread_cell(chunk_x, item.spread.spacing);
@@ -110,6 +115,13 @@ namespace terila::world::worldgen {
                         if (ground < min_ground) {
                             continue;
                         }
+                        if (!item.biomes.empty()) {
+                            const int biome = biome_of(centre_x, centre_z);
+                            if (std::find(item.biomes.begin(), item.biomes.end(), biome) ==
+                                item.biomes.end()) {
+                                continue;
+                            }
+                        }
                         const std::int32_t origin_x = centre_x - tmpl.size_x / 2;
                         const std::int32_t origin_z = centre_z - tmpl.size_z / 2;
                         // Two thirds of the template sit above the ground, the rest is the
@@ -128,7 +140,90 @@ namespace terila::world::worldgen {
             std::string id;
             StructureSpread spread;
             std::vector<StructureTemplate> templates;
+            std::vector<int> biomes;
         };
+
+        // The tags the game ships, loaded once: a structure's biome field is usually a tag.
+        static const std::unordered_map<std::string, std::vector<std::string>>& biome_tags() {
+            static const std::unordered_map<std::string, std::vector<std::string>> table = [] {
+                std::unordered_map<std::string, std::vector<std::string>> loaded;
+                std::string text;
+                if (!data::input::read_text("tags/all.json", text)) {
+                    return loaded;
+                }
+                try {
+                    const nlohmann::json parsed = nlohmann::json::parse(text);
+                    // The dump is one entry per registry; the biome tags are the ones a
+                    // structure names in its `biomes` field.
+                    for (const nlohmann::json& registry : parsed.at("data")) {
+                        if (registry.value("registry", std::string()) != "minecraft:worldgen/biome") {
+                            continue;
+                        }
+                        for (const nlohmann::json& tag : registry.at("tags")) {
+                            const std::string id = tag.value("id", std::string());
+                            for (const nlohmann::json& value : tag.at("values")) {
+                                const std::string name = value.is_string()
+                                    ? value.get<std::string>()
+                                    : value.value("id", std::string());
+                                if (!name.empty()) {
+                                    loaded[id].push_back(name);
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+                catch (const std::exception&) {
+                }
+                return loaded;
+            }();
+            return table;
+        }
+
+        // The biomes a structure may sit in, from its `biomes` field in structures.json.
+        static std::vector<int> biomes_of(const std::string& structure_id,
+            const std::function<int(std::string_view)>& biome_id) {
+            std::vector<int> ids;
+            std::string text;
+            if (!data::input::read_text("worldgen/structures.json", text)) {
+                return ids;
+            }
+            try {
+                const nlohmann::json parsed = nlohmann::json::parse(text);
+                for (const nlohmann::json& entry : parsed.at("data")) {
+                    if (entry.at("id").get<std::string>() != structure_id) {
+                        continue;
+                    }
+                    const nlohmann::json& biomes = entry.at("data").at("biomes");
+                    std::vector<std::string> names;
+                    if (biomes.is_string()) {
+                        std::string tag = biomes.get<std::string>();
+                        if (!tag.empty() && tag.front() == '#') {
+                            tag.erase(0, 1);
+                        }
+                        const auto found = biome_tags().find(tag);
+                        if (found != biome_tags().end()) {
+                            names = found->second;
+                        }
+                    }
+                    else if (biomes.is_array()) {
+                        for (const nlohmann::json& value : biomes) {
+                            names.push_back(value.get<std::string>());
+                        }
+                    }
+                    for (const std::string& name : names) {
+                        const int id = biome_id(name);
+                        if (id >= 0) {
+                            ids.push_back(id);
+                        }
+                    }
+                    break;
+                }
+            }
+            catch (const std::exception&) {
+            }
+            return ids;
+        }
 
         // The placement block of a set: salt, spacing and separation from the data.
         static StructureSpread spread_of(const std::string& set_id) {

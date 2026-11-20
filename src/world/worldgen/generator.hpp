@@ -105,7 +105,15 @@ namespace terila::world::worldgen {
             terrain::add_placed_light_sources(light_rules_, block);
             ores_.init(static_cast<std::uint64_t>(seed_), min_y_, world_top_ - 1, blocks_);
             plants_.init(blocks_, biomes_, sea_level_);
-            structures_.init(static_cast<std::uint64_t>(seed_), block, built_structures());
+            structures_.init(static_cast<std::uint64_t>(seed_), block,
+                [this](std::string_view name) -> int {
+                    const auto found = biome_index_.find(std::string(name));
+                    if (found == biome_index_.end()) {
+                        return -1;
+                    }
+                    return biomes_[static_cast<std::size_t>(found->second)].id;
+                },
+                built_structures());
             ready_ = true;
             return ready_;
         }
@@ -355,6 +363,11 @@ namespace terila::world::worldgen {
             if (!structures_.empty()) {
                 structures_.apply(cx, cz, sea_level_ + 1,
                     [this](std::int32_t x, std::int32_t z) { return surface_height(x, z); },
+                    [this](std::int32_t x, std::int32_t z) {
+                        const int index = biome_at(x, z);
+                        return index >= 0 && index < static_cast<int>(biomes_.size())
+                            ? biomes_[static_cast<std::size_t>(index)].id : -1;
+                    },
                     [&put](std::int32_t x, std::int32_t y, std::int32_t z, std::int32_t state) {
                         put(x, y, z, state);
                     });

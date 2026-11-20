@@ -1,4 +1,5 @@
 #include "world/worldgen/structures/placement.hpp"
+#include "world/worldgen/structures/structures.hpp"
 #include "world/worldgen/structures/template.hpp"
 
 #include <nlohmann/json.hpp>
@@ -198,6 +199,39 @@ namespace {
         terila::world::worldgen::apply_template(tmpl, 0, 64, 0, 1, 0,
             [&](std::int32_t, std::int32_t, std::int32_t, std::int32_t) { ++neighbour; });
         EXPECT_EQ(neighbour, 1);
+    }
+
+
+    TEST(StructurePlacementTest, AStructureOnlyGrowsInItsBiomes) {
+        if (!input_available()) {
+            GTEST_SKIP() << "input/ is not next to the build tree";
+        }
+        terila::world::worldgen::Structures structures;
+        const auto any_block = [](std::string_view) -> std::optional<std::int32_t> { return 5; };
+        const auto every_biome = [](std::string_view) { return 100; };
+        ASSERT_TRUE(structures.init(1337, any_block, every_biome,
+            terila::world::worldgen::built_structures()));
+
+        terila::world::worldgen::StructureSpread spread;
+        spread.salt = 34222645;
+        spread.spacing = 40;
+        spread.separation = 15;
+        const auto site = terila::world::worldgen::spread_site(1337, spread, 0, 0);
+        ASSERT_TRUE(site.valid);
+
+        const auto surface = [](std::int32_t, std::int32_t) { return 70; };
+        int allowed = 0;
+        structures.apply(site.chunk_x, site.chunk_z, 0, surface,
+            [](std::int32_t, std::int32_t) { return 100; },
+            [&allowed](std::int32_t, std::int32_t, std::int32_t, std::int32_t) { ++allowed; });
+        EXPECT_GT(allowed, 0);
+
+        // The same site in a biome the structure's tag does not name stays empty.
+        int rejected = 0;
+        structures.apply(site.chunk_x, site.chunk_z, 0, surface,
+            [](std::int32_t, std::int32_t) { return 101; },
+            [&rejected](std::int32_t, std::int32_t, std::int32_t, std::int32_t) { ++rejected; });
+        EXPECT_EQ(rejected, 0);
     }
 
 } // namespace
