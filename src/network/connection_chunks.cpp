@@ -107,20 +107,10 @@ namespace terila::network {
             }
         }
 
-        if (world_.chunk_modified(cx, cz)) {
-            auto taken = take();
-            auto chunk = std::move(taken.chunk);
-            world_.apply(chunk, air_state_);
-            relight_chunk(chunk);
-            auto out = terila::world::encode::encode(chunk);
-            LOG_DEBUG(Chunk, "chunk ({}, {}) served from {} in-memory edits", cx, cz,
-                world_.modified_count(cx, cz));
-            queue_persist(cx, cz, out, true);
-            return out;
-        }
-
-        // Nobody has edited this column, so the cached copy is what a fresh generation
-        // would produce and it can go straight out.
+        // The cache and the store already hold payloads with their light computed: every
+        // path that edits a column relights it before saving, and an edit drops the cached
+        // copy. Serving them first is what keeps a chunk load from re-running the light
+        // engine (and regenerating its eight neighbours) for a column that was already lit.
         if (const auto* cached = cache.find(cx, cz); cached != nullptr) {
             return cached->encoded;
         }
@@ -153,22 +143,8 @@ namespace terila::network {
                     auto generated = std::move(taken.chunk);
                     apply_loaded_chunk(*decoded, generated);
 
-                    if (world_.chunk_modified(cx, cz)) {
-                        // The column carries player edits, and the light stored with it was
-                        // computed before them: a block dug out of the terrain comes back as
-                        // a black hole until some later edit happens to relight the chunk.
-                        // Light it again from the overlay and keep the corrected copy.
-                        relight_chunk(*decoded);
-                        auto out = terila::world::encode::encode(*decoded);
-                        cache.put(std::move(generated), out);
-                        queue_persist(cx, cz, out, true);
-                        LOG_DEBUG(Chunk, "chunk ({}, {}) relit on load with {} edits", cx, cz,
-                            world_.modified_count(cx, cz));
-                        return out;
-                    }
-
-                    // Nothing was edited here, so the stored slot is already the payload a
-                    // fresh generation would produce; stream it back verbatim.
+                    // The stored slot was written after an edit, so its light already
+                    // matches its blocks; it streams back verbatim either way.
                     auto out = std::vector<std::uint8_t>(
                         reinterpret_cast<const std::uint8_t*>(stored.data()),
                         reinterpret_cast<const std::uint8_t*>(stored.data()) + stored.size());
@@ -181,10 +157,22 @@ namespace terila::network {
 
         auto taken = take();
         auto chunk = std::move(taken.chunk);
+
+        // No stored copy exists, so this column may carry edits that were never written:
+        // applying and relighting here is what keeps them visible. A plain column is
+        // deterministic, so it is cached rather than written back on every visit.
+        if (world_.chunk_modified(cx, cz)) {
+            world_.apply(chunk, air_state_);
+            relight_chunk(chunk);
+            auto out = terila::world::encode::encode(chunk);
+            cache.put(std::move(chunk), out);
+            queue_persist(cx, cz, out, true);
+            return out;
+        }
+
         auto out = taken.encoded.empty() ? terila::world::encode::encode(chunk)
                                          : std::move(taken.encoded);
-        cache.put(chunk, out);
-        queue_persist(cx, cz, out, false);
+        cache.put(std::move(chunk), out);
         return out;
     }
 
@@ -248,6 +236,12 @@ namespace terila::network {
             const auto found = neighbours.find(key);
             if (found != neighbours.end()) {
                 return found->second;
+            }
+            // The generator cache usually holds the columns that were just streamed, so a
+            // relight does not have to regenerate up to eight neighbours.
+            if (const auto* cached =
+                terila::world::WorldContext::shared().chunks().find(cx, cz)) {
+                return neighbours.emplace(key, cached->chunk).first->second;
             }
             return neighbours.emplace(key, terrain_.generate(cx, cz)).first->second;
         };

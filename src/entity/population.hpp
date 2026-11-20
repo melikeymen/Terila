@@ -152,7 +152,10 @@ namespace terila::entity {
         // that are being visited once it grows past this.
         static constexpr std::size_t kMaxTrackedChunks = 4096;
         static constexpr std::size_t kChunksPerTick = 32;
-        static constexpr int kInitialAttempts = 600;
+        // The starting population is a convenience: the cycle fills the world around the
+        // players anyway, so this only has to put something in front of the first join
+        // without holding up the listen.
+        static constexpr int kInitialAttempts = 160;
         static constexpr double kMinPlayerDistance = 24.0;
         static constexpr double kMinSpawnPointDistance = 24.0;
         static constexpr int kNightSkyDarken = 11;
