@@ -389,7 +389,7 @@ namespace terila::entity {
 
         // The three ways a mob leaves the world without dying: peace, distance, and standing
         // around for too long far from any player.
-        bool should_discard(const Mob& mob, const std::vector<PlayerPos>& players,
+        bool should_discard(Mob& mob, const std::vector<PlayerPos>& players,
             Difficulty difficulty) {
             if (mob.persistent || mob.kind == data::MobCategory::Misc) {
                 return false;
@@ -416,13 +416,20 @@ namespace terila::entity {
             if (nearest > distance * distance) {
                 return true;
             }
+
+            // Inside 32 blocks a mob is close enough to count as active, so the idle timer
+            // starts over. Without this a mob that came back kept its old count and could be
+            // dropped the moment it stepped out again.
             if (nearest < 32.0 * 32.0) {
+                mob.no_action_ticks = 0;
                 return false;
             }
             return mob.no_action_ticks > 600 && (next_random() % 800) == 0;
         }
 
         const std::vector<Mob>& mobs() const { return mobs_; }
+        // The storage itself, for callers that own the world state it mirrors.
+        std::vector<Mob>& mobs() { return mobs_; }
         // The hits that landed during the last tick.
         const std::vector<MobHit>& hits() const { return hits_; }
 

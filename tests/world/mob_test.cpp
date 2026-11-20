@@ -814,3 +814,25 @@ TEST(MobTest, TheIdIndexFollowsRemovals) {
     EXPECT_TRUE(mobs.damage(first, 1, 0.0f)) << "hits still resolve by id";
     EXPECT_TRUE(mobs.feed(cow, "minecraft:wheat")) << "feeding still resolves by id";
 }
+
+TEST(MobTest, ComingCloseResetsTheIdleDespawnTimer) {
+    entity::MobManager mobs;
+    make_manager(mobs);
+    ASSERT_TRUE(mobs.spawn("minecraft:zombie", 0.0, 0.0));
+
+    // The timer is high after a long time far away, then the player walks up to it.
+    mobs.mobs().front().no_action_ticks = 5000;
+    const std::vector<entity::PlayerPos> close = { { 0.0, 64.0, 8.0, 1 } };
+    mobs.tick(close);
+    ASSERT_FALSE(mobs.mobs().empty());
+    EXPECT_LE(mobs.mobs().front().no_action_ticks, 1)
+        << "within 32 blocks the idle timer starts over";
+
+    // Between 32 and 128 blocks it keeps counting, which is what the random drop checks.
+    mobs.mobs().front().no_action_ticks = 5000;
+    const std::vector<entity::PlayerPos> distant = { { 0.0, 64.0, 40.0, 1 } };
+    mobs.tick(distant);
+    ASSERT_FALSE(mobs.mobs().empty());
+    EXPECT_GT(mobs.mobs().front().no_action_ticks, 5000)
+        << "outside 32 blocks the timer keeps running";
+}
