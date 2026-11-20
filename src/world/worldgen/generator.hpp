@@ -305,7 +305,7 @@ namespace terila::world::worldgen {
                 }
             };
 
-            const auto cache = std::make_unique<ColumnCache>();
+            ColumnCache& cache = thread_cache();
             const bool timed = std::getenv("TERILA_WORLDGEN_TIME") != nullptr;
             auto stamp = std::chrono::steady_clock::now();
             const auto mark = [&](const char* stage) {
@@ -345,7 +345,7 @@ namespace terila::world::worldgen {
                 for (int lx = 0; lx < 16; ++lx) {
                     const std::int32_t wx = wx0 + lx;
                     const std::int32_t wz = wz0 + lz;
-                    const Column col = column(wx, wz, *cache);
+                    const Column col = column(wx, wz, cache);
                     height_sum += col.height;
                     height_min = std::min(height_min, col.height);
                     height_max = std::max(height_max, col.height);
@@ -421,7 +421,7 @@ namespace terila::world::worldgen {
             int tree_columns = 0;
             for (std::int32_t tz = wz0 - 2; tz <= wz0 + 17; ++tz) {
                 for (std::int32_t tx = wx0 - 2; tx <= wx0 + 17; ++tx) {
-                    const Column plant = column(tx, tz, *cache);
+                    const Column plant = column(tx, tz, cache);
                     const auto& biome = biomes_[static_cast<std::size_t>(plant.biome)];
                     if (plant.height <= sea_level_ || plant.height > sea_level_ + 40) {
                         continue;
@@ -458,7 +458,7 @@ namespace terila::world::worldgen {
             }
 
             if (timed) {
-                const Column center = column(wx0 + 8, wz0 + 8, *cache);
+                const Column center = column(wx0 + 8, wz0 + 8, cache);
                 LOG_INFO(Chunk, "worldgen trees {} center biome {} chance {} height {} "
                     "avg {} min {} max {}", tree_columns, center.biome,
                     biomes_[static_cast<std::size_t>(center.biome)].tree_chance,
@@ -599,7 +599,7 @@ namespace terila::world::worldgen {
             {
                 const auto sample = [&](std::int32_t wx, std::int32_t wy, std::int32_t wz) {
                     if (!BlockSampleCache::is_enabled()) {
-                        return halo_state_at(wx, wy, wz, *cache);
+                        return halo_state_at(wx, wy, wz, cache);
                     }
                     const std::int64_t key = block_key(wx, wy, wz);
                     if (const auto hit = block_cache_->find(key, cache_salt_)) {
@@ -607,23 +607,31 @@ namespace terila::world::worldgen {
                         return *hit;
                     }
                     BlockSampleCache::count_miss();
-                    const std::int32_t state = halo_state_at(wx, wy, wz, *cache);
+                    const std::int32_t state = halo_state_at(wx, wy, wz, cache);
                     block_cache_->insert(key, cache_salt_, state);
                     return state;
                 };
-                const auto top = [this, &cache](std::int32_t wx, std::int32_t wz) {
-                    if (!BlockSampleCache::is_enabled()) {
-                        return sky_top(wx, wz, *cache);
+                // The engine asks for one column top per halo column, 2116 of them, so the
+                // whole halo is answered from one table instead of a scan per column.
+                constexpr int kSide = 16 + 2 * LightEngine::kRadius;
+                const std::int32_t hx0 = wx0 - LightEngine::kRadius;
+                const std::int32_t hz0 = wz0 - LightEngine::kRadius;
+                std::vector<int> tops;
+                plants_.sky_tops(hx0, hz0, kSide,
+                    [this, &cache](std::int32_t x, std::int32_t z) {
+                        return cached_column(x, z, cache);
+                    },
+                    tops);
+                mark("tops");
+                const auto top = [this, &cache, &tops, hx0, hz0](std::int32_t wx,
+                    std::int32_t wz) {
+                    const std::int32_t tx = wx - hx0;
+                    const std::int32_t tz = wz - hz0;
+                    if (tx < 0 || tx >= kSide || tz < 0 || tz >= kSide) {
+                        return sky_top(wx, wz, cache);
                     }
-                    const std::int64_t key = block_key(wx, kTopMarkerY, wz);
-                    if (const auto hit = block_cache_->find(key, cache_salt_)) {
-                        BlockSampleCache::count_hit();
-                        return *hit;
-                    }
-                    BlockSampleCache::count_miss();
-                    const int result = sky_top(wx, wz, *cache);
-                    block_cache_->insert(key, cache_salt_, result);
-                    return result;
+                    return tops[static_cast<std::size_t>(tz) * kSide +
+                        static_cast<std::size_t>(tx)];
                 };
                 LightEngine::compute(chunk, light_rules_, top, sample);
             }

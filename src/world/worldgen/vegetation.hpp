@@ -31,41 +31,75 @@ namespace terila::world::worldgen {
         // left out on purpose, it lets sunlight straight through.
         template<class ColumnFn>
         int sky_top(std::int32_t x, std::int32_t z, ColumnFn&& get_column) const {
-            const auto col = get_column(x, z);
-            int top = std::max(col.height, sea_level_ > col.height ? sea_level_ : col.height);
+            int top = base_top(get_column(x, z));
 
             for (std::int32_t tz = z - 2; tz <= z + 2; ++tz) {
                 for (std::int32_t tx = x - 2; tx <= x + 2; ++tx) {
                     const auto plant = get_column(tx, tz);
-                    const auto& biome = biomes_[static_cast<std::size_t>(plant.biome)];
                     if (plant.height <= sea_level_ || plant.height > sea_level_ + 40) {
                         continue;
                     }
-                    const int dx = x - tx;
-                    const int dz = z - tz;
-                    const int distance = std::abs(dx) + std::abs(dz);
-                    const bool trunk_column = dx == 0 && dz == 0;
-
-                    if (has_tree(biome, tx, tz)) {
-                        const int trunk = trunk_height(tx, tz);
-                        if (trunk_column) {
-                            top = std::max(top, plant.height + trunk);
-                        }
-                        for (int dy = trunk + 1; dy >= trunk - 2; --dy) {
-                            const bool inside_trunk = trunk_column && dy <= trunk;
-                            if (distance <= 3 && !inside_trunk &&
-                                !(dy == trunk + 1 && distance > 1)) {
-                                top = std::max(top, plant.height + dy);
-                                break;
-                            }
-                        }
+                    const auto& biome = biomes_[static_cast<std::size_t>(plant.biome)];
+                    const bool tree = has_tree(biome, tx, tz);
+                    const bool cactus = has_cactus(biome, tx, tz);
+                    if (!tree && !cactus) {
+                        continue;
                     }
-                    if (has_cactus(biome, tx, tz) && trunk_column) {
-                        top = std::max(top, plant.height + cactus_height(tx, tz));
-                    }
+                    top = std::max(top,
+                        lift(plant.height, x - tx, z - tz, tree,
+                            tree ? trunk_height(tx, tz) : 0, cactus ? cactus_height(tx, tz) : 0));
                 }
             }
             return top;
+        }
+
+        // The same answer for every column of a square, built the other way round: each plant
+        // lifts the columns it reaches instead of each column scanning the plants around it.
+        // The light pass asks for a fifteen block halo, 2116 columns per chunk, and scanning
+        // them one by one costs as much as the rest of the chunk together.
+        template<class ColumnFn>
+        void sky_tops(std::int32_t x0, std::int32_t z0, int side, ColumnFn&& get_column,
+            std::vector<int>& out) const {
+            out.resize(static_cast<std::size_t>(side) * static_cast<std::size_t>(side));
+            for (int z = 0; z < side; ++z) {
+                for (int x = 0; x < side; ++x) {
+                    out[static_cast<std::size_t>(z) * static_cast<std::size_t>(side) +
+                        static_cast<std::size_t>(x)] = base_top(get_column(x0 + x, z0 + z));
+                }
+            }
+
+            for (std::int32_t pz = z0 - 2; pz < z0 + side + 2; ++pz) {
+                for (std::int32_t px = x0 - 2; px < x0 + side + 2; ++px) {
+                    const auto plant = get_column(px, pz);
+                    if (plant.height <= sea_level_ || plant.height > sea_level_ + 40) {
+                        continue;
+                    }
+                    const auto& biome = biomes_[static_cast<std::size_t>(plant.biome)];
+                    const bool tree = has_tree(biome, px, pz);
+                    const bool cactus = has_cactus(biome, px, pz);
+                    if (!tree && !cactus) {
+                        continue;
+                    }
+                    const int trunk = tree ? trunk_height(px, pz) : 0;
+                    const int cactus_height = cactus ? this->cactus_height(px, pz) : 0;
+                    for (int dz = -2; dz <= 2; ++dz) {
+                        const int tz = pz + dz - z0;
+                        if (tz < 0 || tz >= side) {
+                            continue;
+                        }
+                        for (int dx = -2; dx <= 2; ++dx) {
+                            const int tx = px + dx - x0;
+                            if (tx < 0 || tx >= side) {
+                                continue;
+                            }
+                            int& cell = out[static_cast<std::size_t>(tz) *
+                                static_cast<std::size_t>(side) + static_cast<std::size_t>(tx)];
+                            cell = std::max(cell,
+                                lift(plant.height, dx, dz, tree, trunk, cactus_height));
+                        }
+                    }
+                }
+            }
         }
 
         // Replaces an air block with a plant block when one reaches it.
@@ -112,6 +146,41 @@ namespace terila::world::worldgen {
 
         int trunk_height(std::int32_t x, std::int32_t z) const {
             return 4 + static_cast<int>(terrain::detail::hash3(x, z, kFeatureSeed + 1) % 3);
+        }
+
+        // The part of a sky top that no plant is responsible for: the surface, or the sea
+        // above a flooded floor.
+        template<class Column>
+        int base_top(const Column& column) const {
+            return std::max(column.height,
+                sea_level_ > column.height ? sea_level_ : column.height);
+        }
+
+        // How far one plant lifts a neighbouring column, or nothing at all. The shape is the
+        // leaf blob: the trunk column keeps the sky out to the trunk top, a directly adjacent
+        // column up to one block above it, and every column within three blocks to the trunk
+        // top. Answering nothing matters, because a hillside neighbour must not raise a lower
+        // column to its own surface.
+        static constexpr int kNoLift = -1000000;
+
+        int lift(int height, int dx, int dz, bool tree, int trunk, int cactus) const {
+            const int distance = std::abs(dx) + std::abs(dz);
+            int top = kNoLift;
+            if (tree) {
+                if (distance == 0) {
+                    top = height + trunk;
+                }
+                else if (distance == 1) {
+                    top = height + trunk + 1;
+                }
+                else if (distance <= 3) {
+                    top = height + trunk;
+                }
+            }
+            if (cactus > 0 && distance == 0) {
+                top = std::max(top, height + cactus);
+            }
+            return top;
         }
 
         int cactus_height(std::int32_t x, std::int32_t z) const {
