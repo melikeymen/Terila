@@ -742,3 +742,23 @@ TEST(PopulationTest, TheLocalTimeMapDoesNotGrowForever) {
     EXPECT_LE(spawner.tracked_chunks(), 4096u + 9u)
         << "the per-chunk time map is trimmed once it passes its bound";
 }
+
+TEST(PopulationTest, TheChunkListIsOnlyRebuiltWhenAPlayerChangesChunk) {
+    entity::MobManager mobs;
+    make_manager(mobs);
+
+    entity::Population spawner;
+    spawner.set_world(flat_world(world::terrain::kPlains));
+
+    std::uint32_t rng = 0xFEEDFACEu;
+    const std::vector<entity::PlayerPos> still = { { 8.0, 64.0, 8.0, 1 } };
+    for (int tick = 0; tick < 50; ++tick) {
+        spawner.tick(mobs, still, true, rng, 0);
+    }
+    EXPECT_EQ(spawner.chunk_list_builds(), 1u)
+        << "standing still does not rebuild the chunk list every tick";
+
+    const std::vector<entity::PlayerPos> moved = { { 8.0 + 16.0, 64.0, 8.0, 1 } };
+    spawner.tick(mobs, moved, true, rng, 0);
+    EXPECT_EQ(spawner.chunk_list_builds(), 2u) << "crossing a chunk border rebuilds it";
+}

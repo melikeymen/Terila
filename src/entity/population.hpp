@@ -71,36 +71,22 @@ namespace terila::entity {
             return spawned;
         }
 
-        // One tick of the cycle. The chunk list is rebuilt from the players, capacities are
-        // derived from its size, and only a rotating window of chunks is visited so the cost
-        // per tick stays flat no matter how far the players have explored.
+        // One tick of the cycle. The chunk list only changes when a player crosses a chunk
+        // border, capacities are derived from its size, and only a rotating window of chunks
+        // is visited so the cost per tick stays flat no matter how far the players have
+        // explored.
         void tick(MobManager& mobs, const std::vector<PlayerPos>& players, bool night,
             std::uint32_t& rng, std::int64_t game_time) {
             if (players.empty()) {
                 return;
             }
-
-            std::vector<std::pair<std::int32_t, std::int32_t>> chunks;
-            std::unordered_set<std::uint64_t> seen;
-            for (const auto& player : players) {
-                const auto center_x = static_cast<std::int32_t>(std::floor(player.x)) >> 4;
-                const auto center_z = static_cast<std::int32_t>(std::floor(player.z)) >> 4;
-                for (int dz = -kSpawnChunkRadius; dz <= kSpawnChunkRadius; ++dz) {
-                    for (int dx = -kSpawnChunkRadius; dx <= kSpawnChunkRadius; ++dx) {
-                        const std::int32_t cx = center_x + dx;
-                        const std::int32_t cz = center_z + dz;
-                        if (seen.insert(chunk_key(cx, cz)).second) {
-                            chunks.emplace_back(cx, cz);
-                        }
-                    }
-                }
-            }
-            if (chunks.empty()) {
+            if (!refresh_chunks(players)) {
                 return;
             }
+            const auto& chunks = chunks_;
 
             std::array<std::size_t, 8> counts{};
-            count_categories(mobs, players, counts);
+            count_categories(mobs, counts);
 
             // The room a category has: its per-chunk maximum scaled to the spawnable area.
             // 289 is 17 squared, the area the maximum is written for.
@@ -130,8 +116,12 @@ namespace terila::entity {
             }
             chunk_cursor_ = (chunk_cursor_ + window) % chunks.size();
             age_local_ticks(players);
-            bound_local_time(seen);
+            bound_local_time(chunk_set_);
         }
+
+        // Built chunk lists since the process started, so a test can see that a stationary
+        // group of players pays for the list once instead of once a tick.
+        std::size_t chunk_list_builds() const noexcept { return chunk_list_builds_; }
 
         // How many chunks the local time is being tracked for. Exposed so the bound can be
         // checked without reaching into the map.
@@ -202,11 +192,23 @@ namespace terila::entity {
             return std::nullopt;
         }
 
-        static const data::BiomeSpawnList* list_for(int biome) {
-            if (biome < 0 || biome >= static_cast<int>(world::terrain::kBiomeCount)) {
+        static constexpr std::size_t kBiomeCount =
+            static_cast<std::size_t>(world::terrain::kBiomeCount);
+
+        // The biome table is fixed for the run, so the linear search over its names is paid
+        // once per biome instead of once per spawn attempt.
+        const data::BiomeSpawnList* list_for(int biome) {
+            if (biome < 0 || biome >= static_cast<int>(kBiomeCount)) {
                 return nullptr;
             }
-            return data::find_biome_spawns(world::terrain::kBiomeNames[biome]);
+            if (!biome_lists_ready_) {
+                for (std::size_t i = 0; i < kBiomeCount; ++i) {
+                    biome_lists_[i] =
+                        data::find_biome_spawns(world::terrain::kBiomeNames[i]);
+                }
+                biome_lists_ready_ = true;
+            }
+            return biome_lists_[static_cast<std::size_t>(biome)];
         }
 
         static std::size_t count_category(const MobManager& mobs, data::MobCategory category) {
@@ -216,8 +218,43 @@ namespace terila::entity {
                 }));
         }
 
-        void count_categories(const MobManager& mobs, const std::vector<PlayerPos>& players,
-            std::array<std::size_t, 8>& counts) const {
+        // Rebuilds the spawnable chunk list only when a player changed chunk, and counts the
+        // living mobs in it in one pass. Both used to cost a full rebuild and a player loop
+        // per mob, every tick.
+        bool refresh_chunks(const std::vector<PlayerPos>& players) {
+            std::vector<std::pair<std::int32_t, std::int32_t>> centers;
+            centers.reserve(players.size());
+            for (const auto& player : players) {
+                centers.emplace_back(
+                    static_cast<std::int32_t>(std::floor(player.x)) >> 4,
+                    static_cast<std::int32_t>(std::floor(player.z)) >> 4);
+            }
+            if (centers == player_chunks_ && !chunks_.empty()) {
+                return true;
+            }
+
+            player_chunks_ = std::move(centers);
+            chunks_.clear();
+            chunk_set_.clear();
+            for (const auto& [center_x, center_z] : player_chunks_) {
+                for (int dz = -kSpawnChunkRadius; dz <= kSpawnChunkRadius; ++dz) {
+                    for (int dx = -kSpawnChunkRadius; dx <= kSpawnChunkRadius; ++dx) {
+                        const std::int32_t cx = center_x + dx;
+                        const std::int32_t cz = center_z + dz;
+                        if (chunk_set_.insert(chunk_key(cx, cz)).second) {
+                            chunks_.emplace_back(cx, cz);
+                        }
+                    }
+                }
+            }
+            ++chunk_list_builds_;
+            if (!chunks_.empty()) {
+                chunk_cursor_ %= chunks_.size();
+            }
+            return !chunks_.empty();
+        }
+
+        void count_categories(const MobManager& mobs, std::array<std::size_t, 8>& counts) const {
             // Counted over the chunk area the cycle spawns in, not a circular radius: a mob
             // that walked to the corner of that area still occupies its slot.
             for (const auto& mob : mobs.mobs()) {
@@ -226,16 +263,8 @@ namespace terila::entity {
                 }
                 const auto mob_cx = static_cast<std::int32_t>(std::floor(mob.x)) >> 4;
                 const auto mob_cz = static_cast<std::int32_t>(std::floor(mob.z)) >> 4;
-                for (const auto& player : players) {
-                    const auto player_cx =
-                        static_cast<std::int32_t>(std::floor(player.x)) >> 4;
-                    const auto player_cz =
-                        static_cast<std::int32_t>(std::floor(player.z)) >> 4;
-                    if (std::abs(mob_cx - player_cx) <= kSpawnChunkRadius &&
-                        std::abs(mob_cz - player_cz) <= kSpawnChunkRadius) {
-                        ++counts[static_cast<std::size_t>(mob.category())];
-                        break;
-                    }
+                if (chunk_set_.count(chunk_key(mob_cx, mob_cz)) != 0) {
+                    ++counts[static_cast<std::size_t>(mob.category())];
                 }
             }
         }
@@ -568,6 +597,12 @@ namespace terila::entity {
         bool has_spawn_point_ = false;
         float moon_brightness_ = 0.0f;
         std::size_t chunk_cursor_ = 0;
+        std::size_t chunk_list_builds_ = 0;
+        std::vector<std::pair<std::int32_t, std::int32_t>> player_chunks_;
+        std::vector<std::pair<std::int32_t, std::int32_t>> chunks_;
+        std::unordered_set<std::uint64_t> chunk_set_;
+        std::array<const data::BiomeSpawnList*, kBiomeCount> biome_lists_{};
+        bool biome_lists_ready_ = false;
         std::unordered_map<std::uint64_t, std::int64_t> local_time_;
     };
 
