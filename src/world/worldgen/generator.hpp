@@ -49,7 +49,8 @@ namespace terila::world::worldgen {
     class Generator {
     public:
         bool init(int min_y, int section_count, std::uint32_t seed,
-            const terrain::IdResolver& block, const terrain::IdResolver& biome) {
+            const terrain::IdResolver& block, const terrain::IdResolver& biome,
+            const StateTextResolver& state = {}) {
             min_y_ = min_y;
             section_count_ = section_count;
             seed_ = seed;
@@ -113,7 +114,7 @@ namespace terila::world::worldgen {
                     }
                     return biomes_[static_cast<std::size_t>(found->second)].id;
                 },
-                built_structures());
+                built_structures(), state);
             ready_ = true;
             return ready_;
         }

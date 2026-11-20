@@ -234,4 +234,37 @@ namespace {
         EXPECT_EQ(rejected, 0);
     }
 
+
+    TEST(StructurePlacementTest, AStructureUsesTheStateThePaletteNames) {
+        if (!input_available()) {
+            GTEST_SKIP() << "input/ is not next to the build tree";
+        }
+        terila::world::worldgen::Structures structures;
+        const auto any_block = [](std::string_view) -> std::optional<std::int32_t> { return 5; };
+        const auto every_biome = [](std::string_view) { return 100; };
+        // The variant table behind the palette decides what lands: when the caller can name a
+        // full state, every template cell must carry it instead of the block's default.
+        const terila::world::worldgen::StateTextResolver palette =
+            [](std::string_view) { return 4242; };
+        ASSERT_TRUE(structures.init(1337, any_block, every_biome,
+            terila::world::worldgen::built_structures(), palette));
+
+        terila::world::worldgen::StructureSpread spread;
+        spread.salt = 34222645;
+        spread.spacing = 40;
+        spread.separation = 15;
+        const auto site = terila::world::worldgen::spread_site(1337, spread, 0, 0);
+
+        int from_palette = 0;
+        int from_block_default = 0;
+        structures.apply(site.chunk_x, site.chunk_z, 0,
+            [](std::int32_t, std::int32_t) { return 70; },
+            [](std::int32_t, std::int32_t) { return 100; },
+            [&](std::int32_t, std::int32_t, std::int32_t, std::int32_t state) {
+                (state == 4242 ? from_palette : from_block_default) += 1;
+            });
+        EXPECT_GT(from_palette, 0);
+        EXPECT_EQ(from_block_default, 0);
+    }
+
 } // namespace

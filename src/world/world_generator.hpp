@@ -42,7 +42,8 @@ namespace terila::world {
     class WorldGenerator {
     public:
         bool init(WorldType type, int min_y, int section_count, std::uint32_t seed,
-            const terrain::IdResolver& block, const terrain::IdResolver& biome) {
+            const terrain::IdResolver& block, const terrain::IdResolver& biome,
+            const worldgen::StateTextResolver& state = {}) {
             type_ = type;
             min_y_ = min_y;
             section_count_ = section_count;
@@ -51,7 +52,7 @@ namespace terila::world {
             biome_ = biome;
 
             if (type_ != WorldType::Flat) {
-                ready_ = terrain_.init(min_y, section_count, seed, block, biome);
+                ready_ = terrain_.init(min_y, section_count, seed, block, biome, state);
                 return ready_;
             }
 

@@ -356,8 +356,13 @@ int main() {
             world_seed, srv.seed_value());
     }
 
+    // Structure palettes name a full block state, not just a block, so handing the generator
+    // the variant table keeps stairs and slabs facing the way the template drew them.
+    const terila::world::worldgen::StateTextResolver resolve_state_text = [&data](std::string_view text) {
+        return terila::world::worldgen::template_state_id(text, data.block_states, data.block_state_ids);
+    };
     if (!world_terrain.init(world_type, data.overworld.min_y, data.overworld.height / 16,
-            world_seed, resolve_block_id, resolve_biome_id)) {
+            world_seed, resolve_block_id, resolve_biome_id, resolve_state_text)) {
         LOG_FATAL(Data, "{} world generator failed to initialise",
             terila::world::world_type_name(world_type));
         return 7;

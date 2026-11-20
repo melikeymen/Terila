@@ -50,10 +50,11 @@ namespace terila::world::worldgen {
     class Structures {
     public:
         bool init(std::uint64_t seed, const terrain::IdResolver& block,
-            const std::function<int(std::string_view)>& biome_id, std::vector<StructureKind> kinds) {
+            const std::function<int(std::string_view)>& biome_id, std::vector<StructureKind> kinds,
+            const StateTextResolver& state = {}) {
             seed_ = seed;
             kinds_.clear();
-            const StateTextResolver resolve = [&block](std::string_view text) {
+            const StateTextResolver resolve = state ? state : StateTextResolver([&block](std::string_view text) {
                 // The generator knows block names, not states, so a palette entry lands on
                 // the block's default state.
                 const std::size_t bracket = text.find('[');
@@ -61,7 +62,7 @@ namespace terila::world::worldgen {
                     bracket == std::string_view::npos ? text : text.substr(0, bracket);
                 const auto id = block(name);
                 return id ? *id : 0;
-            };
+            });
 
             for (StructureKind& kind : kinds) {
                 Item item;

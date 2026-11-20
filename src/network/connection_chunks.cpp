@@ -26,9 +26,12 @@ namespace terila::network {
 
         const auto resolve_block = [this](std::string_view name) { return block_state(name); };
         const auto resolve_biome = [this](std::string_view name) { return biome_state(name); };
+        const auto resolve_state_text = [this](std::string_view text) {
+            return world::worldgen::template_state_id(text, data_.block_states, data_.block_state_ids);
+        };
 
         if (!terrain_.init(world_type_, data_.overworld.min_y, data_.overworld.height / 16,
-                world_seed_, resolve_block, resolve_biome)) {
+                world_seed_, resolve_block, resolve_biome, resolve_state_text)) {
             LOG_CRITICAL(Chunk, "cannot initialise the {} world generator — no player can join "
                 "until the block and biome registries are fixed",
                 terila::world::world_type_name(world_type_));
