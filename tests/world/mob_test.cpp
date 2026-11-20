@@ -722,3 +722,23 @@ TEST(MobAiTest, TheGoalSpeedModifierIsApplied) {
     }
     EXPECT_DOUBLE_EQ(mobs.mobs().front().goal_speed, expected);
 }
+
+TEST(PopulationTest, TheLocalTimeMapDoesNotGrowForever) {
+    entity::MobManager mobs;
+    make_manager(mobs);
+
+    entity::Population spawner;
+    spawner.set_world(flat_world(world::terrain::kPlains));
+
+    std::uint32_t rng = 0x0BADF00Du;
+    // A player walking east forever: every tick ages a new three by three patch of chunks.
+    for (int step = 0; step < 600; ++step) {
+        const std::vector<entity::PlayerPos> players = {
+            { static_cast<double>(step) * 16.0 + 8.0, 64.0, 0.0, 1 } };
+        spawner.tick(mobs, players, true, rng, 0);
+    }
+
+    EXPECT_GT(spawner.tracked_chunks(), 0u);
+    EXPECT_LE(spawner.tracked_chunks(), 4096u + 9u)
+        << "the per-chunk time map is trimmed once it passes its bound";
+}

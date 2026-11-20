@@ -130,7 +130,12 @@ namespace terila::entity {
             }
             chunk_cursor_ = (chunk_cursor_ + window) % chunks.size();
             age_local_ticks(players);
+            bound_local_time(seen);
         }
+
+        // How many chunks the local time is being tracked for. Exposed so the bound can be
+        // checked without reaching into the map.
+        std::size_t tracked_chunks() const noexcept { return local_time_.size(); }
 
         std::int64_t local_ticks(std::int32_t cx, std::int32_t cz) const {
             const auto found = local_time_.find(chunk_key(cx, cz));
@@ -153,6 +158,9 @@ namespace terila::entity {
 
     private:
         static constexpr int kSpawnChunkRadius = 8;
+        // The local time only matters near players, so the map is trimmed back to the chunks
+        // that are being visited once it grows past this.
+        static constexpr std::size_t kMaxTrackedChunks = 4096;
         static constexpr std::size_t kChunksPerTick = 32;
         static constexpr int kInitialAttempts = 600;
         static constexpr double kMinPlayerDistance = 24.0;
@@ -252,6 +260,25 @@ namespace terila::entity {
             const double dx = ax - bx;
             const double dz = az - bz;
             return dx * dx + dz * dz;
+        }
+
+        // A world can be explored for days; the counter per chunk must not follow it forever.
+        // Once the map is over the bound, chunks nobody is near any more are dropped.
+        void bound_local_time(const std::unordered_set<std::uint64_t>& live) {
+            if (local_time_.size() <= kMaxTrackedChunks) {
+                return;
+            }
+            for (auto it = local_time_.begin(); it != local_time_.end();) {
+                if (live.count(it->first) == 0) {
+                    it = local_time_.erase(it);
+                }
+                else {
+                    ++it;
+                }
+            }
+            while (local_time_.size() > kMaxTrackedChunks) {
+                local_time_.erase(local_time_.begin());
+            }
         }
 
         void age_local_ticks(const std::vector<PlayerPos>& players) {
