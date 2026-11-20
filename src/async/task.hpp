@@ -80,11 +80,13 @@ namespace terila::async {
 
         Task(const Task&) = delete;
         Task& operator=(const Task&) = delete;
-        Task(Task&& other) noexcept : handle_(std::exchange(other.handle_, nullptr)) {}
+        Task(Task&& other) noexcept : handle_(std::exchange(other.handle_, nullptr)),
+            suspended_(std::exchange(other.suspended_, nullptr)) {}
         Task& operator=(Task&& other) noexcept {
             if (this != &other) {
                 destroy();
                 handle_ = std::exchange(other.handle_, nullptr);
+                suspended_ = std::exchange(other.suspended_, nullptr);
             }
             return *this;
         }
@@ -96,7 +98,21 @@ namespace terila::async {
             if (handle_ == nullptr || handle_.done()) {
                 return false;
             }
-            handle_.resume();
+
+            // Resume the coroutine that suspended last, not the one this Task owns. After a
+            // child yields, the parent is still parked on the child's await, so resuming the
+            // parent would read a result the child has not produced yet.
+            std::coroutine_handle<> current = handle_;
+            if (suspended_ != nullptr && !suspended_.done()) {
+                current = suspended_;
+            }
+
+            detail::Context context;
+            auto* previous = detail::active;
+            detail::active = &context;
+            current.resume();
+            detail::active = previous;
+            suspended_ = context.suspended;
             return !handle_.done();
         }
 
@@ -134,9 +150,10 @@ namespace terila::async {
             std::coroutine_handle<> current = handle_;
             while (!finished()) {
                 detail::Context context;
+                auto* previous = detail::active;
                 detail::active = &context;
                 current.resume();
-                detail::active = nullptr;
+                detail::active = previous;
                 if (context.suspended != nullptr) {
                     current = context.suspended;
                 }
@@ -172,12 +189,15 @@ namespace terila::async {
 
     private:
         std::coroutine_handle<promise_type> handle_ = nullptr;
+        // The innermost coroutine that suspended inside this task's chain.
+        std::coroutine_handle<> suspended_ = nullptr;
 
         void destroy() {
             if (handle_ != nullptr) {
                 handle_.destroy();
                 handle_ = nullptr;
             }
+            suspended_ = nullptr;
         }
     };
 
@@ -211,9 +231,10 @@ namespace terila::async {
             }
 
             detail::Context context;
+            auto* previous = detail::active;
             detail::active = &context;
             current_.resume();
-            detail::active = nullptr;
+            detail::active = previous;
             if (context.suspended != nullptr) {
                 current_ = context.suspended;
             }

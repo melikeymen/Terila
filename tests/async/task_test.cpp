@@ -61,3 +61,24 @@ TEST(AsyncTaskTest, ForwardsAFailureToTheWaiter) {
     EXPECT_THROW(failing().wait(), std::runtime_error);
 }
 
+
+TEST(AsyncTaskTest, StepsThroughAChildTask) {
+    auto task = chain(3);
+    // The child yields once, so the first step ends inside add_after_yield. The second step
+    // has to resume that child, which then hands control back to the parent.
+    EXPECT_TRUE(task.step());
+    EXPECT_FALSE(task.step());
+    EXPECT_EQ(task.take(), 8);
+}
+
+TEST(AsyncTaskTest, SteppingReportsFinishedOnlyAfterTheChildReturned) {
+    int steps = 2;
+    auto task = countdown(steps);
+    int seen = 0;
+    while (task.step()) {
+        ++seen;
+        ASSERT_LE(seen, 10) << "stepping must make progress";
+    }
+    EXPECT_EQ(seen, 2) << "one step per yield";
+    EXPECT_EQ(task.take(), std::string("done"));
+}
