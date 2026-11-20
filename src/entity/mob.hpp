@@ -119,6 +119,12 @@ namespace terila::entity {
         bool in_sun = false;
         int sun_ticks = 0;
 
+        // Derived from the species once, at spawn: the goal list and the type name never
+        // change, and these were being recomputed for every mob on every tick.
+        bool undead = false;
+        bool needs_attack_fallback = false;
+        GoalKind fallback_attack = GoalKind::Melee;
+
         data::MobCategory category() const noexcept { return kind; }
         bool is_monster() const noexcept { return kind == data::MobCategory::Monster; }
         bool adult() const noexcept { return !baby; }
@@ -176,6 +182,10 @@ namespace terila::entity {
             mob.id = next_id_++;
             mob.type_name = std::string(spec->id);
             mob.kind = spec->category;
+            mob.undead = is_undead(mob.type_name);
+            mob.needs_attack_fallback = spec->category == data::MobCategory::Monster &&
+                !has_attack_goal(*spec);
+            mob.fallback_attack = default_attack_kind(mob.type_name);
             if (type_ids_ != nullptr) {
                 if (const auto found = type_ids_->find(mob.type_name); found != type_ids_->end()) {
                     mob.type_id = found->second;
@@ -324,8 +334,8 @@ namespace terila::entity {
 
                 // Daylight decides two things for undead: they keep out of it, and being in
                 // it burns them once a second.
-                mob.in_sun = !night && shade_resolver_ && !shade_resolver_(mob.x, mob.y, mob.z) &&
-                    is_undead(mob.type_name);
+                mob.in_sun = !night && mob.undead && shade_resolver_ &&
+                    !shade_resolver_(mob.x, mob.y, mob.z);
                 if (mob.in_sun && (++mob.sun_ticks % kBurnIntervalTicks) == 0) {
                     mob.health -= kBurnDamage;
                     mob.hurt_ticks = 10;
@@ -454,9 +464,8 @@ namespace terila::entity {
             if (mob.is_monster() && mob.target_id == 0) {
                 acquire_target(mob, players);
             }
-            const bool synthetic_attack = mob.is_monster() && mob.target_id != 0 &&
-                !has_attack_goal(mob);
-            const GoalKind synthetic_kind = default_attack_kind(mob.type_name);
+            const bool synthetic_attack = mob.needs_attack_fallback && mob.target_id != 0;
+            const GoalKind synthetic_kind = mob.fallback_attack;
 
             for (int i = 0; i < mob.spec->goal_count; ++i) {
                 const auto& spec = data::kGoals[mob.spec->goal_begin + i];
@@ -494,9 +503,9 @@ namespace terila::entity {
             mob.goal_speed = speed;
         }
 
-        static bool has_attack_goal(const Mob& mob) {
-            for (int i = 0; i < mob.spec->goal_count; ++i) {
-                const auto kind = goal_kind_from(data::kGoals[mob.spec->goal_begin + i].kind);
+        static bool has_attack_goal(const data::MobSpec& spec) {
+            for (int i = 0; i < spec.goal_count; ++i) {
+                const auto kind = goal_kind_from(data::kGoals[spec.goal_begin + i].kind);
                 if (kind == GoalKind::Melee || kind == GoalKind::Ranged ||
                     kind == GoalKind::Swell || kind == GoalKind::Hop) {
                     return true;

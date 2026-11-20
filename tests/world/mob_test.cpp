@@ -762,3 +762,28 @@ TEST(PopulationTest, TheChunkListIsOnlyRebuiltWhenAPlayerChangesChunk) {
     spawner.tick(mobs, moved, true, rng, 0);
     EXPECT_EQ(spawner.chunk_list_builds(), 2u) << "crossing a chunk border rebuilds it";
 }
+
+TEST(MobAiTest, AttackCapabilityIsDerivedOnceAtSpawn) {
+    entity::MobManager mobs;
+    make_manager(mobs);
+    ASSERT_TRUE(mobs.spawn("minecraft:skeleton", 0.0, 0.0));
+    ASSERT_TRUE(mobs.spawn("minecraft:zombie", 2.0, 0.0));
+    ASSERT_TRUE(mobs.spawn("minecraft:cow", 4.0, 0.0));
+
+    const auto& skeleton = mobs.mobs()[0];
+    const auto& zombie = mobs.mobs()[1];
+    const auto& cow = mobs.mobs()[2];
+
+    // The extracted list has no bow for a skeleton, so it needs the ranged fallback.
+    EXPECT_TRUE(skeleton.needs_attack_fallback);
+    EXPECT_EQ(skeleton.fallback_attack, entity::GoalKind::Ranged);
+    EXPECT_TRUE(skeleton.undead);
+
+    // A zombie walks up and hits, and its list already carries the attack goal.
+    EXPECT_FALSE(zombie.needs_attack_fallback);
+    EXPECT_EQ(zombie.fallback_attack, entity::GoalKind::Melee);
+    EXPECT_TRUE(zombie.undead);
+
+    EXPECT_FALSE(cow.needs_attack_fallback);
+    EXPECT_FALSE(cow.undead);
+}
