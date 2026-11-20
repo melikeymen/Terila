@@ -47,6 +47,14 @@ namespace terila::config {
         // because block placement needs the creative inventory.
         int           gamemode = 1;
 
+        // peaceful, easy, normal or hard. It gates monster spawning, removes monsters while
+        // it is peaceful, and scales what a naturally spawned mob is created with.
+        std::string   difficulty = "normal";
+
+        // A hardcore world locks the difficulty and kills a player permanently; the flag is
+        // sent to the client with the login packet.
+        bool          hardcore = false;
+
         // "random", "" or a blank seed means the world picks its own seed on creation.
         bool random_seed() const {
             return level_seed.empty() || level_seed == "random" ||
@@ -172,6 +180,12 @@ namespace terila::config {
             }
             else if (key == "gamemode") {
                 out.gamemode = detail::parse_distance(value, out.gamemode, 0, 3);
+            }
+            else if (key == "difficulty") {
+                out.difficulty = value;
+            }
+            else if (key == "hardcore") {
+                out.hardcore = detail::parse_bool(value, out.hardcore);
             }
         }
 

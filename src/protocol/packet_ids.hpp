@@ -87,6 +87,7 @@ namespace terila::protocol {
         // Player state: health, the world clock, death and respawn.
         std::int32_t play_set_health = -1;
         std::int32_t play_set_time = -1;
+        std::int32_t play_change_difficulty = -1;
         std::int32_t play_player_combat_kill = -1;
         std::int32_t play_respawn = -1;
         std::int32_t play_client_command = -1;

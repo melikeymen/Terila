@@ -177,10 +177,20 @@ namespace terila::network {
 
             std::vector<std::uint8_t> out;
 
-            if (!terila::protocol::write_login_play(out, entity_id_, false,
+            if (!terila::protocol::write_login_play(out, entity_id_, hardcore_,
                 static_cast<std::uint8_t>(gamemode_),
                 "minecraft:overworld", max_players_, view_distance_, simulation_distance_)) {
                 LOG_ERROR(Network, "login_play failed");
+                close();
+                return;
+            }
+            send(out); out.clear();
+
+            // Difficulty follows the login packet: the client shows it and locks it on
+            // hardcore worlds.
+            if (!terila::protocol::write_change_difficulty(out,
+                static_cast<std::uint8_t>(difficulty_), hardcore_)) {
+                LOG_ERROR(Network, "change_difficulty failed");
                 close();
                 return;
             }

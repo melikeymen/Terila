@@ -13,7 +13,7 @@
 #include "data/input_store.hpp"
 #include "protocol/packet_ids_loader.hpp"
 #include "entity/mob.hpp"
-#include "entity/natural_spawner.hpp"
+#include "entity/population.hpp"
 #include "world/block_world.hpp"
 #include "world/falling_blocks.hpp"
 #include "world/fluid_flow.hpp"
@@ -388,7 +388,14 @@ int main() {
     // pack sizes and the per-category caps are all in input/worldgen/biomes.json.
     mobs.set_entity_type_ids(&data.entity_type_ids);
 
-    terila::entity::NaturalSpawner spawner;
+    const auto configured_difficulty = terila::entity::difficulty_from(srv.difficulty);
+    const auto world_difficulty = configured_difficulty.value_or(
+        terila::entity::Difficulty::Normal);
+    if (!configured_difficulty) {
+        LOG_WARN(Config, "unknown difficulty '{}', using normal", srv.difficulty);
+    }
+
+    terila::entity::Population spawner;
     terila::entity::SpawnWorld spawn_world;
     spawn_world.biome_index = [&world_terrain](std::int32_t x, std::int32_t z) {
         return world_terrain.biome_at(x, z);
@@ -411,6 +418,7 @@ int main() {
         std::int32_t z) { return world_terrain.block_kind_at(x, y, z); };
     spawner.set_world(spawn_world);
     spawner.set_spawn_point(spawn.x, spawn.z);
+    spawner.set_difficulty(world_difficulty);
 
     // Mobs that swim in the biome's water entries need to know when they are in it.
     mobs.set_water_resolver([&world_terrain](double x, double z) {
@@ -425,7 +433,8 @@ int main() {
     clock->set_time_of_day(terila::world::WorldClock::kNoon);
 
     std::uint32_t population_rng = static_cast<std::uint32_t>(world_terrain.seed()) ^ 0x5EED5EEDu;
-    const std::size_t spawned = spawner.spawn_initial(mobs, spawn.x, spawn.z, 96.0,
+    spawner.set_moon_brightness(clock->sky_darken());
+    const std::size_t spawned = spawner.initial(mobs, spawn.x, spawn.z, 96.0,
         population_rng, clock->night());
     LOG_INFO(Entity, "spawned {} mobs around ({}, {}), each from the spawn list of its own biome",
         spawned, spawn.x, spawn.z);
@@ -702,7 +711,7 @@ int main() {
 
     auto do_accept = [&](auto&& self) -> void {
         acceptor.async_accept(
-            [&acceptor, &data, &mobs, &world, &falling, &fluids, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, fluid_items, world_type, world_seed, &spawn, &srv, &players, &player_hub, &chunk_store, &next_player_entity_id, &world_terrain, clock, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
+            [&acceptor, &data, &mobs, &world, &falling, &fluids, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, fluid_items, world_type, world_seed, &spawn, &srv, &players, &player_hub, &chunk_store, &next_player_entity_id, &world_terrain, clock, &world_difficulty, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
                 if (error) {
                     LOG_ERROR(Network, "accept failed: {} ({})", error.message(), error.value());
                     self(self);
@@ -718,8 +727,8 @@ int main() {
                     item_entity_type, &recipes, menu_blocks, furnace_states, furnace_item_id,
                     fluid_items, world_seed, world_type, spawn.x, spawn.z, srv.view_distance,
                     srv.simulation_distance, static_cast<int>(srv.max_players),
-                    next_player_entity_id++, srv.gamemode, clock,
-                    world_terrain.sea_level());
+                    next_player_entity_id++, srv.gamemode, static_cast<int>(world_difficulty),
+                    srv.hardcore, clock, world_terrain.sea_level());
                 conn->start();
                 players.push_back(conn);
                 self(self);
@@ -752,8 +761,11 @@ int main() {
                 }
             }
 
-            spawner.tick(mobs, player_positions, clock->night(), mobs.rng());
-            mobs.tick(player_positions);
+            // The cycle spawns what the biome allows, then the mobs themselves tick; the
+            // difficulty decides what may live and what leaves.
+            spawner.set_moon_brightness(clock->sky_darken());
+            spawner.tick(mobs, player_positions, clock->night(), mobs.rng(), clock->game_time);
+            mobs.tick(player_positions, world_difficulty);
 
             // The mobs that landed a hit this tick: only the owning connection can take the
             // damage, so the hub routes it by entity id.

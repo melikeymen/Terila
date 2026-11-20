@@ -65,7 +65,7 @@ namespace terila::network {
             std::uint32_t world_seed, terila::world::WorldType world_type,
             std::int32_t spawn_x, std::int32_t spawn_z,
             int view_distance, int simulation_distance, int max_players,
-            std::int32_t entity_id, int gamemode,
+            std::int32_t entity_id, int gamemode, int difficulty, bool hardcore,
             std::shared_ptr<terila::world::WorldClock> clock, int sea_level)
             : socket_(std::move(socket)), keep_alive_timer_(socket_.get_executor()), data_(data),
               mobs_(mobs), world_(world), falling_(falling), fluids_(fluids), item_block_state_(item_block_state),
@@ -78,6 +78,7 @@ namespace terila::network {
               terrain_(terila::world::WorldContext::shared().generator()),
               view_distance_(view_distance), simulation_distance_(simulation_distance),
               max_players_(max_players), entity_id_(entity_id), gamemode_(gamemode),
+              difficulty_(difficulty), hardcore_(hardcore),
               clock_(std::move(clock)), sea_level_(sea_level)
         {}
 
@@ -451,6 +452,9 @@ namespace terila::network {
         float yaw_ = 0.0f;
         float pitch_ = 0.0f;
         int gamemode_ = 1;
+        // 0 peaceful, 1 easy, 2 normal, 3 hard, the same numbering the packet uses.
+        int difficulty_ = 2;
+        bool hardcore_ = false;
         float health_ = 20.0f;
         std::int32_t food_ = 20;
         float saturation_ = 5.0f;

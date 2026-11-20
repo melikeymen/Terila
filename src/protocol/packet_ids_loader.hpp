@@ -133,6 +133,9 @@ namespace terila::protocol {
         set(ids.play_take_item_entity, find("play", "clientbound", "minecraft:take_item_entity"), "play_take_item_entity");
         set(ids.play_set_health, find("play", "clientbound", "minecraft:set_health"), "play_set_health");
         set(ids.play_set_time, find("play", "clientbound", "minecraft:set_time"), "play_set_time");
+        set(ids.play_change_difficulty,
+            find("play", "clientbound", "minecraft:change_difficulty"),
+            "play_change_difficulty");
         set(ids.play_player_combat_kill, find("play", "clientbound", "minecraft:player_combat_kill"), "play_player_combat_kill");
         set(ids.play_respawn, find("play", "clientbound", "minecraft:respawn"), "play_respawn");
         set(ids.play_client_command, find("play", "serverbound", "minecraft:client_command"), "play_client_command");

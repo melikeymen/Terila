@@ -7,6 +7,7 @@
 // how far it follows and what it eats come from the extracted tables (mob_data.hpp), not from
 // this file.
 
+#include "entity/difficulty.hpp"
 #include "entity/mob_ai.hpp"
 #include "entity/mob_data.hpp"
 #include "log/logger.hpp"
@@ -73,6 +74,12 @@ namespace terila::entity {
 
         bool dead = false;
         int death_ticks = 0;
+
+        // Set for a mob that must survive distance and idle despawns: summoned, bred or
+        // named. It is also what keeps a mob out of the population counts, so a farm the
+        // player built does not eat the world's spawn budget.
+        bool persistent = false;
+        int no_action_ticks = 0;
         std::uint32_t hurt_serial = 0;
         int hurt_ticks = 0;
 
@@ -141,7 +148,8 @@ namespace terila::entity {
 
         // Spawns from the extracted spec: size, category, health, speed, damage, follow range
         // and the goal list all come from mob_data.hpp.
-        bool spawn(const std::string& type_name, double x, double z, bool baby = false) {
+        bool spawn(const std::string& type_name, double x, double z, bool baby = false,
+            bool persistent = false) {
             const auto* spec = data::find_mob_by_name(type_name);
             if (spec == nullptr) {
                 LOG_WARN(Entity, "unknown entity type: {}", type_name);
@@ -169,6 +177,7 @@ namespace terila::entity {
             mob.attack_cooldown = static_cast<int>(next_random() % kMeleeCooldownTicks);
             mob.baby = baby;
             mob.age_ticks = baby ? 0 : kBabyAge;
+            mob.persistent = persistent;
             ground_at(mob);
             mob.yaw = static_cast<float>(next_random() % 360);
             mob.head_yaw = mob.yaw;
@@ -195,8 +204,11 @@ namespace terila::entity {
 
         // A command places the entity exactly where it asked, without snapping it to the
         // surface first: /summon names a position, not a column.
-        bool spawn_at(const std::string& type_name, double x, double y, double z) {
-            if (!spawn(type_name, x, z)) {
+        // A position that came from a command or a save is where the entity is wanted, so it
+        // is persistent unless the caller says otherwise.
+        bool spawn_at(const std::string& type_name, double x, double y, double z,
+            bool baby = false, bool persistent = true) {
+            if (!spawn(type_name, x, z, baby, persistent)) {
                 return false;
             }
             mobs_.back().y = y;
@@ -278,7 +290,8 @@ namespace terila::entity {
             return false;
         }
 
-        void tick(const std::vector<PlayerPos>& players) {
+        void tick(const std::vector<PlayerPos>& players,
+            Difficulty difficulty = Difficulty::Normal) {
             hits_.clear();
 
             for (auto& mob : mobs_) {
@@ -286,6 +299,13 @@ namespace terila::entity {
                     if (mob.death_ticks > 0) --mob.death_ticks;
                     continue;
                 }
+
+                if (should_discard(mob, players, difficulty)) {
+                    mob.dead = true;
+                    mob.death_ticks = 0;
+                    continue;
+                }
+                ++mob.no_action_ticks;
 
                 if (mob.hurt_ticks > 0) --mob.hurt_ticks;
                 if (mob.attack_cooldown > 0) --mob.attack_cooldown;
@@ -317,6 +337,41 @@ namespace terila::entity {
 
             mobs_.erase(std::remove_if(mobs_.begin(), mobs_.end(),
                 [](const Mob& mob) { return mob.dead && mob.death_ticks <= 0; }), mobs_.end());
+        }
+
+        // The three ways a mob leaves the world without dying: peace, distance, and standing
+        // around for too long far from any player.
+        bool should_discard(const Mob& mob, const std::vector<PlayerPos>& players,
+            Difficulty difficulty) {
+            if (mob.persistent || mob.kind == data::MobCategory::Misc) {
+                return false;
+            }
+            if (difficulty == Difficulty::Peaceful && mob.is_monster()) {
+                return true;
+            }
+
+            double nearest = -1.0;
+            for (const auto& player : players) {
+                const double dx = mob.x - player.x;
+                const double dz = mob.z - player.z;
+                const double squared = dx * dx + dz * dz;
+                if (nearest < 0.0 || squared < nearest) {
+                    nearest = squared;
+                }
+            }
+            if (nearest < 0.0) {
+                return false;
+            }
+
+            // Water ambient despawns at 64 blocks; every other category at 128.
+            const double distance = mob.kind == data::MobCategory::WaterAmbient ? 64.0 : 128.0;
+            if (nearest > distance * distance) {
+                return true;
+            }
+            if (nearest < 32.0 * 32.0) {
+                return false;
+            }
+            return mob.no_action_ticks > 600 && (next_random() % 800) == 0;
         }
 
         const std::vector<Mob>& mobs() const { return mobs_; }

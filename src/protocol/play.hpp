@@ -62,6 +62,22 @@ namespace terila::protocol {
         return true;
     }
 
+    // The world's difficulty and whether it is locked: the client shows it on the debug
+    // screen and uses it to decide whether hardcore behaviour applies.
+    inline bool write_change_difficulty(std::vector<std::uint8_t>& output,
+        std::uint8_t difficulty, bool locked)
+    {
+        std::vector<std::uint8_t> payload;
+        payload.push_back(difficulty);
+        payload.push_back(locked ? 1 : 0);
+
+        if (!write_packet(output, packet_ids().play_change_difficulty, payload)) {
+            LOG_WARN(Protocol, "write_change_difficulty: failed to write packet");
+            return false;
+        }
+        return true;
+    }
+
     inline bool write_player_position(std::vector<std::uint8_t>& output,
         std::int32_t teleport_id,
         double x, double y, double z,

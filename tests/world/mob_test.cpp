@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "entity/mob.hpp"
-#include "entity/natural_spawner.hpp"
+#include "entity/population.hpp"
 #include "world/world_clock.hpp"
 
 #include <algorithm>
@@ -100,8 +100,11 @@ TEST(BiomeSpawnTest, ListsAreTheGamesOwnSpawns) {
     }
     EXPECT_TRUE(cow);
     EXPECT_TRUE(zombie);
-    EXPECT_EQ(entity::cap_for(data::MobCategory::Creature), 10);
-    EXPECT_EQ(entity::cap_for(data::MobCategory::Monster), 70);
+    EXPECT_EQ(entity::Population::max_instances(data::MobCategory::Creature), 10);
+    EXPECT_EQ(entity::Population::max_instances(data::MobCategory::Monster), 70);
+    EXPECT_EQ(entity::Population::max_instances(data::MobCategory::WaterAmbient), 20);
+    EXPECT_EQ(entity::Population::max_instances(data::MobCategory::WaterCreature), 5);
+    EXPECT_EQ(entity::Population::max_instances(data::MobCategory::Misc), -1);
 }
 
 TEST(MobTest, SpawnUsesTheSpecAndStandsOnTheGround) {
@@ -355,130 +358,219 @@ TEST(MobTest, ArmorSoaksPartOfTheHitAndDeathRemovesTheMob) {
     EXPECT_TRUE(mobs.mobs().empty()) << "a dead mob leaves after its death animation";
 }
 
-TEST(NaturalSpawnerTest, TheInitialPopulationHonoursTheCategoryCaps) {
+TEST(PopulationTest, TheInitialPopulationHonoursTheCategoryCaps) {
     entity::MobManager mobs;
     make_manager(mobs);
 
-    entity::NaturalSpawner spawner;
+    entity::Population spawner;
     spawner.set_world(flat_world(world::terrain::kPlains));
+    spawner.set_difficulty(entity::Difficulty::Normal);
 
     std::uint32_t rng = 0x1234567u;
-    const std::size_t spawned = spawner.spawn_initial(mobs, 0, 0, 48.0, rng, false);
+    const std::size_t spawned = spawner.initial(mobs, 0, 0, 48.0, rng, false);
     EXPECT_GT(spawned, 0u);
 
     std::size_t creatures = 0;
     std::size_t monsters = 0;
     for (const auto& mob : mobs.mobs()) {
         ASSERT_NE(mob.spec, nullptr);
+        EXPECT_FALSE(mob.persistent) << "a natural mob is not a kept mob";
         if (mob.category() == data::MobCategory::Creature) ++creatures;
         if (mob.category() == data::MobCategory::Monster) ++monsters;
     }
-    EXPECT_LE(creatures, static_cast<std::size_t>(entity::CategoryCaps::creature));
-    EXPECT_LE(monsters, static_cast<std::size_t>(entity::CategoryCaps::monster));
+    // A day-time initial pass cannot place monsters; the cap still has to hold at night.
+    EXPECT_EQ(monsters, 0u) << "nothing hostile appears in the daylight";
+    EXPECT_LE(creatures,
+        static_cast<std::size_t>(entity::Population::max_instances(data::MobCategory::Creature)));
     EXPECT_GT(creatures, 0u) << "plains lists cows and sheep";
 }
 
-TEST(NaturalSpawnerTest, AnimalsNeedGrassAndStayOutOfTheWater) {
-    const std::vector<entity::PlayerPos> none;
-
+TEST(PopulationTest, AnimalsNeedGrassAndStayOutOfTheWater) {
     // Sand is a solid spawn surface, but it is not animals_spawnable_on: no cows on a beach.
     entity::MobManager on_sand;
     make_manager(on_sand);
-    entity::NaturalSpawner sand_spawner;
+    entity::Population sand_spawner;
     sand_spawner.set_world(flat_world(world::terrain::kPlains, entity::SpawnBlock::Solid));
     std::uint32_t sand_rng = 0x5A5A5Au;
-    EXPECT_EQ(sand_spawner.spawn_initial(on_sand, 0, 0, 48.0, sand_rng, false), 0u)
-        << "Animal#checkAnimalSpawnRules wants the animals tag under the mob";
+    EXPECT_EQ(sand_spawner.initial(on_sand, 0, 0, 48.0, sand_rng, false), 0u)
+        << "an animal wants the animals tag under it";
 
-    // A flooded plains column has no ground to stand on either, so nothing landbound spawns.
+    // A flooded plains column has no ground to stand on, so nothing landbound spawns.
     entity::MobManager flooded;
     make_manager(flooded);
-    entity::NaturalSpawner water_spawner;
+    entity::Population water_spawner;
     water_spawner.set_world(flat_world(world::terrain::kPlains, entity::SpawnBlock::Soil, true));
     std::uint32_t water_rng = 0x5A5A5Au;
-    EXPECT_EQ(water_spawner.spawn_initial(flooded, 0, 0, 48.0, water_rng, true), 0u);
+    EXPECT_EQ(water_spawner.initial(flooded, 0, 0, 48.0, water_rng, true), 0u);
     for (int tick = 0; tick < 200; ++tick) {
-        water_spawner.tick(flooded, { { 0.0, 64.0, 0.0, 1 } }, true, water_rng);
+        water_spawner.tick(flooded, { { 0.0, 64.0, 0.0, 1 } }, true, water_rng, 0);
     }
     EXPECT_TRUE(flooded.mobs().empty()) << "no land mob spawns inside water";
 }
 
-TEST(NaturalSpawnerTest, WaterMobsOnlySpawnInWater) {
+TEST(PopulationTest, WaterMobsOnlySpawnInWater) {
     // The ocean's list is squid and fish; their InWater placement rejects dry ground.
     entity::MobManager dry;
     make_manager(dry);
-    entity::NaturalSpawner dry_spawner;
+    entity::Population dry_spawner;
     dry_spawner.set_world(flat_world(world::terrain::kOcean));
     std::uint32_t dry_rng = 0xC0FFEEu;
-    EXPECT_EQ(dry_spawner.spawn_initial(dry, 0, 0, 48.0, dry_rng, false), 0u);
+    EXPECT_EQ(dry_spawner.initial(dry, 0, 0, 48.0, dry_rng, false), 0u);
 
     entity::MobManager wet;
     make_manager(wet);
-    entity::NaturalSpawner wet_spawner;
+    entity::Population wet_spawner;
     wet_spawner.set_world(flat_world(world::terrain::kOcean, entity::SpawnBlock::Solid, true));
     std::uint32_t wet_rng = 0xC0FFEEu;
-    EXPECT_GT(wet_spawner.spawn_initial(wet, 0, 0, 48.0, wet_rng, false), 0u);
+    EXPECT_GT(wet_spawner.initial(wet, 0, 0, 48.0, wet_rng, false), 0u);
     for (const auto& mob : wet.mobs()) {
-        EXPECT_TRUE(entity::is_water_category(mob.category()))
-            << mob.type_name << " belongs in the water";
+        const bool water = mob.category() == data::MobCategory::WaterCreature ||
+            mob.category() == data::MobCategory::WaterAmbient ||
+            mob.category() == data::MobCategory::UndergroundWaterCreature ||
+            mob.category() == data::MobCategory::Axolotls;
+        EXPECT_TRUE(water) << mob.type_name << " belongs in the water";
     }
 }
 
-TEST(NaturalSpawnerTest, MonstersOnlyArriveAtNight) {
-    entity::MobManager mobs;
-    make_manager(mobs);
+TEST(PopulationTest, MonstersOnlyArriveAtNight) {
+    const std::vector<entity::PlayerPos> players = { { 0.0, 64.0, 0.0, 1 } };
 
-    entity::NaturalSpawner spawner;
-    spawner.set_world(flat_world(world::terrain::kPlains));
-
-    const std::vector<entity::PlayerPos> players = { {0.0, 64.0, 0.0, 1} };
-
-    // Day: with the sky lit, the spawn list offers no monsters.
-    std::uint32_t day_rng = 0xABCDEFu;
     entity::MobManager daytime;
     make_manager(daytime);
-    entity::NaturalSpawner day_spawner;
+    entity::Population day_spawner;
     day_spawner.set_world(flat_world(world::terrain::kPlains));
+    std::uint32_t day_rng = 0xABCDEFu;
     for (int tick = 0; tick < 400; ++tick) {
-        day_spawner.tick(daytime, players, false, day_rng);
+        day_spawner.tick(daytime, players, false, day_rng, 0);
     }
     for (const auto& mob : daytime.mobs()) {
         EXPECT_NE(mob.category(), data::MobCategory::Monster) << "no monsters in daylight";
     }
 
-    // Night: they do.
+    entity::MobManager mobs;
+    make_manager(mobs);
+    entity::Population spawner;
+    spawner.set_world(flat_world(world::terrain::kPlains));
     std::uint32_t night_rng = 0xABCDEFu;
     for (int tick = 0; tick < 400; ++tick) {
-        spawner.tick(mobs, players, true, night_rng);
+        spawner.tick(mobs, players, true, night_rng, 0);
     }
-    std::size_t monsters = 0;
-    for (const auto& mob : mobs.mobs()) {
-        if (mob.category() == data::MobCategory::Monster) {
-            ++monsters;
-        }
-    }
-    EXPECT_GT(monsters, 0u) << "the night brings monsters";
-    EXPECT_LE(monsters, static_cast<std::size_t>(entity::CategoryCaps::monster));
+    // The cap is counted over the spawnable chunks; a mob that wandered out of that area is
+    // still alive, so only the ones inside it are counted here.
+    const auto in_area = [](const entity::Mob& mob) {
+        return std::abs(mob.x) < 136.0 && std::abs(mob.z) < 136.0;
+    };
+    const auto monsters = std::count_if(mobs.mobs().begin(), mobs.mobs().end(),
+        [&](const entity::Mob& mob) {
+            return in_area(mob) && mob.category() == data::MobCategory::Monster;
+        });
+    EXPECT_GT(monsters, 0) << "the night brings monsters";
+    EXPECT_LE(static_cast<std::size_t>(monsters),
+        static_cast<std::size_t>(entity::Population::max_instances(data::MobCategory::Monster)));
 }
 
-TEST(NaturalSpawnerTest, RuntimeSpawnsKeepTheirDistanceFromPlayers) {
+TEST(PopulationTest, RuntimeSpawnsKeepTheirDistanceFromPlayers) {
     entity::MobManager mobs;
     make_manager(mobs);
 
-    entity::NaturalSpawner spawner;
+    entity::Population spawner;
     spawner.set_world(flat_world(world::terrain::kPlains));
 
     std::uint32_t rng = 0x7654321u;
-    const std::vector<entity::PlayerPos> players = { {0.0, 64.0, 0.0, 1} };
+    const std::vector<entity::PlayerPos> players = { { 0.0, 64.0, 0.0, 1 } };
     for (int tick = 0; tick < 200; ++tick) {
-        spawner.tick(mobs, players, true, rng);
+        spawner.tick(mobs, players, true, rng, 0);
     }
 
     EXPECT_GT(mobs.mobs().size(), 0u);
     for (const auto& mob : mobs.mobs()) {
         const double distance = std::sqrt(mob.x * mob.x + mob.z * mob.z);
-        // The attempt is at least 24 blocks out; the pack then spreads by up to 6 on
-        // each axis, which is what vanilla accepts as well.
-        EXPECT_GE(distance, 24.0 - 7.0) << "monsters never appear next to a player";
+        // The group is at least 24 blocks out; a pack then spreads by up to 3 per axis.
+        EXPECT_GE(distance, 24.0 - 5.0) << "nothing spawns next to a player";
     }
+}
+
+TEST(PopulationTest, PeacefulNeverSpawnsAMonster) {
+    entity::MobManager mobs;
+    make_manager(mobs);
+
+    entity::Population spawner;
+    spawner.set_world(flat_world(world::terrain::kPlains));
+    spawner.set_difficulty(entity::Difficulty::Peaceful);
+
+    std::uint32_t rng = 0x13572468u;
+    const std::vector<entity::PlayerPos> players = { { 0.0, 64.0, 0.0, 1 } };
+    for (int tick = 0; tick < 400; ++tick) {
+        spawner.tick(mobs, players, true, rng, 0);
+    }
+    for (const auto& mob : mobs.mobs()) {
+        EXPECT_NE(mob.category(), data::MobCategory::Monster)
+            << "peaceful keeps the monsters away even at night";
+    }
+}
+
+TEST(DifficultyTest, TheThreatLevelGrowsWithTimeAndMoon) {
+    const auto peaceful = entity::threat_level(entity::Difficulty::Peaceful, 0, 0, 1.0f);
+    EXPECT_FLOAT_EQ(peaceful.effective, 0.0f);
+    EXPECT_FLOAT_EQ(peaceful.special_multiplier(), 0.0f);
+
+    // A fresh normal world: 2 * 0.75.
+    const auto fresh = entity::threat_level(entity::Difficulty::Normal, 0, 0, 0.0f);
+    EXPECT_FLOAT_EQ(fresh.effective, 1.5f);
+    EXPECT_FALSE(fresh.hard());
+    EXPECT_FLOAT_EQ(fresh.special_multiplier(), 0.0f);
+
+    // Hard starts higher but a new world is still not "hard" by the effective measure.
+    const auto fresh_hard = entity::threat_level(entity::Difficulty::Hard, 0, 0, 0.0f);
+    EXPECT_FLOAT_EQ(fresh_hard.effective, 2.25f);
+    EXPECT_FALSE(fresh_hard.hard());
+
+    // Everything maxed: 0.75 + 0.25 global + 1.25 local, times 3.
+    const auto grown = entity::threat_level(entity::Difficulty::Hard, 72000 + 1440000,
+        3600000, 1.0f);
+    EXPECT_FLOAT_EQ(grown.effective, 6.75f);
+    EXPECT_TRUE(grown.hard());
+    EXPECT_TRUE(grown.harder_than(4.0f));
+    EXPECT_FLOAT_EQ(grown.special_multiplier(), 1.0f);
+
+    // Easy halves the local part: (0.75 + 0.25 + 0.5) * 1.
+    const auto easy = entity::threat_level(entity::Difficulty::Easy, 72000 + 1440000,
+        3600000, 1.0f);
+    EXPECT_FLOAT_EQ(easy.effective, 1.5f);
+}
+
+TEST(DifficultyTest, PeacefulRemovesTheMonstersThatWereAlreadyThere) {
+    entity::MobManager mobs;
+    make_manager(mobs);
+    ASSERT_TRUE(mobs.spawn("minecraft:zombie", 0.0, 0.0));
+    ASSERT_TRUE(mobs.spawn("minecraft:cow", 6.0, 0.0));
+
+    const std::vector<entity::PlayerPos> players = { { 0.0, 64.0, 2.0, 1 } };
+    mobs.tick(players, entity::Difficulty::Peaceful);
+
+    ASSERT_EQ(mobs.mobs().size(), 1u) << "the zombie is gone, the cow stays";
+    EXPECT_EQ(mobs.mobs().front().type_name, "minecraft:cow");
+}
+
+TEST(MobTest, AFarMobDespawnsAndAPersistentOneDoesNot) {
+    entity::MobManager mobs;
+    make_manager(mobs);
+    ASSERT_TRUE(mobs.spawn("minecraft:zombie", 0.0, 0.0));
+    ASSERT_TRUE(mobs.spawn_at("minecraft:zombie", 1000.0, 64.0, 1000.0));
+
+    const std::vector<entity::PlayerPos> players = { { 0.0, 64.0, 200.0, 1 } };
+    mobs.tick(players);
+
+    ASSERT_EQ(mobs.mobs().size(), 1u) << "the natural zombie left, the summoned one stayed";
+    EXPECT_TRUE(mobs.mobs().front().persistent);
+}
+
+TEST(DifficultyTest, DifficultyNamesRoundTrip) {
+    using entity::Difficulty;
+    EXPECT_EQ(entity::difficulty_from("peaceful"), Difficulty::Peaceful);
+    EXPECT_EQ(entity::difficulty_from("easy"), Difficulty::Easy);
+    EXPECT_EQ(entity::difficulty_from("normal"), Difficulty::Normal);
+    EXPECT_EQ(entity::difficulty_from("hard"), Difficulty::Hard);
+    EXPECT_FALSE(entity::difficulty_from("impossible").has_value());
+    EXPECT_STREQ(entity::difficulty_name(Difficulty::Hard), "hard");
 }
