@@ -1,3 +1,4 @@
+#include "world/worldgen/structures/placement.hpp"
 #include "world/worldgen/structures/template.hpp"
 
 #include <nlohmann/json.hpp>
@@ -115,6 +116,88 @@ namespace {
         // The portal is mostly the air inside it, so the check is that both sides are read.
         EXPECT_GT(solid, 50);
         EXPECT_GT(air, 0);
+    }
+
+
+    TEST(StructurePlacementTest, SitesStayInsideTheirCellAndRepeat) {
+        using terila::world::worldgen::StructureSite;
+        terila::world::worldgen::StructureSpread spread;
+        spread.salt = 34222645;
+        spread.spacing = 40;
+        spread.separation = 15;
+
+        // The same seed, cell and salt must always give the same chunk: a world is rebuilt
+        // from its seed and its structures may not move.
+        for (std::int32_t gz = -2; gz <= 2; ++gz) {
+            for (std::int32_t gx = -2; gx <= 2; ++gx) {
+                const StructureSite first =
+                    terila::world::worldgen::spread_site(12345, spread, gx, gz);
+                const StructureSite again =
+                    terila::world::worldgen::spread_site(12345, spread, gx, gz);
+                ASSERT_TRUE(first.valid);
+                EXPECT_EQ(first.chunk_x, again.chunk_x);
+                EXPECT_EQ(first.chunk_z, again.chunk_z);
+
+                // A site keeps the separation to the cell edge, so two neighbouring sites
+                // cannot end up on top of each other.
+                const int low = spread.spacing - spread.separation;
+                EXPECT_GE(first.chunk_x, gx * spread.spacing + spread.separation / 2);
+                EXPECT_LT(first.chunk_x, gx * spread.spacing + spread.separation / 2 + low + 1);
+                EXPECT_GE(first.chunk_z, gz * spread.spacing + spread.separation / 2);
+                EXPECT_LT(first.chunk_z, gz * spread.spacing + spread.separation / 2 + low + 1);
+            }
+        }
+
+        const StructureSite centre = terila::world::worldgen::spread_site(12345, spread, 0, 0);
+        EXPECT_EQ(terila::world::worldgen::spread_cell(centre.chunk_x, spread.spacing), 0);
+        EXPECT_EQ(terila::world::worldgen::spread_cell(centre.chunk_z, spread.spacing), 0);
+
+        // Another salt is another arrangement of the same grid.
+        terila::world::worldgen::StructureSpread other = spread;
+        other.salt += 1;
+        bool moved = false;
+        for (std::int32_t gz = -2; gz <= 2 && !moved; ++gz) {
+            for (std::int32_t gx = -2; gx <= 2 && !moved; ++gx) {
+                const StructureSite a = terila::world::worldgen::spread_site(12345, spread, gx, gz);
+                const StructureSite b = terila::world::worldgen::spread_site(12345, other, gx, gz);
+                moved = a.chunk_x != b.chunk_x || a.chunk_z != b.chunk_z;
+            }
+        }
+        EXPECT_TRUE(moved);
+    }
+
+    TEST(StructurePlacementTest, ATemplateIsWrittenIntoTheChunkItsCellsLandIn) {
+        terila::world::worldgen::StructureTemplate tmpl;
+        tmpl.size_x = 17;
+        tmpl.size_y = 2;
+        tmpl.size_z = 2;
+        tmpl.cells = {
+            { 0, 0, 0, 11 },
+            { 15, 0, 0, 12 },
+            { 16, 0, 0, 13 },
+            { 3, 1, 0, 0 },
+        };
+
+        int written = 0;
+        int wrong_chunk = 0;
+        const int placed = terila::world::worldgen::apply_template(tmpl, 0, 64, 0, 0, 0,
+            [&](std::int32_t wx, std::int32_t wy, std::int32_t wz, std::int32_t state) {
+                ++written;
+                EXPECT_GE(wy, 64);
+                EXPECT_NE(state, 0);
+                if ((wx >> 4) != 0 || (wz >> 4) != 0) {
+                    ++wrong_chunk;
+                }
+            });
+        EXPECT_EQ(placed, 2);
+        EXPECT_EQ(written, 2);
+        EXPECT_EQ(wrong_chunk, 0);
+
+        // The same template writes its other column when the neighbour chunk asks for it.
+        int neighbour = 0;
+        terila::world::worldgen::apply_template(tmpl, 0, 64, 0, 1, 0,
+            [&](std::int32_t, std::int32_t, std::int32_t, std::int32_t) { ++neighbour; });
+        EXPECT_EQ(neighbour, 1);
     }
 
 } // namespace
