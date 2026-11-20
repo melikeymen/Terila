@@ -468,6 +468,7 @@ add_executable(chunk_tests
     "tests/world/light_engine_test.cpp"
     "tests/world/mob_test.cpp"
     "tests/world/relight_test.cpp"
+    "tests/world/structure_template_test.cpp"
     "src/log/logger.cpp"
 )
 
