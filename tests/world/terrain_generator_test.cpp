@@ -66,6 +66,11 @@ namespace {
         if (name == "minecraft:redstone_ore")  return 6;
         if (name == "minecraft:lapis_ore")     return 8;
         if (name == "minecraft:diamond_ore")   return 9;
+        if (name == "minecraft:granite")       return 21;
+        if (name == "minecraft:diorite")       return 22;
+        if (name == "minecraft:andesite")      return 23;
+        if (name == "minecraft:tuff")          return 24;
+        if (name == "minecraft:clay")          return 25;
         return std::nullopt;
     }
 
@@ -412,6 +417,33 @@ TEST(TerrainGeneratorTest, PlacesOreVeinsInTheDeep) {
         }
     }
     EXPECT_GT(ores, 0);
+}
+
+TEST(TerrainGeneratorTest, StoneBlobsColourTheDeepFiller) {
+    REQUIRE_VANILLA_DATA();
+    const auto generator = make_generator();
+    const LandColumn land = find_column(generator, false);
+    ASSERT_NE(land.biome, -1) << "no land within 4096 blocks";
+
+    // The game colours a chunk of stone with granite, diorite, andesite and tuff blobs; a
+    // chunk without them is stone where vanilla has anything else.
+    std::array<int, 26> counts{};
+    for (int i = 0; i < 9; ++i) {
+        const auto chunk = generator.generate(land.x / 16 + (i % 3), land.z / 16 + (i / 3));
+        for (const auto& section : chunk.sections) {
+            for (int k = 0; k < 4096; ++k) {
+                const std::int32_t state = section_state(section, k);
+                if (state > 0 && state < static_cast<std::int32_t>(counts.size())) {
+                    ++counts[static_cast<std::size_t>(state)];
+                }
+            }
+        }
+    }
+    const int coloured = counts[21] + counts[22] + counts[23] + counts[24];
+    SCOPED_TRACE("granite " + std::to_string(counts[21]) + " diorite " +
+        std::to_string(counts[22]) + " andesite " + std::to_string(counts[23]) +
+        " tuff " + std::to_string(counts[24]) + " clay " + std::to_string(counts[25]));
+    EXPECT_GT(coloured, 400);
 }
 
 TEST(TerrainGeneratorTest, CoversManyBiomesAcrossTheMap) {

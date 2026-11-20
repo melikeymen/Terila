@@ -102,7 +102,7 @@ namespace terila::world::worldgen {
 
             light_rules_ = terrain::light_rules_for(blocks_);
             terrain::add_placed_light_sources(light_rules_, block);
-            ores_.init(static_cast<std::uint64_t>(seed_), min_y_, blocks_);
+            ores_.init(static_cast<std::uint64_t>(seed_), min_y_, world_top_ - 1, blocks_);
             plants_.init(blocks_, biomes_, sea_level_);
             ready_ = true;
             return ready_;
@@ -1007,7 +1007,7 @@ namespace terila::world::worldgen {
         std::uint64_t world_id_ = 0;
 
         MaterialRules material_;
-        OreVeins ores_;
+        OreBlobs ores_;
         Vegetation plants_;
         terrain::Blocks blocks_{};
         std::vector<terrain::Biome> biomes_;

@@ -22,6 +22,10 @@ namespace terila::world::terrain {
         std::int32_t stone = 0;
         std::int32_t deepslate = 0;
         std::int32_t tuff = 0;
+        std::int32_t granite = 0;
+        std::int32_t diorite = 0;
+        std::int32_t andesite = 0;
+        std::int32_t clay = 0;
         std::int32_t dirt = 0;
         std::int32_t coarse_dirt = 0;
         std::int32_t grass = 0;
@@ -165,6 +169,10 @@ namespace terila::world::terrain {
         blocks.ice = soft_id("minecraft:ice", blocks.water);
         blocks.deepslate = soft_id("minecraft:deepslate", blocks.stone);
         blocks.tuff = soft_id("minecraft:tuff", blocks.stone);
+        blocks.granite = soft_id("minecraft:granite", blocks.stone);
+        blocks.diorite = soft_id("minecraft:diorite", blocks.stone);
+        blocks.andesite = soft_id("minecraft:andesite", blocks.stone);
+        blocks.clay = soft_id("minecraft:clay", blocks.stone);
         blocks.snow_block = soft_id("minecraft:snow_block", blocks.snow);
         blocks.powder_snow = soft_id("minecraft:powder_snow", blocks.snow);
         blocks.packed_ice = soft_id("minecraft:packed_ice", blocks.ice);
