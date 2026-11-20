@@ -221,19 +221,59 @@ namespace {
 
         const auto surface = [](std::int32_t, std::int32_t) { return 70; };
         int allowed = 0;
-        structures.apply(site.chunk_x, site.chunk_z, 0, surface,
+        structures.apply(site.chunk_x, site.chunk_z, 63, surface,
             [](std::int32_t, std::int32_t) { return 100; },
             [&allowed](std::int32_t, std::int32_t, std::int32_t, std::int32_t) { ++allowed; });
         EXPECT_GT(allowed, 0);
 
         // The same site in a biome the structure's tag does not name stays empty.
         int rejected = 0;
-        structures.apply(site.chunk_x, site.chunk_z, 0, surface,
+        structures.apply(site.chunk_x, site.chunk_z, 63, surface,
             [](std::int32_t, std::int32_t) { return 101; },
             [&rejected](std::int32_t, std::int32_t, std::int32_t, std::int32_t) { ++rejected; });
         EXPECT_EQ(rejected, 0);
     }
 
+
+    TEST(StructurePlacementTest, AWreckOnlyLiesUnderTheWater) {
+        if (!input_available()) {
+            GTEST_SKIP() << "input/ is not next to the build tree";
+        }
+        terila::world::worldgen::Structures structures;
+        const auto any_block = [](std::string_view) -> std::optional<std::int32_t> { return 5; };
+        const auto every_biome = [](std::string_view) { return 100; };
+        ASSERT_TRUE(structures.init(1337, any_block, every_biome,
+            terila::world::worldgen::built_structures()));
+
+        // The shipwreck set has its own salt; a hull belongs on the sea floor, not on a hill.
+        terila::world::worldgen::StructureSpread spread;
+        spread.salt = 165745295;
+        spread.spacing = 24;
+        spread.separation = 4;
+        const auto site = terila::world::worldgen::spread_site(1337, spread, 0, 0);
+        ASSERT_TRUE(site.valid);
+
+        // Only the wet hull is asked for here: the beached one is allowed on dry land.
+        std::vector<terila::world::worldgen::StructureKind> wet;
+        for (auto kind : terila::world::worldgen::built_structures()) {
+            if (kind.id == "minecraft:shipwreck") {
+                wet.push_back(std::move(kind));
+            }
+        }
+        terila::world::worldgen::Structures wreck_only;
+        ASSERT_TRUE(wreck_only.init(1337, any_block, every_biome, wet));
+
+        const auto count_at = [&](std::int32_t floor_y) {
+            int placed = 0;
+            wreck_only.apply(site.chunk_x, site.chunk_z, 63,
+                [floor_y](std::int32_t, std::int32_t) { return floor_y; },
+                [](std::int32_t, std::int32_t) { return 100; },
+                [&placed](std::int32_t, std::int32_t, std::int32_t, std::int32_t) { ++placed; });
+            return placed;
+        };
+        EXPECT_GT(count_at(40), 0);
+        EXPECT_EQ(count_at(70), 0);
+    }
 
     TEST(StructurePlacementTest, AStructureUsesTheStateThePaletteNames) {
         if (!input_available()) {
@@ -257,7 +297,7 @@ namespace {
 
         int from_palette = 0;
         int from_block_default = 0;
-        structures.apply(site.chunk_x, site.chunk_z, 0,
+        structures.apply(site.chunk_x, site.chunk_z, 63,
             [](std::int32_t, std::int32_t) { return 70; },
             [](std::int32_t, std::int32_t) { return 100; },
             [&](std::int32_t, std::int32_t, std::int32_t, std::int32_t state) {

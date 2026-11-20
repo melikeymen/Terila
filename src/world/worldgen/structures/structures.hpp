@@ -26,6 +26,8 @@ namespace terila::world::worldgen {
         std::string id;
         std::string set_id;
         std::vector<std::string> templates;
+        // A shipwreck lies on the sea floor; a portal sits on dry land.
+        bool underwater = false;
     };
 
     // Ruined portals are the ones the game builds from single templates, so they are the
@@ -42,8 +44,23 @@ namespace terila::world::worldgen {
             portal.templates.push_back("minecraft:ruined_portal/giant_portal_" +
                 std::to_string(index));
         }
+        // A shipwreck ships as whole hulls, so it is placed without assembling a jigsaw.
+        StructureKind wreck;
+        wreck.id = "minecraft:shipwreck";
+        wreck.set_id = "minecraft:shipwrecks";
+        wreck.underwater = true;
+        for (const char* hull : { "rightsideup_full", "upsidedown_full", "sideways_full" }) {
+            wreck.templates.push_back(std::string("minecraft:shipwreck/") + hull);
+        }
+
+        StructureKind beached = wreck;
+        beached.id = "minecraft:shipwreck_beached";
+        beached.underwater = false;
+
         std::vector<StructureKind> kinds;
         kinds.push_back(std::move(portal));
+        kinds.push_back(std::move(wreck));
+        kinds.push_back(std::move(beached));
         return kinds;
     }
 
@@ -80,6 +97,7 @@ namespace terila::world::worldgen {
                     continue;
                 }
                 item.id = std::move(kind.id);
+                item.underwater = kind.underwater;
                 // A structure only goes where its biome tag allows it to.
                 item.biomes = biomes_of(item.id, biome_id);
                 kinds_.push_back(std::move(item));
@@ -92,7 +110,7 @@ namespace terila::world::worldgen {
         // Writes every structure that reaches into the chunk. `min_ground` keeps a structure
         // out of the water: a site whose surface is below it is left alone.
         template<class SurfaceFn, class BiomeFn, class Write>
-        int apply(std::int32_t chunk_x, std::int32_t chunk_z, std::int32_t min_ground,
+        int apply(std::int32_t chunk_x, std::int32_t chunk_z, std::int32_t sea_level,
             SurfaceFn&& surface, BiomeFn&& biome_of, Write&& write) const {
             int placed = 0;
             for (const Item& item : kinds_) {
@@ -113,7 +131,9 @@ namespace terila::world::worldgen {
                         const std::int32_t centre_x = site.chunk_x * 16 + 8;
                         const std::int32_t centre_z = site.chunk_z * 16 + 8;
                         const std::int32_t ground = surface(centre_x, centre_z);
-                        if (ground < min_ground) {
+                        // A wreck lies on the sea floor and a portal on dry land, so the
+                        // waterline decides which sites each kind accepts.
+                        if (item.underwater ? (ground >= sea_level) : (ground < sea_level)) {
                             continue;
                         }
                         if (!item.biomes.empty()) {
@@ -142,6 +162,7 @@ namespace terila::world::worldgen {
             StructureSpread spread;
             std::vector<StructureTemplate> templates;
             std::vector<int> biomes;
+            bool underwater = false;
         };
 
         // The tags the game ships, loaded once: a structure's biome field is usually a tag.
