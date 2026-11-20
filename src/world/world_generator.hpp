@@ -66,6 +66,7 @@ namespace terila::world {
             // Air is the only thing the flat world lets light through.
             flat_rules_ = LightRules{};
             flat_rules_.set(air_, LightBlock{ 0, 0, true });
+            terrain::add_placed_light_sources(flat_rules_, block);
 
             ready_ = block(spec_.air).has_value() && block(spec_.bedrock).has_value() &&
                 block(spec_.dirt).has_value() && block(spec_.grass).has_value() &&

@@ -143,6 +143,21 @@ namespace terila::network {
                     auto generated = std::move(taken.chunk);
                     apply_loaded_chunk(*decoded, generated);
 
+                    // A save made before the light rules knew about placed light sources
+                    // carries light from the old rules, so a lamp in it streams back dark.
+                    // Lighting the column again once rewrites it with the flag set: the cost
+                    // is one relight per edited column, not one per visit.
+                    if (!loaded->light_full && loaded->edited) {
+                        relight_chunk(*decoded);
+                        auto out = terila::world::encode::encode(*decoded);
+                        cache.put(std::move(generated), out);
+                        queue_persist(cx, cz, out, true);
+                        LOG_DEBUG(Chunk,
+                            "chunk ({}, {}) relit from a save older than the light rules",
+                            cx, cz);
+                        return out;
+                    }
+
                     // The stored slot was written after an edit, so its light already
                     // matches its blocks; it streams back verbatim either way.
                     auto out = std::vector<std::uint8_t>(
@@ -205,7 +220,9 @@ namespace terila::network {
         if (store_ == nullptr || encoded.empty()) {
             return;
         }
-        const std::uint8_t flags = terila::world::trf::chunk_flags(edited, true, false);
+        // Everything written from here on carries light computed by the current rules, which
+        // is what lets the loader stream it back without lighting the column again.
+        const std::uint8_t flags = terila::world::trf::chunk_flags(edited, true, true);
         const auto payload = std::span<const std::byte>(
             reinterpret_cast<const std::byte*>(encoded.data()), encoded.size());
         if (auto saved = store_->save_chunk(cx, cz, payload, flags); !saved) {

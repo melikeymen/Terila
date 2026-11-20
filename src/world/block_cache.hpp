@@ -118,4 +118,75 @@ namespace terila::world {
         std::unique_ptr<Slot[]> slots_;
     };
 
+    // A terrain column is a pure function of its cell coordinate, and the light halo of a
+    // chunk reaches fifteen blocks into its neighbours: the workers generating neighbouring
+    // chunks ask for the same cells at the same time, and every one of those cells costs a
+    // walk down the density field. This table is shared by all of them, so a cell is computed
+    // once instead of once per chunk that looks at it.
+    //
+    // Reads and writes race by design: a value that is being replaced is served as a miss
+    // (the reader recomputes) rather than with a torn copy, which a stamp around the write
+    // detects. No lock, because the writer that wins is the only one that stores.
+    template<class Value>
+    class CellCache {
+    public:
+        static constexpr std::size_t kSlots = 1u << 14;
+
+        CellCache() : slots_(std::make_unique<Slot[]>(kSlots)) {}
+
+        std::optional<Value> find(std::int64_t key, std::uint64_t salt) const {
+            const Slot& slot = slots_[slot_of(key, salt)];
+            const std::uint64_t want = tag_of(key, salt);
+            if (slot.tag.load(std::memory_order_acquire) != want) {
+                return std::nullopt;
+            }
+            const std::uint32_t before = slot.stamp.load(std::memory_order_acquire);
+            if ((before & 1u) != 0) {
+                return std::nullopt;
+            }
+            const Value value = slot.value;
+            if (slot.stamp.load(std::memory_order_acquire) != before) {
+                return std::nullopt;
+            }
+            return value;
+        }
+
+        void insert(std::int64_t key, std::uint64_t salt, const Value& value) {
+            Slot& slot = slots_[slot_of(key, salt)];
+            const std::uint32_t stamp = slot.stamp.load(std::memory_order_relaxed);
+            slot.stamp.store(stamp | 1u, std::memory_order_release);
+            slot.value = value;
+            slot.stamp.store(stamp + 2u, std::memory_order_release);
+            slot.tag.store(tag_of(key, salt), std::memory_order_release);
+        }
+
+    private:
+        struct Slot {
+            std::atomic<std::uint64_t> tag{ 0 };
+            Value value{};
+            std::atomic<std::uint32_t> stamp{ 0 };
+        };
+
+        static std::uint64_t mix(std::uint64_t value) noexcept {
+            value ^= value >> 33;
+            value *= 0xff51afd7ed558ccdull;
+            value ^= value >> 33;
+            value *= 0xc4ceb9fe1a85ec53ull;
+            value ^= value >> 33;
+            return value;
+        }
+
+        // Never zero, so a cleared slot cannot be mistaken for a hit.
+        static std::uint64_t tag_of(std::int64_t key, std::uint64_t salt) noexcept {
+            return (static_cast<std::uint64_t>(key) ^ salt) + 1;
+        }
+
+        static std::size_t slot_of(std::int64_t key, std::uint64_t salt) noexcept {
+            return static_cast<std::size_t>(mix(static_cast<std::uint64_t>(key) ^ salt)) &
+                (kSlots - 1);
+        }
+
+        std::unique_ptr<Slot[]> slots_;
+    };
+
 } // namespace terila::world

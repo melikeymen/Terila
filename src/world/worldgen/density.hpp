@@ -12,6 +12,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -171,6 +172,25 @@ namespace terila::world::worldgen {
             double value = 0.0;
             bool valid = false;
         };
+
+        // A noise channel with y_scale 0 answers the same value for every height of a column,
+        // and the chunk grid walks fifty seven heights over the same two coordinates. One
+        // slot per channel and column turns those into a single evaluation; the value depends
+        // only on the world, the channel and the coordinates, so it can never go stale.
+        struct ColumnSlot {
+            const DfNode* node = nullptr;
+            std::uint64_t world = 0;
+            double x = 0.0;
+            double z = 0.0;
+            double value = 0.0;
+            bool valid = false;
+        };
+
+        static constexpr std::size_t kColumnSlots = 256;
+        std::array<ColumnSlot, kColumnSlots> columns{};
+        // Identifies the world the evaluation belongs to: two generators on one thread must
+        // not read each other's columns.
+        std::uint64_t world = 0;
 
         // Column tops, shared per chunk: material rules ask for the same column many times.
         std::unordered_map<std::uint64_t, double>* column_tops = nullptr;
@@ -607,10 +627,31 @@ namespace terila::world::worldgen {
                 if (node.noise == nullptr || node.noise->empty()) {
                     return 0.0;
                 }
+                // A channel without a vertical scale, whose shifts are the game's own shift
+                // functions, answers the same value for every height of a column.
+                const bool column_wise = node.y_scale == 0.0 && is_shift_like(node.a) &&
+                    is_shift_like(node.b);
+                EvalContext::ColumnSlot* slot = nullptr;
+                if (column_wise) {
+                    slot = &context.columns[column_slot_of(node, x, z, context)];
+                    if (slot->valid && slot->node == &node && slot->world == context.world &&
+                        slot->x == x && slot->z == z) {
+                        return slot->value;
+                    }
+                }
                 const double shift_x = node.a ? eval_of(node.a, x, y, z, context) : 0.0;
                 const double shift_z = node.b ? eval_of(node.b, x, y, z, context) : 0.0;
-                return node.noise->sample(x * node.xz_scale + shift_x, y * node.y_scale,
-                    z * node.xz_scale + shift_z);
+                const double value_out = node.noise->sample(x * node.xz_scale + shift_x,
+                    y * node.y_scale, z * node.xz_scale + shift_z);
+                if (slot != nullptr) {
+                    slot->node = &node;
+                    slot->world = context.world;
+                    slot->x = x;
+                    slot->z = z;
+                    slot->value = value_out;
+                    slot->valid = true;
+                }
+                return value_out;
             }
             case DfKind::Shift:
                 return node.noise == nullptr ? 0.0
@@ -700,6 +741,34 @@ namespace terila::world::worldgen {
         double eval_of(const DfPtr& node, double x, double y, double z,
             EvalContext& context) const {
             return node ? eval(*node, x, y, z, context) : 0.0;
+        }
+
+        // The shift channels of the game ignore the height, which is what lets a noise node
+        // that only carries them be answered once per column.
+        static bool is_shift_like(const DfPtr& node) {
+            if (!node) {
+                return true;
+            }
+            return node->kind == DfKind::Shift || node->kind == DfKind::ShiftA ||
+                node->kind == DfKind::ShiftB;
+        }
+
+        static std::uint64_t double_bits(double value) {
+            std::uint64_t bits = 0;
+            std::memcpy(&bits, &value, sizeof(bits));
+            return bits;
+        }
+
+        static std::size_t column_slot_of(const DfNode& node, double x, double z,
+            const EvalContext& context) {
+            std::uint64_t mixed = reinterpret_cast<std::uint64_t>(&node);
+            mixed ^= double_bits(x) * 0x9E3779B97F4A7C15ull;
+            mixed ^= double_bits(z) * 0xC2B2AE3D27D4EB4Full;
+            mixed ^= context.world;
+            mixed ^= mixed >> 33;
+            mixed *= 0xff51afd7ed558ccdull;
+            mixed ^= mixed >> 29;
+            return static_cast<std::size_t>(mixed) & (EvalContext::kColumnSlots - 1);
         }
 
         // Piecewise cubic Hermite through the control points, extended linearly past the

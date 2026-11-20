@@ -1,12 +1,16 @@
 #include <gtest/gtest.h>
 
 #include "world/light_engine.hpp"
+#include "world/terrain_biomes.hpp"
 
 #include <cstdint>
 #include <functional>
+#include <optional>
+#include <string_view>
 #include <vector>
 
 namespace world = terila::world;
+namespace terrain = terila::world::terrain;
 
 namespace {
 
@@ -168,4 +172,40 @@ TEST(LightEngineTest, LightCrossesAChunkBorder) {
     EXPECT_GT(inside, 0) << "the cave is lit on the first side of the border";
     EXPECT_GT(across, 0) << "the light continues into the next chunk";
     EXPECT_EQ(inside, across + 1) << "one level per block across the border";
+}
+
+// A light source a player places has to be in the rules the server lights with, otherwise a
+// chunk holding a shroomlight is saved and streamed back with the lamp dark.
+TEST(LightEngineTest, PlacedLightSourcesAreRegisteredAsEmitters) {
+    const terrain::IdResolver resolver = [](std::string_view name) -> std::optional<std::int32_t> {
+        if (name == "minecraft:shroomlight") return 900;
+        if (name == "minecraft:torch") return 901;
+        return std::nullopt;
+    };
+    world::LightRules rules;
+    terrain::add_placed_light_sources(rules, resolver);
+
+    EXPECT_EQ(15, rules.of(900).emission);
+    EXPECT_EQ(14, rules.of(901).emission);
+    EXPECT_TRUE(rules.has_emitters());
+}
+
+// The band the pass covers follows the chunk: a lamp in a cave below the sky has to be lit
+// even though nothing above it is dark.
+TEST(LightEngineTest, AChunkWithALampIsLitBelowTheSky) {
+    // A lamp in a small room under the surface: the sky never reaches it, so any light at
+    // all comes from the block light pass.
+    const auto block = [](int x, int y, int z) {
+        if (x == 8 && y == 5 && z == 8) return kTorch;
+        if (y >= 4 && y <= 6 && x >= 6 && x <= 10 && z >= 6 && z <= 10) return kAir;
+        return kStone;
+    };
+    auto chunk = make_chunk(0, 0, 2, block);
+    world::LightEngine::compute(chunk, standard_rules(),
+        [](int, int) { return 7; },
+        [&](int x, int y, int z) { return block(x, y, z); });
+
+    EXPECT_GT(level_at(chunk, false, 8, 5, 8), 0);
+    EXPECT_GT(level_at(chunk, false, 9, 5, 8), 0);
+    EXPECT_LT(level_at(chunk, false, 10, 5, 8), level_at(chunk, false, 9, 5, 8));
 }

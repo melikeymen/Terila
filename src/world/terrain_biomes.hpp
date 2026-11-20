@@ -255,6 +255,58 @@ namespace terila::world::terrain {
 
     // What the blocks this generator places do to light. Everything else stays opaque: no
     // light passes and none is emitted.
+    // Light a block a player can place gives off. The generator never puts one of these down,
+    // so the terrain table above does not know them, but the overlay can hold them and their
+    // light has to survive the edit, the save and the restart. Opacity and the sky flag are
+    // the shape of the block: a torch is a sliver that light and the sky pass, shroomlight is
+    // a full cube that keeps both out.
+    inline void add_placed_light_sources(LightRules& rules, const IdResolver& block) {
+        struct Source {
+            const char* name;
+            std::uint8_t emission;
+            std::uint8_t opacity;
+            bool sky_down;
+        };
+        static constexpr Source kSources[] = {
+            { "minecraft:torch", 14, 0, true },
+            { "minecraft:wall_torch", 14, 0, true },
+            { "minecraft:soul_torch", 10, 0, true },
+            { "minecraft:soul_wall_torch", 10, 0, true },
+            { "minecraft:redstone_torch", 7, 0, true },
+            { "minecraft:redstone_wall_torch", 7, 0, true },
+            { "minecraft:lantern", 15, 15, false },
+            { "minecraft:soul_lantern", 10, 15, false },
+            { "minecraft:shroomlight", 15, 15, false },
+            { "minecraft:glowstone", 15, 15, false },
+            { "minecraft:sea_lantern", 15, 15, false },
+            { "minecraft:jack_o_lantern", 15, 15, false },
+            { "minecraft:magma_block", 3, 15, false },
+            { "minecraft:lava", 15, 15, false },
+            { "minecraft:campfire", 15, 15, false },
+            { "minecraft:soul_campfire", 10, 15, false },
+            { "minecraft:fire", 15, 0, true },
+            { "minecraft:soul_fire", 10, 0, true },
+            { "minecraft:glow_lichen", 7, 0, true },
+            { "minecraft:amethyst_cluster", 5, 15, false },
+            { "minecraft:brewing_stand", 1, 0, true },
+            { "minecraft:brown_mushroom", 1, 0, true },
+            { "minecraft:enchanting_table", 7, 15, false },
+            { "minecraft:end_portal", 15, 15, false },
+            { "minecraft:end_gateway", 15, 15, false },
+            { "minecraft:crying_obsidian", 10, 15, false },
+            { "minecraft:respawn_anchor", 15, 15, false },
+            { "minecraft:beacon", 15, 15, false },
+            { "minecraft:conduit", 15, 15, false },
+        };
+        for (const auto& source : kSources) {
+            const auto state = block(source.name);
+            if (!state) {
+                continue;
+            }
+            rules.set(*state, LightBlock{ source.emission, source.opacity, source.sky_down });
+        }
+    }
+
     inline LightRules light_rules_for(const Blocks& blocks) {
         LightRules rules;
         rules.set(blocks.air, LightBlock{ 0, 0, true });

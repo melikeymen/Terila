@@ -37,6 +37,10 @@ namespace terila::world::trf {
         std::uint32_t generation = 0;
         bool wire_ready = false;
         bool edited = false;
+        // The stored light was computed by the current light rules. Saves from before the
+        // rules knew about light sources carry false here, which is what tells the loader to
+        // light the column again instead of streaming a copy that is dark around a lamp.
+        bool light_full = false;
         std::uint8_t compression = 0;
     };
 

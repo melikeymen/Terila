@@ -129,7 +129,11 @@ namespace terila::world {
             const int top_band = std::clamp(max_source, chunk.min_y, world_top);
             // Block light comes from sources the terrain does not tell us about (torches a
             // player placed), so a world that has any keeps the whole height in the band.
-            const int bottom_band = rules.has_emitters()
+            // A chunk that holds no emitter needs no block light pass, and keeping its band
+            // as low as the sky allows is what keeps a generated chunk cheap: the terrain
+            // itself never places a light source, only the player does.
+            const bool sources = rules.has_emitters() && holds_emitter(chunk, rules);
+            const int bottom_band = sources
                 ? chunk.min_y
                 : std::clamp(min_source - kRadius - 2, chunk.min_y, world_top);
             if (bottom_band > top_band) {
@@ -292,7 +296,7 @@ namespace terila::world {
             spread(sky);
 
             // Block light: every emitter starts at its own level, then floods outwards.
-            if (rules.has_emitters()) {
+            if (sources) {
                 for (int y = bottom_band; y <= top_band; ++y) {
                     for (int z = -kRadius; z < 16 + kRadius; ++z) {
                         for (int x = -kRadius; x < 16 + kRadius; ++x) {
@@ -316,6 +320,24 @@ namespace terila::world {
         }
 
     private:
+        // A chunk's palette names every block state it holds, so whether it can light
+        // anything is a handful of palette reads instead of a walk over its 98k blocks.
+        static bool holds_emitter(const Chunk& chunk, const LightRules& rules) {
+            for (const auto& section : chunk.sections) {
+                // A section written with direct states does not name what it holds, so the
+                // answer has to be the safe one and the pass runs.
+                if (section.block_palette.empty() && !section.block_states.empty()) {
+                    return true;
+                }
+                for (const std::int32_t state : section.block_palette) {
+                    if (rules.of(state).emission > 0) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
         static std::int32_t state_in_section(const ChunkSection& section, int index) {
             if (section.block_bits == 0) {
                 return section.block_palette.empty() ? 0 : section.block_palette[0];

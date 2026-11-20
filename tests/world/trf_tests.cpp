@@ -288,6 +288,29 @@ TEST(TrfRegionTest, SavesAndLoadsPayloadBytes) {
     EXPECT_EQ(loaded, payload);
 }
 
+// The loader tells a column whose light was computed by the current rules from one saved
+// before the rules knew about placed light sources; without the flag an edited column would
+// stream back with its lamps dark.
+TEST(TrfRegionTest, TheLightFullFlagSurvivesTheRoundTrip) {
+    TempDir dir;
+    auto opened = trf::TrfRegion::open(dir.path() / "r.1.0.trf", region_options());
+    ASSERT_TRUE(opened.has_value());
+    auto& region = **opened;
+
+    std::vector<std::byte> loaded;
+    const auto payload = payload_bytes(512, 3);
+    ASSERT_TRUE(region.save_chunk(2, 4, as_span(payload),
+        trf::chunk_flags(true, true, false)).has_value());
+    ASSERT_TRUE(region.load_chunk(2, 4, loaded).has_value());
+    EXPECT_FALSE(region.load_chunk(2, 4, loaded)->light_full);
+
+    ASSERT_TRUE(region.save_chunk(2, 4, as_span(payload),
+        trf::chunk_flags(true, true, true)).has_value());
+    const auto result = region.load_chunk(2, 4, loaded);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_TRUE(result->light_full);
+}
+
 TEST(TrfRegionTest, ReportsAbsentChunksWithoutAnError) {
     TempDir dir;
     auto opened = trf::TrfRegion::open(dir.path() / "r.0.0.trf", region_options());

@@ -511,6 +511,7 @@ namespace terila::world::trf {
         result.compression = chosen->compression;
         result.edited = chosen->edited();
         result.wire_ready = chosen->wire_ready();
+        result.light_full = chosen->light_full();
         return result;
     }
 

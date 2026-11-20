@@ -125,6 +125,8 @@ namespace terila::world::worldgen {
             section_count_ = section_count;
             seed_ = seed;
             block_cache_ = std::make_shared<BlockSampleCache>();
+            cell_cache_ = std::make_shared<CellCache<Column>>();
+            world_id_ = next_world_id();
             cache_salt_ = static_cast<std::uint64_t>(seed) * 0x9E3779B97F4A7C15ull + 1;
 
             const auto resolved_blocks = terrain::resolve_blocks(block);
@@ -171,6 +173,7 @@ namespace terila::world::worldgen {
             }
 
             light_rules_ = terrain::light_rules_for(blocks_);
+            terrain::add_placed_light_sources(light_rules_, block);
             ores_.init(static_cast<std::uint64_t>(seed_), min_y_, blocks_);
             plants_.init(blocks_, biomes_, sea_level_);
             ready_ = true;
@@ -703,9 +706,17 @@ namespace terila::world::worldgen {
             double weirdness = 0.0;
         };
 
-        static EvalContext& thread_context() {
+        // One evaluation scratch per thread, tagged with this generator's id so two worlds
+        // generated on the same thread never read each other's cached columns.
+        EvalContext& thread_context() const {
             static thread_local EvalContext context;
+            context.world = world_id_;
             return context;
+        }
+
+        static std::uint64_t next_world_id() {
+            static std::atomic<std::uint64_t> counter{ 0 };
+            return ++counter;
         }
 
         double sample_density(double x, double y, double z, EvalContext& context) const {
@@ -1161,17 +1172,37 @@ namespace terila::world::worldgen {
             return result;
         }
 
+        // Cell coordinates are a quarter of the block ones, so the same 32 bit packing fits.
+        static std::int64_t cell_key(std::int32_t cell_x, std::int32_t cell_z) noexcept {
+            return static_cast<std::int64_t>(
+                (static_cast<std::uint64_t>(static_cast<std::uint32_t>(cell_x)) << 32) |
+                static_cast<std::uint32_t>(cell_z));
+        }
+
         Column cached_cell(std::int32_t cell_x, std::int32_t cell_z,
             ColumnCache& cache) const {
             if (const Column* found = cache.find_cell(cell_x, cell_z)) {
                 return *found;
             }
+            const std::int64_t key = cell_key(cell_x, cell_z);
+            if (cell_cache_ != nullptr) {
+                if (const auto shared = cell_cache_->find(key, cache_salt_)) {
+                    cache.insert_cell(cell_x, cell_z, *shared);
+                    return *shared;
+                }
+            }
             const Column created = cell_column(cell_x, cell_z);
+            if (cell_cache_ != nullptr) {
+                cell_cache_->insert(key, cache_salt_, created);
+            }
             cache.insert_cell(cell_x, cell_z, created);
             return created;
         }
 
         Settings settings_;
+        std::shared_ptr<CellCache<Column>> cell_cache_;
+        std::uint64_t world_id_ = 0;
+
         MaterialRules material_;
         OreVeins ores_;
         Vegetation plants_;
