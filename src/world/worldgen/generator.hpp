@@ -636,13 +636,29 @@ namespace terila::world::worldgen {
             return min_y_;
         }
 
+        // The game fades stone into deepslate over the eight blocks above y=0: a block there
+        // is deepslate with a chance that falls from seven eighths at y=1 to nothing at y=8.
+        std::int32_t deep_filler(std::int32_t x, std::int32_t y, std::int32_t z) const {
+            if (blocks_.deepslate == blocks_.stone || y >= 8) {
+                return blocks_.stone;
+            }
+            if (y <= 0) {
+                return blocks_.deepslate;
+            }
+            const std::uint64_t hash = terrain::detail::hash64(
+                (static_cast<std::uint64_t>(static_cast<std::uint32_t>(x)) << 42) ^
+                (static_cast<std::uint64_t>(static_cast<std::uint32_t>(z)) << 12) ^
+                static_cast<std::uint64_t>(static_cast<std::uint32_t>(y)) ^ 0x6A09E667ull);
+            return (hash % 8) < static_cast<std::uint64_t>(8 - y) ? blocks_.deepslate
+                                                                 : blocks_.stone;
+        }
+
         std::int32_t painted_at(std::int32_t x, std::int32_t y, std::int32_t z,
             const Column& col, int stone_above, int stone_below, int water_height) const {
             // Deep under the surface the chain can only answer the deepslate gradient, which
             // is the y test below; skipping the chain there keeps a chunk affordable.
             if (y + kSurfaceWindow < col.preliminary && y > min_y_ + 5) {
-                return (y <= 0 && blocks_.deepslate != blocks_.stone)
-                    ? blocks_.deepslate : blocks_.stone;
+                return deep_filler(x, y, z);
             }
             MaterialContext context;
             context.x = x;
@@ -685,8 +701,7 @@ namespace terila::world::worldgen {
                 state = painted_at(x, y, z, col, 1, 1, water_height_of(col));
             }
             else {
-                state = (y <= 0 && blocks_.deepslate != blocks_.stone)
-                    ? blocks_.deepslate : blocks_.stone;
+                state = deep_filler(x, y, z);
             }
             if (state == blocks_.air) {
                 state = plants_.apply(x, y, z, state,

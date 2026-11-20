@@ -71,6 +71,7 @@ namespace {
         if (name == "minecraft:andesite")      return 23;
         if (name == "minecraft:tuff")          return 24;
         if (name == "minecraft:clay")          return 25;
+        if (name == "minecraft:deepslate")     return 26;
         return std::nullopt;
     }
 
@@ -417,6 +418,41 @@ TEST(TerrainGeneratorTest, PlacesOreVeinsInTheDeep) {
         }
     }
     EXPECT_GT(ores, 0);
+}
+
+TEST(TerrainGeneratorTest, DeepslateFadesOutAboveYZero) {
+    REQUIRE_VANILLA_DATA();
+    const auto generator = make_generator();
+    const LandColumn land = find_column(generator, false);
+    ASSERT_NE(land.biome, -1) << "no land within 4096 blocks";
+
+    // Immediately above y=0 the game still writes mostly deepslate; by y=8 the fade is over.
+    int deepslate_low = 0;
+    int stone_low = 0;
+    int deepslate_high = 0;
+    for (int i = 0; i < 9; ++i) {
+        const auto chunk = generator.generate(land.x / 16 + (i % 3), land.z / 16 + (i / 3));
+        for (const auto& section : chunk.sections) {
+            for (int k = 0; k < 4096; ++k) {
+                const std::int32_t state = section_state(section, k);
+                if (state != 1 && state != 26) {
+                    continue;
+                }
+                const int y = chunk.min_y + static_cast<int>(&section - chunk.sections.data()) * 16
+                    + k / 256;
+                if (y >= 1 && y <= 4) {
+                    (state == 26 ? deepslate_low : stone_low) += 1;
+                }
+                else if (y == 8) {
+                    deepslate_high += state == 26 ? 1 : 0;
+                }
+            }
+        }
+    }
+    SCOPED_TRACE("deepslate " + std::to_string(deepslate_low) + " stone " +
+        std::to_string(stone_low) + " deepslate at y8 " + std::to_string(deepslate_high));
+    EXPECT_GT(deepslate_low, stone_low);
+    EXPECT_EQ(deepslate_high, 0);
 }
 
 TEST(TerrainGeneratorTest, StoneBlobsColourTheDeepFiller) {
