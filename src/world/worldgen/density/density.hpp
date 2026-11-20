@@ -8,7 +8,7 @@
 // world shape the game ships without carrying a line of its code: the node set and the field
 // names below are the documented format, the evaluation is ours.
 
-#include "world/worldgen/noise.hpp"
+#include "world/worldgen/density/noise.hpp"
 
 #include <array>
 #include <cmath>

@@ -19,10 +19,13 @@
 #include "world/light_engine.hpp"
 #include "world/terrain_biomes.hpp"
 #include "world/terrain_noise.hpp"
-#include "world/worldgen/material.hpp"
-#include "world/worldgen/ores.hpp"
+#include "world/worldgen/chunk_sections.hpp"
+#include "world/worldgen/column.hpp"
+#include "world/worldgen/density_grid.hpp"
 #include "world/worldgen/settings.hpp"
-#include "world/worldgen/vegetation.hpp"
+#include "world/worldgen/surface/material.hpp"
+#include "world/worldgen/surface/ores.hpp"
+#include "world/worldgen/surface/vegetation.hpp"
 #include "log/logger.hpp"
 
 #include <algorithm>
@@ -44,81 +47,6 @@ namespace terila::world::worldgen {
 
     class Generator {
     public:
-        // One column of the heightmap: the surface height, the biome that paints it and the
-        // values the material rules test.
-        struct Column {
-            int height = 0;
-            int biome = 0;
-            float temperature = 0.0f;
-            int surface_depth = 3;
-            double surface_secondary = 0.0;
-            int preliminary = 0;
-            // Memoised sky top: the light pass asks every cell of the halo for it.
-            int sky = kNoSky;
-            static constexpr int kNoSky = -1000000;
-        };
-
-        // Columns are looked up hundreds of times per chunk (the light pass asks for the sky
-        // above every cell of the halo), so the cache is a small direct-mapped table instead
-        // of a hash map: one probe, no allocation.
-        class ColumnCache {
-        public:
-            ColumnCache() {
-                keys_.fill(kEmpty);
-                cell_keys_.fill(kEmpty);
-            }
-
-            const Column* find(std::int32_t x, std::int32_t z) const {
-                const std::size_t slot = slot_of(key(x, z));
-                return keys_[slot] == key(x, z) ? &columns_[slot] : nullptr;
-            }
-
-            void insert(std::int32_t x, std::int32_t z, const Column& column) {
-                const std::size_t slot = slot_of(key(x, z));
-                keys_[slot] = key(x, z);
-                columns_[slot] = column;
-            }
-
-            const Column* find_cell(std::int32_t cell_x, std::int32_t cell_z) const {
-                const std::size_t slot = slot_of(key(cell_x, cell_z));
-                return cell_keys_[slot] == key(cell_x, cell_z) ? &cells_[slot] : nullptr;
-            }
-
-            void set_sky(std::int32_t x, std::int32_t z, int value) {
-                const std::size_t slot = slot_of(key(x, z));
-                if (keys_[slot] == key(x, z)) {
-                    columns_[slot].sky = value;
-                }
-            }
-
-            void insert_cell(std::int32_t cell_x, std::int32_t cell_z,
-                const Column& column) {
-                const std::size_t slot = slot_of(key(cell_x, cell_z));
-                cell_keys_[slot] = key(cell_x, cell_z);
-                cells_[slot] = column;
-            }
-
-        private:
-            static constexpr std::uint64_t kEmpty = ~0ull;
-            // The light pass asks for the sky of a fifteen block halo, so the table holds a
-            // few thousand columns without evicting the coarser cells they are built from.
-            static constexpr std::size_t kSlots = 8192;
-
-            static std::uint64_t key(std::int32_t x, std::int32_t z) {
-                return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(x)) << 32) |
-                    static_cast<std::uint32_t>(z);
-            }
-
-            static std::size_t slot_of(std::uint64_t key) {
-                return static_cast<std::size_t>(terrain::detail::hash64(key)) & (kSlots - 1);
-            }
-
-            std::array<std::uint64_t, kSlots> keys_{};
-            std::array<Column, kSlots> columns_{};
-            std::array<std::uint64_t, kSlots> cell_keys_{};
-            std::array<Column, kSlots> cells_{};
-        };
-
         bool init(int min_y, int section_count, std::uint32_t seed,
             const terrain::IdResolver& block, const terrain::IdResolver& biome) {
             min_y_ = min_y;
@@ -508,94 +436,16 @@ namespace terila::world::worldgen {
 
             mark("heightmaps");
 
-            chunk.sections.resize(static_cast<std::size_t>(section_count_));
-            for (int sy = 0; sy < section_count_; ++sy) {
-                ChunkSection& section = chunk.sections[static_cast<std::size_t>(sy)];
-                std::vector<std::int32_t> palette;
-                std::vector<std::int32_t> indices(4096, 0);
-                std::int32_t last_state = -1;
-                std::int32_t last_index = 0;
-                int non_air = 0;
-                int fluids = 0;
-
-                for (int i = 0; i < 4096; ++i) {
-                    const std::int32_t state = blocks[static_cast<std::size_t>(sy) * 4096 +
-                        static_cast<std::size_t>(i)];
-                    if (state != last_state) {
-                        std::int32_t found = -1;
-                        for (std::size_t k = 0; k < palette.size(); ++k) {
-                            if (palette[k] == state) {
-                                found = static_cast<std::int32_t>(k);
-                                break;
-                            }
-                        }
-                        if (found < 0) {
-                            found = static_cast<std::int32_t>(palette.size());
-                            palette.push_back(state);
-                        }
-                        last_state = state;
-                        last_index = found;
-                    }
-                    indices[static_cast<std::size_t>(i)] = last_index;
-                    if (state != blocks_.air) ++non_air;
-                    if (state == blocks_.water) ++fluids;
-                }
-
-                section.block_count = static_cast<std::uint16_t>(non_air);
-                section.fluid_count = static_cast<std::uint16_t>(fluids);
-                if (palette.size() == 1) {
-                    section.block_bits = 0;
-                    section.block_palette = { palette[0] };
-                }
-                else {
-                    int bits = 4;
-                    while (bits < 8 && (1u << bits) < palette.size()) {
-                        ++bits;
-                    }
-                    section.block_bits = static_cast<std::uint8_t>(bits);
-                    section.block_palette = palette;
-                    section.block_states = indices;
-                }
-
-                std::vector<std::int32_t> biome_palette;
-                std::vector<std::int32_t> biome_indices(64, 0);
-                for (int cy = 0; cy < 4; ++cy) {
-                    for (int cz = 0; cz < 4; ++cz) {
-                        for (int cxx = 0; cxx < 4; ++cxx) {
-                            const std::int32_t biome_id = biomes_[static_cast<std::size_t>(
-                                biome_at(wx0 + cxx * 4 + 2, min_y_ + sy * 16 + cy * 4 + 2,
-                                    wz0 + cz * 4 + 2,
-                                    climate_columns[static_cast<std::size_t>(cz * 4 + cxx)]))].id;
-                            std::int32_t index = -1;
-                            for (std::size_t k = 0; k < biome_palette.size(); ++k) {
-                                if (biome_palette[k] == biome_id) {
-                                    index = static_cast<std::int32_t>(k);
-                                    break;
-                                }
-                            }
-                            if (index < 0) {
-                                index = static_cast<std::int32_t>(biome_palette.size());
-                                biome_palette.push_back(biome_id);
-                            }
-                            biome_indices[static_cast<std::size_t>((cy * 4 + cz) * 4 + cxx)] =
-                                index;
-                        }
-                    }
-                }
-                if (biome_palette.size() == 1) {
-                    section.biome_bits = 0;
-                    section.biome_palette = { biome_palette[0] };
-                }
-                else {
-                    int bits = 1;
-                    while (bits < 4 && (1u << bits) < biome_palette.size()) {
-                        ++bits;
-                    }
-                    section.biome_bits = static_cast<std::uint8_t>(bits);
-                    section.biome_palette = biome_palette;
-                    section.biome_states = biome_indices;
-                }
-            }
+            // The packing itself lives in its own header: this stage only hands over the
+            // block array and the biome of a position.
+            write_sections(chunk, blocks, wx0, wz0, min_y_, section_count_, blocks_.air,
+                blocks_.water,
+                [&](std::int32_t bx, std::int32_t by, std::int32_t bz) {
+                    const std::size_t column = static_cast<std::size_t>(
+                        ((bz - wz0) / 4) * 4 + ((bx - wx0) / 4));
+                    return biomes_[static_cast<std::size_t>(biome_at(bx, by, bz,
+                        climate_columns[column]))].id;
+                });
 
             mark("sections");
 
@@ -650,53 +500,6 @@ namespace terila::world::worldgen {
         static constexpr int kWayBelow = -1000000;
         // How far below the preliminary surface the material chain still paints blocks.
         static constexpr int kSurfaceWindow = 8;
-
-        struct DensityGrid {
-            static constexpr int kCellsX = 5;
-            static constexpr int kCellsZ = 5;
-            int y_count = 0;
-            int origin_x = 0;
-            int origin_z = 0;
-            int origin_y = 0;
-            std::vector<double> values;
-
-            void init(std::int32_t wx0, std::int32_t wz0, int min_y, int y_count_in) {
-                origin_x = wx0;
-                origin_z = wz0;
-                origin_y = min_y;
-                y_count = y_count_in;
-                values.assign(static_cast<std::size_t>(kCellsX * kCellsZ * y_count), 0.0);
-            }
-
-            std::size_t index(int ix, int iy, int iz) const {
-                return (static_cast<std::size_t>(iy) * kCellsZ + static_cast<std::size_t>(iz)) *
-                    kCellsX + static_cast<std::size_t>(ix);
-            }
-
-            double at(std::int32_t x, std::int32_t y, std::int32_t z) const {
-                const int ix = std::clamp((x - origin_x) >> 2, 0, kCellsX - 2);
-                const int iz = std::clamp((z - origin_z) >> 2, 0, kCellsZ - 2);
-                const int iy = std::clamp((y - origin_y) >> 3, 0, y_count - 2);
-                const double tx = static_cast<double>(x - (origin_x + ix * 4)) / 4.0;
-                const double tz = static_cast<double>(z - (origin_z + iz * 4)) / 4.0;
-                const double ty = static_cast<double>(y - (origin_y + iy * 8)) / 8.0;
-
-                const double c000 = values[index(ix, iy, iz)];
-                const double c100 = values[index(ix + 1, iy, iz)];
-                const double c010 = values[index(ix, iy, iz + 1)];
-                const double c110 = values[index(ix + 1, iy, iz + 1)];
-                const double c001 = values[index(ix, iy + 1, iz)];
-                const double c101 = values[index(ix + 1, iy + 1, iz)];
-                const double c011 = values[index(ix, iy + 1, iz + 1)];
-                const double c111 = values[index(ix + 1, iy + 1, iz + 1)];
-
-                const double bottom = (c000 + (c100 - c000) * tx) +
-                    ((c010 + (c110 - c010) * tx) - (c000 + (c100 - c000) * tx)) * tz;
-                const double top = (c001 + (c101 - c001) * tx) +
-                    ((c011 + (c111 - c011) * tx) - (c001 + (c101 - c001) * tx)) * tz;
-                return bottom + (top - bottom) * ty;
-            }
-        };
 
         struct ClimateSample {
             double temperature = 0.0;

@@ -6,8 +6,8 @@
 // own JSON instead of being written into the code.
 
 #include "data/input_store.hpp"
-#include "world/worldgen/climate.hpp"
-#include "world/worldgen/density.hpp"
+#include "world/worldgen/density/climate.hpp"
+#include "world/worldgen/density/density.hpp"
 #include "log/logger.hpp"
 
 #include <cstdint>

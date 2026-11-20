@@ -8,7 +8,7 @@
 // The rules that only matter for structures or ore veins are evaluated as "no material",
 // which is exactly what the chain does when its condition does not hold.
 
-#include "world/worldgen/density.hpp"
+#include "world/worldgen/density/density.hpp"
 
 #include <cmath>
 #include <cstdint>
