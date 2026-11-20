@@ -18,6 +18,9 @@ namespace terila::protocol {
 
         std::uint8_t kind = Literal;
         bool executable = false;
+        // The client hides a restricted node unless it believes it is an operator. One tree
+        // is sent to everybody, which is what the game does.
+        bool restricted = false;
         std::vector<std::int32_t> children;
         std::string name;
         std::int32_t parser = -1;
@@ -36,6 +39,9 @@ namespace terila::protocol {
             std::uint8_t flags = static_cast<std::uint8_t>(node.kind & 0x03);
             if (node.executable) {
                 flags |= 0x04;
+            }
+            if (node.restricted) {
+                flags |= 0x20;
             }
             out.push_back(flags);
 
@@ -76,157 +82,6 @@ namespace terila::protocol {
             terila::protocol::write_int32(properties, max);
         }
         return properties;
-    }
-
-    // minecraft:entity properties: one flags byte, 0x01 single entity only and 0x02
-    // players only. /give takes several players, so the selector is players-only.
-    inline std::vector<std::uint8_t> players_only_properties() {
-        return std::vector<std::uint8_t>{ 0x02 };
-    }
-
-    // The commands this server runs, in the order the login handler sends them:
-    //   /give <targets> <item> [count]
-    //   /give <item> [count]
-    //   /execute [as <targets>] run <command>
-    //   /time set|add|query ...
-    // The item argument uses minecraft:item_stack, the parser /give uses in the game, so
-    // the client completes item ids and validates the component patch it is given, and
-    // the target argument uses minecraft:entity so @a, @p, @s and a player name parse.
-    // The executed command is a minecraft:message argument: it takes the rest of the line,
-    // which is what the client needs to accept "/execute run give stone" as one argument.
-    // The time keywords are literals, not a string argument: that is what makes them show
-    // up in the client's command list as soon as "/" or "/time " is typed.
-    //
-    // Branches are repeated on purpose: a Brigadier node has one parent, so the two shapes
-    // of /give, and the two `run` literals, cannot share the same subtree indices.
-    inline std::vector<CommandNode> builtin_command_tree(std::int32_t item_stack_parser,
-        std::int32_t integer_parser, std::int32_t entity_parser, std::int32_t message_parser) {
-        std::vector<CommandNode> nodes(28);
-
-        // The client casts the resolved root to RootCommandNode, so node 0 must be the
-        // stub-less root type; as a literal the cast fails after a successful decode.
-        nodes[0].kind = CommandNode::Root;
-        nodes[0].children = { 1, 7, 14 };
-
-        nodes[1].kind = CommandNode::Literal;
-        nodes[1].name = "give";
-        nodes[1].children = { 2, 4 };
-
-        // /give <item> [count]
-        nodes[2].kind = CommandNode::Argument;
-        nodes[2].name = "item";
-        nodes[2].parser = item_stack_parser;
-        nodes[2].children = { 3 };
-        nodes[2].executable = true;
-
-        nodes[3].kind = CommandNode::Argument;
-        nodes[3].name = "count";
-        nodes[3].parser = integer_parser;
-        nodes[3].properties = integer_properties(1, false, 0);
-        nodes[3].executable = true;
-
-        // /give <targets> <item> [count]
-        nodes[4].kind = CommandNode::Argument;
-        nodes[4].name = "targets";
-        nodes[4].parser = entity_parser;
-        nodes[4].properties = players_only_properties();
-        nodes[4].children = { 5 };
-
-        nodes[5].kind = CommandNode::Argument;
-        nodes[5].name = "item";
-        nodes[5].parser = item_stack_parser;
-        nodes[5].children = { 6 };
-        nodes[5].executable = true;
-
-        nodes[6].kind = CommandNode::Argument;
-        nodes[6].name = "count";
-        nodes[6].parser = integer_parser;
-        nodes[6].properties = integer_properties(1, false, 0);
-        nodes[6].executable = true;
-
-        // /execute [as <targets>] run <command>
-        nodes[7].kind = CommandNode::Literal;
-        nodes[7].name = "execute";
-        nodes[7].children = { 8, 10 };
-
-        // /execute run <command>
-        nodes[8].kind = CommandNode::Literal;
-        nodes[8].name = "run";
-        nodes[8].children = { 9 };
-
-        nodes[9].kind = CommandNode::Argument;
-        nodes[9].name = "command";
-        nodes[9].parser = message_parser;
-        nodes[9].executable = true;
-
-        // /execute as <targets> run <command>
-        nodes[10].kind = CommandNode::Literal;
-        nodes[10].name = "as";
-        nodes[10].children = { 11 };
-
-        nodes[11].kind = CommandNode::Argument;
-        nodes[11].name = "targets";
-        nodes[11].parser = entity_parser;
-        nodes[11].properties = players_only_properties();
-        nodes[11].children = { 12 };
-
-        nodes[12].kind = CommandNode::Literal;
-        nodes[12].name = "run";
-        nodes[12].children = { 13 };
-
-        nodes[13].kind = CommandNode::Argument;
-        nodes[13].name = "command";
-        nodes[13].parser = message_parser;
-        nodes[13].executable = true;
-
-        // /time set <day|noon|sunset|night|midnight|sunrise|ticks>
-        nodes[14].kind = CommandNode::Literal;
-        nodes[14].name = "time";
-        nodes[14].children = { 15, 23, 25 };
-
-        nodes[15].kind = CommandNode::Literal;
-        nodes[15].name = "set";
-        nodes[15].children = { 16, 17, 18, 19, 20, 21, 22 };
-
-        static constexpr const char* kTimes[6] = { "day", "noon", "sunset", "night",
-            "midnight", "sunrise" };
-        for (int i = 0; i < 6; ++i) {
-            nodes[16 + i].kind = CommandNode::Literal;
-            nodes[16 + i].name = kTimes[i];
-            nodes[16 + i].executable = true;
-        }
-
-        nodes[22].kind = CommandNode::Argument;
-        nodes[22].name = "ticks";
-        nodes[22].parser = integer_parser;
-        nodes[22].properties = integer_properties(0, false, 0);
-        nodes[22].executable = true;
-
-        // /time add <ticks>
-        nodes[23].kind = CommandNode::Literal;
-        nodes[23].name = "add";
-        nodes[23].children = { 24 };
-
-        nodes[24].kind = CommandNode::Argument;
-        nodes[24].name = "ticks";
-        nodes[24].parser = integer_parser;
-        nodes[24].properties = integer_properties(0, false, 0);
-        nodes[24].executable = true;
-
-        // /time query daytime|gametime
-        nodes[25].kind = CommandNode::Literal;
-        nodes[25].name = "query";
-        nodes[25].children = { 26, 27 };
-
-        nodes[26].kind = CommandNode::Literal;
-        nodes[26].name = "daytime";
-        nodes[26].executable = true;
-
-        nodes[27].kind = CommandNode::Literal;
-        nodes[27].name = "gametime";
-        nodes[27].executable = true;
-
-        return nodes;
     }
 
 } // namespace terila::protocol

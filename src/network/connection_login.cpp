@@ -224,16 +224,10 @@ namespace terila::network {
             // built from the commands this server actually runs, because the dump in
             // input/commands is not a tree the client accepts (it cycles).
             {
-                // Parser ids come from the same registry dump the client uses; the fallbacks
-                // are their ids in the versions that carry those parsers.
-                const auto parser_id = [this](const char* name, std::int32_t fallback) {
-                    const auto found = data_.command_argument_types.find(name);
-                    return found == data_.command_argument_types.end() ? fallback : found->second;
-                    };
-
-                const auto nodes = terila::protocol::builtin_command_tree(
-                    parser_id("minecraft:item_stack", 14), parser_id("brigadier:integer", 3),
-                    parser_id("minecraft:entity", 6), parser_id("minecraft:message", 20));
+                // The tree is generated from the same registry the parser uses, so a command
+                // exists in exactly one place.
+                const auto nodes = registry_ ? registry_->wire_tree()
+                                             : std::vector<terila::protocol::CommandNode>{};
                 const auto tree = terila::protocol::write_command_tree(nodes, 0);
                 if (!tree.empty() &&
                     terila::protocol::write_packet(out, ids.play_commands, tree)) {
@@ -282,8 +276,27 @@ namespace terila::network {
                     });
                 hub_->set_runner(entity_id_, [weak_self](const std::string& nested) {
                     if (const auto connection = weak_self.lock()) {
-                        connection->run_command(nested);
+                        connection->handle_command(nested);
                     }
+                });
+                hub_->set_teleporter(entity_id_, [weak_self](double x, double y, double z,
+                    float yaw, float pitch) {
+                    if (const auto connection = weak_self.lock()) {
+                        return connection->teleport_player(x, y, z, yaw, pitch);
+                    }
+                    return false;
+                });
+                hub_->set_messenger(entity_id_, [weak_self](std::string_view text) {
+                    if (const auto connection = weak_self.lock()) {
+                        return connection->tell_player(text);
+                    }
+                    return false;
+                });
+                hub_->set_mode_setter(entity_id_, [weak_self](int mode) {
+                    if (const auto connection = weak_self.lock()) {
+                        return connection->apply_gamemode(mode);
+                    }
+                    return false;
                 });
                 // Mob hits arrive from the mob manager through the hub: it knows the entity
                 // ids, this connection owns the health behind one of them.

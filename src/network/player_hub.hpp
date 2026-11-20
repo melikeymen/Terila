@@ -108,6 +108,64 @@ namespace terila::network {
             }
         }
 
+        // A command changes another player, and only the connection that owns that player
+        // can apply the change: the same reason the giver and the damager exist.
+        using Teleporter = std::function<bool(double x, double y, double z, float yaw,
+            float pitch)>;
+        using Messenger = std::function<bool(std::string_view text)>;
+        using ModeSetter = std::function<bool(int mode)>;
+
+        void set_teleporter(std::int32_t entity_id, Teleporter teleporter)
+        {
+            const auto it = players_.find(entity_id);
+            if (it != players_.end()) {
+                it->second.teleport = std::move(teleporter);
+            }
+        }
+
+        void set_messenger(std::int32_t entity_id, Messenger messenger)
+        {
+            const auto it = players_.find(entity_id);
+            if (it != players_.end()) {
+                it->second.message = std::move(messenger);
+            }
+        }
+
+        void set_mode_setter(std::int32_t entity_id, ModeSetter setter)
+        {
+            const auto it = players_.find(entity_id);
+            if (it != players_.end()) {
+                it->second.set_mode = std::move(setter);
+            }
+        }
+
+        bool teleport_to(std::int32_t entity_id, double x, double y, double z, float yaw,
+            float pitch)
+        {
+            const auto it = players_.find(entity_id);
+            return it != players_.end() && it->second.teleport &&
+                it->second.teleport(x, y, z, yaw, pitch);
+        }
+
+        bool message_to(std::int32_t entity_id, std::string_view text)
+        {
+            const auto it = players_.find(entity_id);
+            return it != players_.end() && it->second.message && it->second.message(text);
+        }
+
+        bool set_gamemode_to(std::int32_t entity_id, int mode)
+        {
+            const auto it = players_.find(entity_id);
+            if (it == players_.end() || !it->second.set_mode) {
+                return false;
+            }
+            if (!it->second.set_mode(mode)) {
+                return false;
+            }
+            it->second.gamemode = mode;
+            return true;
+        }
+
         // Replaces the giver of a member that is already in the world.
         void set_giver(std::int32_t entity_id, Giver giver)
         {
@@ -176,6 +234,9 @@ namespace terila::network {
             double x = 0.0;
             double y = 0.0;
             double z = 0.0;
+            float yaw = 0.0f;
+            float pitch = 0.0f;
+            int gamemode = 0;
         };
 
         std::vector<MemberInfo> member_info() const
@@ -184,7 +245,8 @@ namespace terila::network {
             out.reserve(players_.size());
             for (const auto& [id, member] : players_) {
                 out.push_back(MemberInfo{ id, member.name, member.position.x,
-                    member.position.y, member.position.z });
+                    member.position.y, member.position.z, member.position.yaw,
+                    member.position.pitch, member.gamemode });
             }
             return out;
         }
@@ -324,6 +386,9 @@ namespace terila::network {
             Giver give;
             Runner run;
             Damager hurt;
+            Teleporter teleport;
+            Messenger message;
+            ModeSetter set_mode;
         };
 
         // The member list changes only on join and leave, but it is needed on every move

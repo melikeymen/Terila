@@ -15,7 +15,7 @@
 #include "world/block_world.hpp"
 #include "world/falling_blocks.hpp"
 #include "world/fluid_flow.hpp"
-#include "commands/command_context.hpp"
+#include "commands/registry.hpp"
 #include "world/world_context.hpp"
 #include "world/chunk_jobs.hpp"
 #include "world/world_clock.hpp"
@@ -331,17 +331,22 @@ namespace terila::network {
         void handle_interact(const std::vector<std::uint8_t>& payload);
 
         // --- connection_commands.cpp -----------------------------------------------
+        friend class CommandBridge;
+
         void handle_command(const std::string& command);
-        // The command module asks the connection for players, inventory and clock through
-        // this context, so no command touches the network itself.
-        commands::Context command_context();
-        commands::TimeApi time_api_;
-        // Runs a command in this player's context. /execute nests through here, so the
-        // depth guard lives with it.
-        void run_command(std::string_view command);
         void send_system_message(std::string_view text);
         bool give_item(std::int32_t item_id, std::int32_t count,
             const terila::item::ComponentsPtr& components);
+
+        // A command acts on another player through the hub; these are the local half of
+        // that path, and the bridge in connection_commands.cpp chooses between them.
+        bool teleport_player(double x, double y, double z, float yaw, float pitch);
+        bool apply_gamemode(int mode);
+        bool tell_player(std::string_view text);
+        bool summon_entity(std::string_view type, double x, double y, double z);
+
+        // Built once, on start: the grammar and the tree both come from it.
+        std::unique_ptr<commands::Registry> registry_;
 
         // --- connection_entities.cpp -----------------------------------------------
         // Spawns and removes mobs as they enter or leave the view distance and sends
@@ -458,7 +463,6 @@ namespace terila::network {
         std::int32_t air_state_ = 0;
         std::int32_t carried_slot_ = 0;
         std::int32_t held_item_id_ = 0;
-        std::uint32_t command_depth_ = 0;
         std::unordered_map<std::int32_t, std::int32_t> creative_slots_;
     };
 

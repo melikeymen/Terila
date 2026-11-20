@@ -193,6 +193,18 @@ namespace terila::entity {
             return true;
         }
 
+        // A command places the entity exactly where it asked, without snapping it to the
+        // surface first: /summon names a position, not a column.
+        bool spawn_at(const std::string& type_name, double x, double y, double z) {
+            if (!spawn(type_name, x, z)) {
+                return false;
+            }
+            mobs_.back().y = y;
+            mobs_.back().vy = 0.0;
+            mobs_.back().on_ground = false;
+            return true;
+        }
+
         // Kept for callers that already hold a type id table; the id is no longer needed
         // because the spec carries everything.
         bool spawn(const std::string& type_name,

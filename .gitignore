@@ -131,8 +131,6 @@ googletest-subbuild/
 
 # extractor outputs
 input/
-# Local design notes: the TRF spec is a scratch reference, not part of the build
-docs/trf-spec.md
 
 # Written on the first start
 eula.txt

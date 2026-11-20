@@ -14,6 +14,11 @@ namespace terila::network {
         component_ids_ = terila::item::component_ids(data_.component_ids,
             &data_.enchantment_ids);
 
+        // The command grammar is built once per connection: it carries the item and
+        // component registries, and the tree sent on login is generated from it.
+        registry_ = std::make_unique<commands::Registry>(data_, component_ids_);
+        registry_->install_all();
+
         asio::error_code ec;
         const auto remote = socket_.remote_endpoint(ec);
         if (!ec) {

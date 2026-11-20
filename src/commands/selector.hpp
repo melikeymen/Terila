@@ -29,6 +29,9 @@ namespace terila::commands {
         double x = 0.0;
         double y = 0.0;
         double z = 0.0;
+        // Facing, used by /tp <destination> and by execute at/rotated.
+        float yaw = 0.0f;
+        float pitch = 0.0f;
     };
 
     enum class Sort { Arbitrary, Nearest, Furthest, Random };

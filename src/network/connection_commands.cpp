@@ -1,8 +1,9 @@
 #include "network/connection.hpp"
 
-#include "commands/dispatch.hpp"
-#include "commands/text.hpp"
+#include "commands/registry.hpp"
+#include "entity/mob_data.hpp"
 #include "protocol/chat.hpp"
+#include "protocol/play.hpp"
 #include "protocol/player_state.hpp"
 
 #include <cstdint>
@@ -11,6 +12,115 @@
 #include <vector>
 
 namespace terila::network {
+
+    // The game side of the command module. Every effect a command asks for lands here: the
+    // player itself is served locally, anybody else through the hub, and the world through
+    // the mob manager the connection already holds.
+    class CommandBridge final : public terila::commands::GameApi {
+    public:
+        explicit CommandBridge(Connection& connection) : connection_(connection) {}
+
+        std::vector<terila::commands::Target> players() const override {
+            std::vector<terila::commands::Target> out;
+            if (connection_.hub_) {
+                for (const auto& member : connection_.hub_->member_info()) {
+                    out.push_back(terila::commands::Target{ member.entity, member.name,
+                        member.x, member.y, member.z, member.yaw, member.pitch });
+                }
+            }
+            if (out.empty()) {
+                out.push_back(self());
+            }
+            return out;
+        }
+
+        bool give(std::int32_t entity, std::int32_t item_id, std::int32_t count,
+            const terila::item::ComponentsPtr& components) override {
+            if (entity == connection_.entity_id_ || connection_.hub_ == nullptr) {
+                return connection_.give_item(item_id, count, components);
+            }
+            return connection_.hub_->give_to(entity, item_id, count, components);
+        }
+
+        bool teleport(std::int32_t entity, double x, double y, double z, float yaw,
+            float pitch) override {
+            if (entity == connection_.entity_id_ || connection_.hub_ == nullptr) {
+                return connection_.teleport_player(x, y, z, yaw, pitch);
+            }
+            return connection_.hub_->teleport_to(entity, x, y, z, yaw, pitch);
+        }
+
+        bool set_gamemode(std::int32_t entity, int mode) override {
+            if (entity == connection_.entity_id_ || connection_.hub_ == nullptr) {
+                return connection_.apply_gamemode(mode);
+            }
+            return connection_.hub_->set_gamemode_to(entity, mode);
+        }
+
+        int gamemode(std::int32_t entity) const override {
+            if (entity == connection_.entity_id_ || connection_.hub_ == nullptr) {
+                return connection_.gamemode_;
+            }
+            for (const auto& member : connection_.hub_->member_info()) {
+                if (member.entity == entity) {
+                    return member.gamemode;
+                }
+            }
+            return -1;
+        }
+
+        bool summon(std::string_view type, double x, double y, double z) override {
+            return connection_.summon_entity(type, x, y, z);
+        }
+
+        bool summonable(std::string_view type) const override {
+            return terila::entity::data::find_mob_by_name(std::string(type)) != nullptr;
+        }
+
+        bool tell(std::int32_t entity, std::string_view text) override {
+            if (entity == connection_.entity_id_ || connection_.hub_ == nullptr) {
+                return connection_.tell_player(text);
+            }
+            return connection_.hub_->message_to(entity, text);
+        }
+
+        std::int64_t game_time() const override {
+            return connection_.clock_ ? connection_.clock_->game_time : 0;
+        }
+
+        std::int64_t time_of_day() const override {
+            return connection_.clock_ ? connection_.clock_->time_of_day : 0;
+        }
+
+        bool night() const override {
+            return connection_.clock_ != nullptr && connection_.clock_->night();
+        }
+
+        void set_time(std::int64_t ticks) override {
+            if (connection_.clock_) {
+                connection_.clock_->set_time_of_day(ticks);
+            }
+        }
+
+        void add_time(std::int64_t ticks) override {
+            if (connection_.clock_) {
+                connection_.clock_->tick(ticks);
+            }
+        }
+
+        void sync_time() override {
+            connection_.send_time();
+        }
+
+    private:
+        terila::commands::Target self() const {
+            return terila::commands::Target{ connection_.entity_id_, connection_.username_,
+                connection_.player_x_, connection_.player_y_, connection_.player_z_,
+                connection_.yaw_, connection_.pitch_ };
+        }
+
+        Connection& connection_;
+    };
 
     void Connection::send_system_message(std::string_view text) {
         std::vector<std::uint8_t> out;
@@ -24,95 +134,84 @@ namespace terila::network {
         return add_to_inventory(item_id, count, components);
     }
 
-    // Every command reaches the game through this context: the selector module gets the
-    // player list, /give the inventory, /time the clock and /execute the nesting runner.
-    commands::Context Connection::command_context() {
-        commands::Context context;
-        context.self = commands::Target{ entity_id_, username_, player_x_, player_y_, player_z_ };
-
-        context.players = [this]() -> std::vector<commands::Target> {
-            std::vector<commands::Target> out;
-            if (hub_ != nullptr) {
-                for (const auto& member : hub_->member_info()) {
-                    out.push_back(commands::Target{ member.entity, member.name, member.x,
-                        member.y, member.z });
-                }
-            }
-            if (out.empty()) {
-                out.push_back(commands::Target{ entity_id_, username_, player_x_, player_y_,
-                    player_z_ });
-            }
-            return out;
-            };
-
-        context.reply = [this](std::string_view text) { send_system_message(text); };
-
-        context.give = [this](std::int32_t entity, std::int32_t item_id, std::int32_t count,
-            const terila::item::ComponentsPtr& components) {
-            if (entity == entity_id_ || hub_ == nullptr) {
-                return give_item(item_id, count, components);
-            }
-            return hub_->give_to(entity, item_id, count, components);
-            };
-
-        context.run = [this](std::string_view line) { run_command(line); };
-
-        context.run_as = [this](std::int32_t entity, std::string_view line) {
-            if (entity == entity_id_) {
-                run_command(line);
-                return true;
-            }
-            return hub_ != nullptr && hub_->run_as(entity, std::string(line));
-            };
-
-        context.item_ids = &data_.item_ids;
-        context.component_ids = &component_ids_;
-
-        if (clock_ != nullptr) {
-            time_api_.game_time = [this] { return clock_->game_time; };
-            time_api_.time_of_day = [this] { return clock_->time_of_day; };
-            time_api_.night = [this] { return clock_->night(); };
-            time_api_.set = [this](std::int64_t ticks) { clock_->set_time_of_day(ticks); };
-            time_api_.add = [this](std::int64_t ticks) { clock_->tick(ticks); };
-            // Everyone's sky moves at once, so the new time is broadcast instead of waiting
-            // for the next one-second sync.
-            time_api_.sync = [this] {
-                std::vector<std::uint8_t> out;
-                if (terila::protocol::write_set_time(out, clock_->game_time,
-                        clock_->time_of_day)) {
-                    if (hub_ != nullptr) {
-                        hub_->broadcast(out);
-                    }
-                    else {
-                        send(out);
-                    }
-                }
-                };
-            context.time = &time_api_;
+    bool Connection::teleport_player(double x, double y, double z, float yaw, float pitch) {
+        if (state_ != State::Play || closed_) {
+            return false;
         }
-        return context;
+
+        player_x_ = x;
+        player_y_ = y;
+        player_z_ = z;
+        yaw_ = yaw;
+        pitch_ = pitch;
+
+        std::vector<std::uint8_t> out;
+        if (!terila::protocol::write_player_position(out, next_teleport_id_++, x, y, z, 0.0,
+                0.0, 0.0, yaw, pitch)) {
+            return false;
+        }
+        send(out);
+
+        update_player_chunk(x, z);
+        if (hub_) {
+            hub_->move(entity_id_,
+                PlayerHub::Position{ x, y, z, yaw, pitch });
+        }
+        return true;
     }
 
-    // A command that runs another command shares one guard, so
-    // /execute as @s run execute as @s run ... cannot recurse until the stack is gone.
-    void Connection::run_command(std::string_view command) {
-        if (command_depth_ >= kMaxCommandDepth) {
-            send_system_message("Too many nested commands");
-            return;
+    bool Connection::apply_gamemode(int mode) {
+        if (mode < 0 || mode > 3 || mode == gamemode_) {
+            return false;
         }
-        ++command_depth_;
-        handle_command(std::string(commands::trim(command)));
-        --command_depth_;
+
+        gamemode_ = mode;
+        // A dig in progress belongs to the mode it started in.
+        abort_breaking();
+        LOG_INFO(Network, "{} switched to gamemode {}", username_, gamemode_);
+        send_gamemode_state();
+        if (hub_) {
+            hub_->move(entity_id_,
+                PlayerHub::Position{ player_x_, player_y_, player_z_, yaw_, pitch_ });
+        }
+        return true;
+    }
+
+    bool Connection::tell_player(std::string_view text) {
+        if (state_ != State::Play || closed_) {
+            return false;
+        }
+        send_system_message(text);
+        return true;
+    }
+
+    bool Connection::summon_entity(std::string_view type, double x, double y, double z) {
+        return mobs_.spawn_at(std::string(type), x, y, z);
     }
 
     void Connection::handle_command(const std::string& command) {
-        const auto context = command_context();
-        if (commands::dispatch(context, command)) {
+        if (!registry_) {
+            send_system_message("Commands are not available");
             return;
         }
-        send_system_message(
-            "Commands: /give [@a|@s|@p|@r] <item>[<component>=<value>,...] [count], "
-            "/execute [as <targets>] run <command>, /time set|add|query <value>");
+
+        CommandBridge bridge(*this);
+        terila::commands::Origin origin;
+        origin.entity = entity_id_;
+        origin.name = username_;
+        origin.x = player_x_;
+        origin.y = player_y_;
+        origin.z = player_z_;
+        origin.yaw = yaw_;
+        origin.pitch = pitch_;
+        // There is no permission store yet, so every joined player may run what the grammar
+        // carries; the capability is checked at parse and at run time already.
+        origin.capability = terila::commands::Capability::Owner;
+        origin.reply = [this](std::string_view text) { send_system_message(text); };
+        origin.game = &bridge;
+
+        terila::commands::RunScope scope;
+        registry_->run(origin, command, scope);
     }
 
 } // namespace terila::network
