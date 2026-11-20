@@ -72,6 +72,9 @@ namespace {
         if (name == "minecraft:tuff")          return 24;
         if (name == "minecraft:clay")          return 25;
         if (name == "minecraft:deepslate")     return 26;
+        if (name == "minecraft:obsidian")      return 30;
+        if (name == "minecraft:netherrack")    return 31;
+        if (name == "minecraft:stone_bricks")  return 32;
         return std::nullopt;
     }
 
@@ -480,6 +483,46 @@ TEST(TerrainGeneratorTest, StoneBlobsColourTheDeepFiller) {
         std::to_string(counts[22]) + " andesite " + std::to_string(counts[23]) +
         " tuff " + std::to_string(counts[24]) + " clay " + std::to_string(counts[25]));
     EXPECT_GT(coloured, 400);
+}
+
+TEST(TerrainGeneratorTest, ABuiltStructureLandsOnTheSurface) {
+    REQUIRE_VANILLA_DATA();
+    const auto generator = make_generator();
+
+    // The ruined portal set places one structure per forty chunk cell; walk the cells around
+    // the origin and build the one that sits on land.
+    terila::world::worldgen::StructureSpread spread;
+    spread.salt = 34222645;
+    spread.spacing = 40;
+    spread.separation = 15;
+
+    int structure_blocks = 0;
+    int built_chunks = 0;
+    for (std::int32_t gz = -1; gz <= 1 && built_chunks < 2; ++gz) {
+        for (std::int32_t gx = -1; gx <= 1 && built_chunks < 2; ++gx) {
+            const auto site = terila::world::worldgen::spread_site(1337, spread, gx, gz);
+            ASSERT_TRUE(site.valid);
+            const std::int32_t centre_x = site.chunk_x * 16 + 8;
+            const std::int32_t centre_z = site.chunk_z * 16 + 8;
+            if (generator.surface_height(centre_x, centre_z) <= generator.sea_level()) {
+                continue;
+            }
+            ++built_chunks;
+            const auto chunk = generator.generate(site.chunk_x, site.chunk_z);
+            for (const auto& section : chunk.sections) {
+                for (int i = 0; i < 4096; ++i) {
+                    const std::int32_t state = section_state(section, i);
+                    if (state == 30 || state == 31 || state == 32) {
+                        ++structure_blocks;
+                    }
+                }
+            }
+        }
+    }
+    if (built_chunks == 0) {
+        GTEST_SKIP() << "no ruined portal site on land near the origin";
+    }
+    EXPECT_GT(structure_blocks, 0);
 }
 
 TEST(TerrainGeneratorTest, CoversManyBiomesAcrossTheMap) {

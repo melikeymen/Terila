@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -101,7 +102,11 @@ namespace terila::world::worldgen {
         return "structures/templates/minecraft/" + name + ".json";
     }
 
-    inline bool load_template(std::string_view id, const data::RegistryData& registry,
+    // Turns a state string into the number the world stores; the generator has no registry
+    // at hand and answers with the block's default state instead.
+    using StateTextResolver = std::function<std::int32_t(std::string_view)>;
+
+    inline bool load_template(std::string_view id, const StateTextResolver& resolve,
         StructureTemplate& out) {
         out = StructureTemplate{};
         std::string text;
@@ -121,8 +126,7 @@ namespace terila::world::worldgen {
                 return true;
             }
             for (auto entry = blocks->begin(); entry != blocks->end(); ++entry) {
-                const std::int32_t state =
-                    template_state_id(entry.key(), registry.block_states, registry.block_state_ids);
+                const std::int32_t state = resolve(entry.key());
                 for (const nlohmann::json& position : entry.value()) {
                     if (!position.is_array() || position.size() < 3) {
                         continue;
@@ -140,6 +144,15 @@ namespace terila::world::worldgen {
             return false;
         }
         return true;
+    }
+
+    inline bool load_template(std::string_view id, const data::RegistryData& registry,
+        StructureTemplate& out) {
+        return load_template(id,
+            [&registry](std::string_view text) {
+                return template_state_id(text, registry.block_states, registry.block_state_ids);
+            },
+            out);
     }
 
 } // namespace terila::world::worldgen

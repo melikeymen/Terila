@@ -24,6 +24,7 @@
 #include "world/worldgen/density_grid.hpp"
 #include "world/worldgen/settings.hpp"
 #include "world/worldgen/surface/material.hpp"
+#include "world/worldgen/structures/structures.hpp"
 #include "world/worldgen/surface/ores.hpp"
 #include "world/worldgen/surface/vegetation.hpp"
 #include "log/logger.hpp"
@@ -104,6 +105,7 @@ namespace terila::world::worldgen {
             terrain::add_placed_light_sources(light_rules_, block);
             ores_.init(static_cast<std::uint64_t>(seed_), min_y_, world_top_ - 1, blocks_);
             plants_.init(blocks_, biomes_, sea_level_);
+            structures_.init(static_cast<std::uint64_t>(seed_), block, built_structures());
             ready_ = true;
             return ready_;
         }
@@ -347,6 +349,16 @@ namespace terila::world::worldgen {
             }
 
             mark("fill");
+
+            // Structures land on the finished surface, before the vegetation stage that fills
+            // the air above it.
+            if (!structures_.empty()) {
+                structures_.apply(cx, cz, sea_level_ + 1,
+                    [this](std::int32_t x, std::int32_t z) { return surface_height(x, z); },
+                    [&put](std::int32_t x, std::int32_t y, std::int32_t z, std::int32_t state) {
+                        put(x, y, z, state);
+                    });
+            }
 
             // Trees and cacti: the margin lets plants from neighbouring columns lean in.
             int tree_columns = 0;
@@ -1023,6 +1035,7 @@ namespace terila::world::worldgen {
 
         MaterialRules material_;
         OreBlobs ores_;
+        Structures structures_;
         Vegetation plants_;
         terrain::Blocks blocks_{};
         std::vector<terrain::Biome> biomes_;
