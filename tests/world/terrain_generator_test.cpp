@@ -624,3 +624,4 @@ TEST(LightBench, ComputePerChunk) {
     std::cout << ", halo block cache: " << sample_stats.hits << " hits, "
               << sample_stats.misses << " misses" << std::endl;
 }
+
