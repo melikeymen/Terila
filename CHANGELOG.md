@@ -38,6 +38,9 @@ All notable changes to Terila, newest first. Format follows
   slope is filled, so no building hangs in the air
 - A ruined portal, a shipwreck or any other single-template structure fills the gap under
   its lowest layer on a slope, so it no longer hangs over the drop
+- A whole template is laid down with one of the four quarter turns picked from its site, so
+  a wreck or a portal is not always built the same way round; the stairs and rails of the
+  turned template turn with it
 - A village, outpost or city grows as deep as the structure's `size` and no farther from
   its centre than `max_distance_from_center`, both read from the structure data instead of
   a fixed cap

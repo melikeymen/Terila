@@ -217,7 +217,10 @@ namespace terila::world::worldgen {
                             continue;
                         }
                         const StructureTemplate& tmpl = item.templates[template_for(item, site)];
-                        if (!covers(site, tmpl, chunk_x, chunk_z)) {
+                        // Vanilla lays a whole template down with a turn of its own, so a
+                        // wreck or a portal is not always built the same way round.
+                        const std::int32_t rotation = rotation_for(site);
+                        if (!covers(site, tmpl, rotation, chunk_x, chunk_z)) {
                             continue;
                         }
                         const std::int32_t centre_x = site.chunk_x * 16 + 8;
@@ -235,17 +238,19 @@ namespace terila::world::worldgen {
                                 continue;
                             }
                         }
-                        const std::int32_t origin_x = centre_x - tmpl.size_x / 2;
-                        const std::int32_t origin_z = centre_z - tmpl.size_z / 2;
+                        const std::int32_t origin_x = centre_x -
+                            rotated_size_x(rotation, tmpl.size_x, tmpl.size_z) / 2;
+                        const std::int32_t origin_z = centre_z -
+                            rotated_size_z(rotation, tmpl.size_x, tmpl.size_z) / 2;
                         // Two thirds of the template sit above the ground, the rest is the
                         // buried part of the structure.
                         const std::int32_t origin_y = ground - tmpl.size_y * 2 / 3;
                         // A whole structure also meets the ground under it: on a slope the
                         // lower side is raised instead of hanging over the drop.
                         fill_beard(tmpl, origin_x, origin_y, origin_z, chunk_x, chunk_z,
-                            surface, filler_, write);
+                            rotation, surface, filler_, write);
                         placed += apply_template(tmpl, origin_x, origin_y, origin_z, chunk_x,
-                            chunk_z, write);
+                            chunk_z, rotation, rotate_, write);
                     }
                 }
             }
@@ -490,17 +495,31 @@ namespace terila::world::worldgen {
             return static_cast<std::size_t>(mixed % item.templates.size());
         }
 
+        // The quarter turn a site's template is laid down with. Without a rotation table the
+        // blocks would keep their unturned states, so the template stays as it is drawn.
+        std::int32_t rotation_for(const StructureSite& site) const {
+            if (!rotate_) {
+                return 0;
+            }
+            const std::uint64_t mixed = terrain::detail::hash64(seed_ ^
+                (static_cast<std::uint64_t>(static_cast<std::uint32_t>(site.chunk_x)) << 32) ^
+                static_cast<std::uint64_t>(static_cast<std::uint32_t>(site.chunk_z)) ^ 0x51ED270Bull);
+            return static_cast<std::int32_t>(mixed % 4);
+        }
+
         static bool covers(const StructureSite& site, const StructureTemplate& tmpl,
-            std::int32_t chunk_x, std::int32_t chunk_z) {
+            std::int32_t rotation, std::int32_t chunk_x, std::int32_t chunk_z) {
             if (tmpl.empty()) {
                 return false;
             }
+            const std::int32_t size_x = rotated_size_x(rotation, tmpl.size_x, tmpl.size_z);
+            const std::int32_t size_z = rotated_size_z(rotation, tmpl.size_x, tmpl.size_z);
             const std::int32_t centre_x = site.chunk_x * 16 + 8;
             const std::int32_t centre_z = site.chunk_z * 16 + 8;
-            const std::int32_t low_x = centre_x - tmpl.size_x / 2;
-            const std::int32_t low_z = centre_z - tmpl.size_z / 2;
-            return (low_x >> 4) <= chunk_x && ((low_x + tmpl.size_x - 1) >> 4) >= chunk_x &&
-                (low_z >> 4) <= chunk_z && ((low_z + tmpl.size_z - 1) >> 4) >= chunk_z;
+            const std::int32_t low_x = centre_x - size_x / 2;
+            const std::int32_t low_z = centre_z - size_z / 2;
+            return (low_x >> 4) <= chunk_x && ((low_x + size_x - 1) >> 4) >= chunk_x &&
+                (low_z >> 4) <= chunk_z && ((low_z + size_z - 1) >> 4) >= chunk_z;
         }
 
         std::uint64_t seed_ = 0;

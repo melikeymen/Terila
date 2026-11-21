@@ -183,7 +183,7 @@ namespace {
 
         int written = 0;
         int wrong_chunk = 0;
-        const int placed = terila::world::worldgen::apply_template(tmpl, 0, 64, 0, 0, 0,
+        const int placed = terila::world::worldgen::apply_template(tmpl, 0, 64, 0, 0, 0, 0, {},
             [&](std::int32_t wx, std::int32_t wy, std::int32_t wz, std::int32_t state) {
                 ++written;
                 EXPECT_GE(wy, 64);
@@ -198,11 +198,42 @@ namespace {
 
         // The same template writes its other column when the neighbour chunk asks for it.
         int neighbour = 0;
-        terila::world::worldgen::apply_template(tmpl, 0, 64, 0, 1, 0,
+        terila::world::worldgen::apply_template(tmpl, 0, 64, 0, 1, 0, 0, {},
             [&](std::int32_t, std::int32_t, std::int32_t, std::int32_t) { ++neighbour; });
         EXPECT_EQ(neighbour, 1);
     }
 
+
+    TEST(StructurePlacementTest, ATurnedTemplateWritesItsCellsAndStatesTurned) {
+        using terila::world::worldgen::StructureTemplate;
+        using terila::world::worldgen::apply_template;
+
+        // A row of blocks three long and one deep: a quarter turn clockwise lays it along z.
+        StructureTemplate tmpl;
+        tmpl.size_x = 3;
+        tmpl.size_y = 1;
+        tmpl.size_z = 1;
+        tmpl.cells.push_back({ 0, 0, 0, 5 });
+        tmpl.cells.push_back({ 2, 0, 0, 5 });
+
+        std::vector<std::pair<std::int32_t, std::int32_t>> columns;
+        int turned_states = 0;
+        const int placed = apply_template(tmpl, 0, 64, 0, 0, 0, 1,
+            [](std::int32_t state, int quarter_turns) { return state + quarter_turns; },
+            [&](std::int32_t x, std::int32_t y, std::int32_t z, std::int32_t state) {
+                columns.emplace_back(x, z);
+                if (state == 6) ++turned_states;
+                EXPECT_EQ(y, 64);
+            });
+
+        EXPECT_EQ(placed, 2);
+        ASSERT_EQ(columns.size(), 2u);
+        EXPECT_EQ(columns[0].first, 0);
+        EXPECT_EQ(columns[0].second, 0);
+        EXPECT_EQ(columns[1].first, 0);
+        EXPECT_EQ(columns[1].second, 2);
+        EXPECT_EQ(turned_states, 2);
+    }
 
     TEST(StructurePlacementTest, AGapUnderASingleTemplateIsFilledOnASlope) {
         using terila::world::worldgen::StructureTemplate;
@@ -227,7 +258,7 @@ namespace {
         int filled = 0;
         std::int32_t highest = 0;
         std::int32_t lowest = 1000;
-        fill_beard(tmpl, 0, 78, 0, 0, 0, slope, filler,
+        fill_beard(tmpl, 0, 78, 0, 0, 0, 0, slope, filler,
             [&](std::int32_t wx, std::int32_t wy, std::int32_t, std::int32_t state) {
                 EXPECT_EQ(state, filler);
                 EXPECT_LT(wy, 79) << "column " << wx << " filled above the floor";
@@ -244,7 +275,7 @@ namespace {
 
         // Flat ground leaves no gap to fill.
         int on_flat = 0;
-        fill_beard(tmpl, 0, 78, 0, 0, 0,
+        fill_beard(tmpl, 0, 78, 0, 0, 0, 0,
             [](std::int32_t, std::int32_t) { return 78; }, filler,
             [&on_flat](std::int32_t, std::int32_t, std::int32_t, std::int32_t) { ++on_flat; });
         EXPECT_EQ(on_flat, 0);
@@ -334,8 +365,11 @@ namespace {
         // full state, every template cell must carry it instead of the block's default.
         const terila::world::worldgen::StateTextResolver palette =
             [](std::string_view) { return 4242; };
+        // A rotation table is present as it is on the server, so the site's turn is applied
+        // to the cells and to every state.
         ASSERT_TRUE(structures.init(1337, any_block, every_biome,
-            terila::world::worldgen::built_structures(), palette));
+            terila::world::worldgen::built_structures(), palette,
+            [](std::int32_t state, int) { return state; }));
 
         terila::world::worldgen::StructureSpread spread;
         spread.salt = 34222645;

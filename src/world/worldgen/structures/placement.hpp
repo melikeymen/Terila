@@ -61,25 +61,64 @@ namespace terila::world::worldgen {
         return cell;
     }
 
+    // A quarter turn clockwise moves a cell of a size_x by size_z template.
+    inline void rotate_cell(int quarter_turns, std::int32_t size_x, std::int32_t size_z,
+        std::int32_t& x, std::int32_t& z) {
+        switch (quarter_turns & 3) {
+            case 1: {
+                const std::int32_t turned = size_z - 1 - z;
+                z = x;
+                x = turned;
+                break;
+            }
+            case 2:
+                x = size_x - 1 - x;
+                z = size_z - 1 - z;
+                break;
+            case 3: {
+                const std::int32_t turned = z;
+                z = size_x - 1 - x;
+                x = turned;
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    inline std::int32_t rotated_size_x(int quarter_turns, std::int32_t size_x,
+        std::int32_t size_z) {
+        return (quarter_turns & 1) != 0 ? size_z : size_x;
+    }
+
+    inline std::int32_t rotated_size_z(int quarter_turns, std::int32_t size_x,
+        std::int32_t size_z) {
+        return (quarter_turns & 1) != 0 ? size_x : size_z;
+    }
+
     // Writes the part of a template that lands in one chunk. The palette's air is skipped:
     // a structure carves its rooms out of the terrain with its own blocks, not by deleting
-    // what the generator put there.
+    // what the generator put there. A turned template is written at its turned cells and
+    // with the turned state of each block.
     template<class Write>
     int apply_template(const StructureTemplate& tmpl, std::int32_t origin_x,
         std::int32_t origin_y, std::int32_t origin_z, std::int32_t chunk_x,
-        std::int32_t chunk_z, Write&& write) {
+        std::int32_t chunk_z, int rotation, const StateRotator& rotate, Write&& write) {
         int placed = 0;
         for (const TemplateCell& cell : tmpl.cells) {
             if (cell.state == 0) {
                 continue;
             }
-            const std::int32_t wx = origin_x + cell.x;
+            std::int32_t local_x = cell.x;
+            std::int32_t local_z = cell.z;
+            rotate_cell(rotation, tmpl.size_x, tmpl.size_z, local_x, local_z);
+            const std::int32_t wx = origin_x + local_x;
             const std::int32_t wy = origin_y + cell.y;
-            const std::int32_t wz = origin_z + cell.z;
+            const std::int32_t wz = origin_z + local_z;
             if ((wx >> 4) != chunk_x || (wz >> 4) != chunk_z) {
                 continue;
             }
-            write(wx, wy, wz, cell.state);
+            write(wx, wy, wz, rotate ? rotate(cell.state, rotation) : cell.state);
             ++placed;
         }
         return placed;
@@ -96,7 +135,8 @@ namespace terila::world::worldgen {
     template<class Surface, class Write>
     int fill_beard(const StructureTemplate& tmpl, std::int32_t origin_x,
         std::int32_t origin_y, std::int32_t origin_z, std::int32_t chunk_x,
-        std::int32_t chunk_z, Surface&& surface, std::int32_t filler, Write&& write) {
+        std::int32_t chunk_z, int rotation, Surface&& surface, std::int32_t filler,
+        Write&& write) {
         std::int32_t lowest = tmpl.size_y;
         for (const TemplateCell& cell : tmpl.cells) {
             if (cell.state != 0 && cell.y < lowest) {
@@ -107,11 +147,13 @@ namespace terila::world::worldgen {
             return 0;  // No solid layer to stand on.
         }
         const std::int32_t base_y = origin_y + lowest;
+        const std::int32_t size_x = rotated_size_x(rotation, tmpl.size_x, tmpl.size_z);
+        const std::int32_t size_z = rotated_size_z(rotation, tmpl.size_x, tmpl.size_z);
         int filled = 0;
-        for (std::int32_t dz = 0; dz < tmpl.size_z; ++dz) {
+        for (std::int32_t dz = 0; dz < size_z; ++dz) {
             const std::int32_t wz = origin_z + dz;
             if ((wz >> 4) != chunk_z) continue;
-            for (std::int32_t dx = 0; dx < tmpl.size_x; ++dx) {
+            for (std::int32_t dx = 0; dx < size_x; ++dx) {
                 const std::int32_t wx = origin_x + dx;
                 if ((wx >> 4) != chunk_x) continue;
                 const std::int32_t ground = surface(wx, wz);

@@ -116,41 +116,6 @@ namespace terila::world::worldgen {
         std::vector<JigsawBlock> jigsaws;  // Jigsaws in world coordinates
     };
 
-    // A quarter turn clockwise moves a cell of a size_x by size_z template.
-    inline void rotate_cell(int quarter_turns, std::int32_t size_x, std::int32_t size_z,
-        std::int32_t& x, std::int32_t& z) {
-        switch (quarter_turns & 3) {
-            case 1: {
-                const std::int32_t turned = size_z - 1 - z;
-                z = x;
-                x = turned;
-                break;
-            }
-            case 2:
-                x = size_x - 1 - x;
-                z = size_z - 1 - z;
-                break;
-            case 3: {
-                const std::int32_t turned = z;
-                z = size_x - 1 - x;
-                x = turned;
-                break;
-            }
-            default:
-                break;
-        }
-    }
-
-    inline std::int32_t rotated_size_x(int quarter_turns, std::int32_t size_x,
-        std::int32_t size_z) {
-        return (quarter_turns & 1) != 0 ? size_z : size_x;
-    }
-
-    inline std::int32_t rotated_size_z(int quarter_turns, std::int32_t size_x,
-        std::int32_t size_z) {
-        return (quarter_turns & 1) != 0 ? size_x : size_z;
-    }
-
     inline std::int32_t piece_size_x(const PlacedPiece& piece) {
         return rotated_size_x(piece.rotation, piece.tmpl.size_x, piece.tmpl.size_z);
     }
