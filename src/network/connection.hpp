@@ -26,6 +26,7 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -106,12 +107,24 @@ namespace terila::network {
         // burst is not serialised behind region-file writes on the IO thread.
         void flush_pending_saves(std::size_t budget);
 
+        // The tick drives the chunk stream. A batch waiting on a worker while the socket
+        // is quiet has nothing else to resume it, so the stream is pumped every tick
+        // instead of only when a write completes.
+        void tick_chunks() { pump_chunks(); }
+
         // The block simulation moved a block in the shared overlay: tell this client when it
         // already holds the column, and save a column it touched once per cascade.
         void send_world_block(const terila::world::BlockPos& pos, std::int32_t state);
         void persist_chunk_edits(std::int32_t cx, std::int32_t cz);
 
         bool joined() const { return joined_; }
+
+        // True while a burst of chunks (a login or a dimension change) is still being sent.
+        // The tick keeps the expensive world sampling of the natural spawner off the io
+        // thread until the player is in, so the first view distance arrives first.
+        bool chunks_streaming() const noexcept {
+            return !pending_chunks_.empty() || !chunk_stream_.finished();
+        }
 
         terila::world::DimensionKind dimension() const noexcept { return dimension_; }
 
@@ -130,13 +143,14 @@ namespace terila::network {
         // A peer that never completes a packet would otherwise grow the accumulator forever.
         static constexpr std::size_t kMaxReadAccum = 4 * 1024 * 1024;
 
-        // Chunks per batch; the next batch waits until the previous one is on the wire.
-        static constexpr int kChunksPerBatch = 32;
+        // Chunks handed to the workers at once; a deeper queue keeps them fed while the
+        // earlier chunks of the batch are still being framed and written.
+        static constexpr int kChunksPerBatch = 48;
         // Chunk packets are already framed, so a few of them share one write.
         static constexpr std::size_t kChunkGroupBytes = 64 * 1024;
 
         // Keep a few packets in flight instead of stalling on every single write.
-        static constexpr std::size_t kMaxWriteQueue = 4;
+        static constexpr std::size_t kMaxWriteQueue = 8;
         // Saves drain a few per tick, so a player who explores faster than the region file
         // accepts would otherwise queue the whole world in memory.
         static constexpr std::size_t kMaxPendingSaves = 512;
@@ -249,6 +263,10 @@ namespace terila::network {
         // it instead of losing the batch it was in the middle of.
         terila::async::Task<void> stream_chunks();
         void pump_chunks();
+        // Handed to the chunk workers so the stream is resumed on the io thread the moment
+        // a chunk is ready. Polling once per tick cost up to 50 ms per chunk, which is what
+        // made a whole view distance take forty seconds instead of a couple.
+        std::function<void()> chunk_completion();
         void update_player_chunk(double x, double z);
 
         // --- connection_world.cpp --------------------------------------------------
@@ -265,6 +283,15 @@ namespace terila::network {
         void handle_block_place(const terila::protocol::BlockPosValue& clicked,
             std::int32_t face, std::int32_t sequence);
         void refresh_held_item();
+
+        // --- nether portal (connection_world.cpp) -----------------------------------
+        // Flint and steel (or a fire charge) opens the obsidian frame it was used in, or
+        // lights a fire when there is no frame. False when the held item is not an igniter,
+        // so the normal placement path still runs.
+        bool handle_ignite(const terila::protocol::BlockPosValue& clicked, std::int32_t face,
+            std::int32_t sequence);
+        // Resolves the item and block ids the portal paths need, once per connection.
+        void resolve_portal_ids();
 
         // --- fluids (connection_world.cpp) -----------------------------------------
         // A bucket pours its source into the clicked cell and turns into the empty bucket.
@@ -480,8 +507,18 @@ namespace terila::network {
         std::shared_ptr<terila::world::WorldClock> clock_;
         int sea_level_ = 63;
         std::int32_t air_state_ = 0;
+        // init_terrain() runs once per dimension: resolving the ids and the generator on
+        // every streamed chunk made a 1089 chunk view distance do 1089 times the same work.
+        bool terrain_ready_ = false;
         std::int32_t carried_slot_ = 0;
         std::int32_t held_item_id_ = 0;
+        std::int32_t flint_and_steel_item_ = 0;
+        std::int32_t fire_charge_item_ = 0;
+        std::int32_t obsidian_state_ = -1;
+        std::int32_t portal_state_x_ = -1;
+        std::int32_t portal_state_z_ = -1;
+        std::int32_t fire_state_ = -1;
+        bool portal_ids_ready_ = false;
         std::unordered_map<std::int32_t, std::int32_t> creative_slots_;
     };
 

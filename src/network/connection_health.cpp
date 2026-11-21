@@ -86,6 +86,14 @@ namespace terila::network {
                 sea_level_, terila::world::worldgen::dimension_type_id(dimension_))) {
             send(out);
         }
+
+        // A respawn starts a fresh world on the client, so the chunk loading has to be
+        // announced the same way the first login does; without the event the client shows
+        // "Loading terrain" for its full thirty second timeout.
+        out.clear();
+        if (terila::protocol::write_game_event(out, 13, 0.0f)) {
+            send(out);
+        }
         send_health();
 
         player_x_ = spawn_x_ + 0.5;

@@ -134,6 +134,7 @@ input/
 
 # Written on the first start
 eula.txt
+configs/
 
 server.properties
 eula.txt

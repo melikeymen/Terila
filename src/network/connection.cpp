@@ -20,6 +20,13 @@ namespace terila::network {
         registry_->install_all();
 
         asio::error_code ec;
+        // Nagle would hold every small packet back for the peer's delayed ack, which shows
+        // up as ten millisecond stalls between writes and made a whole view distance crawl.
+        socket_.set_option(asio::ip::tcp::no_delay(true), ec);
+        if (ec) {
+            LOG_DEBUG(Network, "cannot disable Nagle: {}", ec.message());
+        }
+
         const auto remote = socket_.remote_endpoint(ec);
         if (!ec) {
             remote_ = remote.address().to_string() + ":" + std::to_string(remote.port());

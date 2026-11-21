@@ -5,7 +5,9 @@
 #include "protocol/play.hpp"
 
 #include "world/block_break.hpp"
+#include "world/nether_portal.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 namespace terila::network {
@@ -219,6 +221,12 @@ namespace terila::network {
         const terila::world::BlockPos clicked_pos{ clicked.x, clicked.y, clicked.z };
         if (const int menu = menu_kind_for_state(state_at(clicked_pos)); menu != kMenuNone) {
             open_menu(menu, menu == kMenuCrafting ? "Crafting" : "Furnace");
+            return;
+        }
+
+        // Flint and steel and the fire charge are not block items either: they open a
+        // portal frame or light a fire.
+        if (handle_ignite(clicked, face, sequence)) {
             return;
         }
 
@@ -455,6 +463,123 @@ namespace terila::network {
         }
         LOG_DEBUG(Network, "held item is now {} {} (hotbar slot {})", held_item_id_,
             held_item_name_, carried_slot_);
+    }
+
+    void Connection::resolve_portal_ids() {
+        if (portal_ids_ready_) {
+            return;
+        }
+        portal_ids_ready_ = true;
+
+        const auto item = [this](std::string_view name) {
+            const auto it = data_.item_ids.find(std::string(name));
+            return it == data_.item_ids.end() ? 0 : it->second;
+        };
+        flint_and_steel_item_ = item("minecraft:flint_and_steel");
+        fire_charge_item_ = item("minecraft:fire_charge");
+        obsidian_state_ = block_state("minecraft:obsidian").value_or(-1);
+        fire_state_ = block_state("minecraft:fire").value_or(-1);
+
+        // The plane orientation is a property of the portal block itself, so both states
+        // come from the block's own variant table instead of from a guessed offset.
+        const auto portal = data_.block_states.find("minecraft:nether_portal");
+        if (portal == data_.block_states.end()) {
+            LOG_CRITICAL(Network, "minecraft:nether_portal is missing from the registry — "
+                "a lit frame cannot be opened");
+            return;
+        }
+        for (const auto& variant : portal->second) {
+            const auto axis = variant.properties.find("axis");
+            if (axis == variant.properties.end()) {
+                continue;
+            }
+            if (axis->second == "x") {
+                portal_state_x_ = variant.id;
+            }
+            else if (axis->second == "z") {
+                portal_state_z_ = variant.id;
+            }
+        }
+    }
+
+    // A frame of obsidian around an empty opening becomes a portal; anything else gets a
+    // fire on the block that was used, which is what the item does in the open. The opening
+    // is found by the frame search, so the player only has to light one cell inside it.
+    bool Connection::handle_ignite(const terila::protocol::BlockPosValue& clicked,
+        std::int32_t face, std::int32_t sequence) {
+        resolve_portal_ids();
+        if (held_item_id_ == 0 ||
+            (held_item_id_ != flint_and_steel_item_ && held_item_id_ != fire_charge_item_)) {
+            return false;
+        }
+        if (!can_place_blocks() || face < 0 || face > 5) {
+            return true;
+        }
+
+        static constexpr std::int32_t kFaceOffset[6][3] = {
+            { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 }, { -1, 0, 0 }, { 1, 0, 0 }
+        };
+        const terila::world::BlockPos target{ clicked.x + kFaceOffset[face][0],
+            clicked.y + kFaceOffset[face][1], clicked.z + kFaceOffset[face][2] };
+        if (!inside_world(target.y) || state_at(target) != air_state_) {
+            return true;
+        }
+
+        const auto state_of = [this](const terila::world::BlockPos& pos) {
+            return state_at(pos);
+        };
+        const auto is_frame = [this](std::int32_t state) {
+            return obsidian_state_ >= 0 && state == obsidian_state_;
+        };
+        const auto is_interior = [this](std::int32_t state) {
+            return state == air_state_ || (fire_state_ >= 0 && state == fire_state_);
+        };
+
+        const int min_y = terrain_->min_y();
+        const int world_top = min_y + terrain_->section_count() * 16 - 1;
+        const auto frame = terila::world::find_portal_frame(target, min_y, world_top,
+            state_of, is_frame, is_interior);
+        const std::int32_t portal = frame == std::nullopt ? -1
+            : (frame->along_x ? portal_state_x_ : portal_state_z_);
+
+        if (frame && portal >= 0) {
+            const auto cells = frame->interior();
+            std::vector<std::uint64_t> touched;
+            for (const auto& cell : cells) {
+                world_.set(cell, portal, dimension_);
+                const auto key = terila::world::BlockWorld::chunk_key(
+                    chunk_coordinate(cell.x), chunk_coordinate(cell.z));
+                if (std::find(touched.begin(), touched.end(), key) == touched.end()) {
+                    touched.push_back(key);
+                }
+            }
+
+            // Every cell the client predicted wrong is corrected, and the last one carries
+            // the sequence so the client stops waiting for its own placement.
+            for (std::size_t i = 0; i + 1 < cells.size(); ++i) {
+                send_world_block(cells[i], portal);
+            }
+            send_block_change(cells.back(), portal, sequence);
+
+            for (const auto key : touched) {
+                persist_chunk_edits(static_cast<std::int32_t>(key >> 32),
+                    static_cast<std::int32_t>(key & 0xFFFFFFFFu));
+            }
+            LOG_INFO(Network, "{} lit a {}x{} portal at ({}, {}, {})", username_,
+                frame->width, frame->height, frame->bottom_left.x, frame->bottom_left.y,
+                frame->bottom_left.z);
+            return true;
+        }
+
+        // No frame: a fire on the block the item was used on, which is what makes a failed
+        // attempt visible instead of silently doing nothing.
+        const terila::world::BlockPos below{ target.x, target.y - 1, target.z };
+        if (fire_state_ >= 0 && state_at(below) != air_state_) {
+            world_.set(target, fire_state_, dimension_);
+            persist_block_change(target);
+            send_block_change(target, fire_state_, sequence);
+        }
+        return true;
     }
 
 } // namespace terila::network

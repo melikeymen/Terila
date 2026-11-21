@@ -72,6 +72,7 @@ target_sources(terila PRIVATE
     "src/world/chunk_jobs.cpp"
     "src/world/chunk_jobs.hpp"
     "src/world/world_context.hpp"
+    "src/config/runtime_config.cpp"
     "src/nbt/nbt_budget.hpp"
     "src/nbt/nbt_codec.hpp"
     "src/item/components.hpp"
@@ -456,6 +457,7 @@ terila_copy_runtime(protocol_tests)
 terila_copy_runtime(nbt_tests)
 
 add_executable(chunk_tests
+    "src/config/runtime_config.cpp"
     "src/world/chunk_jobs.cpp"
     "src/data/input_store.cpp"
     "tests/world/block_break_test.cpp"
@@ -470,6 +472,8 @@ add_executable(chunk_tests
     "tests/world/relight_test.cpp"
     "tests/world/structure_template_test.cpp"
     "tests/world/dimension_generator_test.cpp"
+    "tests/world/nether_portal_test.cpp"
+    "tests/config/runtime_config_test.cpp"
     "src/log/logger.cpp"
 )
 

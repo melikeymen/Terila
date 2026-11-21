@@ -11,8 +11,19 @@ All notable changes to Terila, newest first. Format follows
   region files, so a column saved in one dimension is never served in another
 - `execute in <dimension> run tp` moves a player between the dimensions, streaming the new
   world and sending a respawn packet with that dimension's type, name and sea level
+- Flint and steel and the fire charge open an obsidian frame into a nether portal: the
+  opening is 2..21 blocks wide and 3..21 tall, and lighting any cell inside it fills the
+  opening with portal blocks of the right axis
+- A frame that is not complete leaves a fire on the block that was used, like the item
+  does in the open
 - The login and respawn packets carry the dimension type the client was handed during
   configuration, instead of always claiming the overworld
+- `configs/terila.config` holds the runtime resource limits: the memory ceiling, the memory
+  kept free for the machine, and the floor and ceiling of the chunk worker pool. The
+  directory and the file are created on the first start and an existing file is never
+  rewritten
+- The chunk generation pool takes its worker count from that config, and each dimension's
+  chunk cache is sized from its memory budget instead of a fixed 96 columns
 
 ### Changed
 
@@ -27,6 +38,27 @@ All notable changes to Terila, newest first. Format follows
   it was generated in, not to the new one's
 - A chunk batch left in flight by a dimension change is dropped instead of streaming the
   old world's columns over the new one
+- Terrain stopped streaming partway through the view distance: a stream that had already
+  taken its batch out of the queue was only resumed when the queue was non-empty, so the
+  last chunks of a login were never sent and the client stayed on "Loading terrain"
+- The stream is also pumped by the server tick, so a batch waiting on a worker while the
+  socket is quiet still finishes instead of waiting for a write that never comes
+- A column queued for saving in one dimension is no longer handed to a player asking for
+  the same coordinate in another
+- The block and biome ids and the generator are resolved once per dimension instead of
+  once per streamed chunk
+- A finished chunk task wakes its stream on the io thread at once instead of the stream
+  polling its future once a tick, which alone tripled the streamed chunk rate
+- The natural spawner runs ten times a second and stays out of the way while a player is
+  still receiving the initial view distance, so join time is not spent on mob sampling
+- A connection disables Nagle, which was holding packets back for the peer's delayed ack
+- The listener no longer sets `SO_REUSEADDR` on Windows, where it let a second server bind
+  the same port and answer alongside the first
+- The chunk pool's default ceiling is sixteen workers, so a machine with more than a few
+  cores generates its view distance in parallel
+- A dimension change and a death respawn now send the game event that starts chunk loading;
+  without it the client stayed on "Loading terrain" for its full thirty second timeout even
+  though the new world was already streaming
 
 ## [v0.22.0] — 2026-11-21
 

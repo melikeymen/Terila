@@ -10,6 +10,7 @@
 #include "data/registry_loader.hpp"
 #include "config/server_config.hpp"
 #include "config/server_files.hpp"
+#include "config/runtime_config.hpp"
 #include "data/input_store.hpp"
 #include "protocol/packet_ids_loader.hpp"
 #include "entity/mob.hpp"
@@ -17,7 +18,9 @@
 #include "world/block_world.hpp"
 #include "world/falling_blocks.hpp"
 #include "world/fluid_flow.hpp"
+#include "world/chunk_jobs.hpp"
 #include "world/world_clock.hpp"
+#include "world/world_context.hpp"
 #include "world/world_generator.hpp"
 #include "version/mc_version.hpp"
 #include "world/trf/trf_store.hpp"
@@ -185,6 +188,28 @@ int main() {
         LOG_WARN(Config, "unknown log-exit-level '{}', keeping fatal", srv.log_exit_level);
     }
 
+    // How much of the machine the process may use is its own file: the chunk pool, the
+    // chunk caches and the working set all read the same ceiling. The directory and the
+    // file are created when they are missing and never rewritten afterwards.
+    const fs::path configs_dir = base / "configs";
+    const fs::path runtime_config_path = configs_dir / terila::config::kRuntimeConfigFile;
+    terila::config::RuntimeConfig resources;
+    fs::path resources_written;
+    if (!terila::config::ensure_runtime_config(configs_dir, resources, &resources_written)) {
+        LOG_CRITICAL(Config, "cannot prepare '{}'; the built-in resource limits apply",
+            configs_dir.string());
+    }
+    else if (!resources_written.empty()) {
+        LOG_INFO(Config, "wrote the default resource config to {}",
+            resources_written.string());
+    }
+    terila::config::load_runtime_config(resources, runtime_config_path);
+    LOG_INFO(Config, "resources: {} MiB ceiling, {} MiB reserve ({} MiB usable), {} workers",
+        resources.max_memory_mb, resources.min_memory_mb, resources.usable_memory_mb(),
+        resources.worker_threads());
+    terila::config::apply_memory_limits(resources);
+    terila::world::ChunkJobs::set_thread_limit(resources.worker_threads());
+
     // Both settings are advertised as working; silently running without them is a whole
     // subsystem missing, so they are CRITICAL rather than a warning.
     if (srv.online_mode) {
@@ -319,6 +344,20 @@ int main() {
 
     LOG_DEBUG(Registry, "datapack registries: {}", data.datapack_registries.size());
     LOG_DEBUG(Registry, "registry payloads: {}", data.nbt_payloads.size());
+
+    // The chunk cache is sized from the memory budget: one entry is a column's block array
+    // plus its wire payload, so a view distance of sixteen fits instead of being evicted
+    // and regenerated whenever the ring comes back around.
+    {
+        const auto capacity = terila::config::chunk_cache_capacity(resources,
+            data.overworld.height / 16);
+        for (const auto kind : { terila::world::DimensionKind::Overworld,
+                 terila::world::DimensionKind::Nether,
+                 terila::world::DimensionKind::End }) {
+            terila::world::WorldContext::shared().chunks(kind).set_capacity(capacity);
+        }
+        LOG_INFO(Config, "chunk cache: {} columns per dimension", capacity);
+    }
 
     // One terrain generator decides where the ground is, so mobs stand on the surface
     // instead of the old flat layer.
@@ -681,7 +720,11 @@ int main() {
     asio::ip::tcp::acceptor acceptor(io);
 
     acceptor.open(endpoint.protocol(), ec);
+#ifndef _WIN32
+    // On Windows SO_REUSEADDR lets a second process bind a port that is already listening,
+    // so two servers would answer at once; there it stays off.
     if (!ec) acceptor.set_option(asio::ip::tcp::acceptor::reuse_address(true), ec);
+#endif
     if (!ec) acceptor.bind(endpoint, ec);
     if (!ec) acceptor.listen(asio::socket_base::max_listen_connections, ec);
 
@@ -699,6 +742,8 @@ int main() {
     // cascade is over instead of once per moved cell.
     std::unordered_set<std::uint64_t> falling_dirty_chunks;
     int falling_dirty_ticks = 0;
+    // Ticks left before the next natural spawn cycle; see the tick loop below.
+    int spawn_cooldown = 0;
     falling.set_change_sink([&](const terila::world::BlockPos& pos, std::int32_t state) {
         for (const auto& player : players) {
             if (const auto conn = player.lock()) {
@@ -773,8 +818,12 @@ int main() {
 
             std::vector<terila::entity::PlayerPos> player_positions;
             player_positions.reserve(players.size());
+            bool streaming = false;
             for (const auto& player : players) {
                 if (const auto conn = player.lock()) {
+                    if (conn->joined() && conn->chunks_streaming()) {
+                        streaming = true;
+                    }
                     // A dead player is not a target: the mobs lose interest until the
                     // respawn button puts them back in the world. The mobs, the drops and
                     // the fluid simulation are the overworld's, so a player standing in
@@ -786,10 +835,19 @@ int main() {
                 }
             }
 
-            // The cycle spawns what the biome allows, then the mobs themselves tick; the
-            // difficulty decides what may live and what leaves.
+            // The spawner samples the terrain around every player and a single column costs
+            // real noise work, so it runs ten times a second instead of every tick, and not
+            // at all while a player is still receiving a burst of chunks: the io thread
+            // belongs to the stream until the view distance is in.
             spawner.set_moon_brightness(clock->sky_darken());
-            spawner.tick(mobs, player_positions, clock->night(), mobs.rng(), clock->game_time);
+            if (!streaming && spawn_cooldown == 0) {
+                spawner.tick(mobs, player_positions, clock->night(), mobs.rng(),
+                    clock->game_time);
+                spawn_cooldown = 10;
+            }
+            else if (spawn_cooldown > 0) {
+                --spawn_cooldown;
+            }
             mobs.tick(player_positions, world_difficulty, clock->night());
 
             // The mobs that landed a hit this tick: only the owning connection can take the
@@ -830,6 +888,7 @@ int main() {
             for (auto it = players.begin(); it != players.end();) {
                 if (const auto conn = it->lock()) {
                     conn->tick_entities();
+                    conn->tick_chunks();
                     conn->tick_time();
                     // Region writes block the io thread for everyone, so a connection
                     // drains a handful per tick instead of a whole burst.

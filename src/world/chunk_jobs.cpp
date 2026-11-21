@@ -10,14 +10,22 @@ namespace terila::world {
 
     namespace {
 
-        // Two cores keep the io thread and the tick loop theirs: a wider pool only takes
-        // time away from the connection that is waiting for the batch.
-        unsigned worker_count() {
+        // Used when the runtime config does not name a worker count: one core stays with the
+        // io thread, and two workers keep a batch from being serialised.
+        unsigned default_worker_count() {
             const unsigned hardware = std::thread::hardware_concurrency();
-            return std::clamp(hardware == 0 ? 2u : hardware, 2u, 8u);
+            return std::clamp(hardware == 0 ? 2u : hardware - 1, 2u, 8u);
         }
 
+        // Written once by set_thread_limit before the pool is constructed; a config that
+        // leaves it at zero keeps the count derived from the machine.
+        unsigned thread_limit = 0;
+
     } // namespace
+
+    void ChunkJobs::set_thread_limit(unsigned threads) noexcept {
+        thread_limit = std::clamp(threads, 1u, 64u);
+    }
 
     ChunkJobs& ChunkJobs::shared() {
         static ChunkJobs jobs;
@@ -25,7 +33,7 @@ namespace terila::world {
     }
 
     ChunkJobs::ChunkJobs() {
-        const unsigned count = worker_count();
+        const unsigned count = thread_limit != 0 ? thread_limit : default_worker_count();
         workers_.reserve(count);
         for (unsigned i = 0; i < count; ++i) {
             workers_.emplace_back([this] { work(); });
@@ -46,15 +54,19 @@ namespace terila::world {
     }
 
     std::future<PreparedChunk> ChunkJobs::prepare(DimensionKind kind, std::int32_t cx,
-        std::int32_t cz) {
+        std::int32_t cz, std::function<void()> on_done) {
         // The shared generator is read-only after its init(), and the noise caches are
         // per-thread, so several chunks of the same world generate side by side safely.
-        std::packaged_task<PreparedChunk()> task([kind, cx, cz] {
-            PreparedChunk prepared;
-            prepared.chunk = WorldContext::shared().generator(kind).generate(cx, cz);
-            prepared.encoded = encode::encode(prepared.chunk);
-            return prepared;
-        });
+        std::packaged_task<PreparedChunk()> task(
+            [kind, cx, cz, done = std::move(on_done)]() mutable {
+                PreparedChunk prepared;
+                prepared.chunk = WorldContext::shared().generator(kind).generate(cx, cz);
+                prepared.encoded = encode::encode(prepared.chunk);
+                if (done) {
+                    done();
+                }
+                return prepared;
+            });
 
         auto done = task.get_future();
         {

@@ -17,6 +17,10 @@ namespace terila::network {
     }
 
     void Connection::init_terrain() {
+        if (terrain_ready_) {
+            return;
+        }
+
         // The overlay needs the air id even when another connection already prepared the
         // shared generator.
         air_state_ = block_state("minecraft:air").value_or(0);
@@ -29,6 +33,7 @@ namespace terila::network {
         terrain_ = &generator;
         if (generator.ready()) {
             sea_level_ = generator.sea_level();
+            terrain_ready_ = true;
             return;
         }
 
@@ -52,6 +57,7 @@ namespace terila::network {
             return;
         }
         sea_level_ = generator.sea_level();
+        terrain_ready_ = true;
 
         LOG_INFO(Chunk, "{} ({}) ready: {} sections from y={}, sea level {}, seed {}",
             terila::world::worldgen::dimension_name(dimension_),
@@ -121,7 +127,7 @@ namespace terila::network {
         // region instead would hand back the version from before the last edit, and those
         // old blocks would then be recorded as edits of their own.
         for (const auto& save : pending_saves_) {
-            if (save.x == cx && save.z == cz) {
+            if (save.x == cx && save.z == cz && save.dimension == dimension_) {
                 return save.bytes;
             }
         }
@@ -423,10 +429,11 @@ namespace terila::network {
             }
 
             auto& jobs = terila::world::ChunkJobs::shared();
+            const auto wake = chunk_completion();
             std::vector<std::future<terila::world::PreparedChunk>> prepared;
             prepared.reserve(batch.size());
             for (const auto& pos : batch) {
-                prepared.push_back(jobs.prepare(dimension_, pos.x, pos.z));
+                prepared.push_back(jobs.prepare(dimension_, pos.x, pos.z, wake));
             }
 
             std::vector<std::uint8_t> out;
@@ -449,8 +456,8 @@ namespace terila::network {
                     co_return;
                 }
 
-                if (!terila::protocol::write_chunk_data(group,
-                        chunk_at(batch[i].x, batch[i].z, prepared[i].get()))) {
+                auto payload = chunk_at(batch[i].x, batch[i].z, prepared[i].get());
+                if (!terila::protocol::write_chunk_data(group, payload)) {
                     co_return;
                 }
                 ++count;
@@ -482,15 +489,36 @@ namespace terila::network {
         }
     }
 
+    // A worker that finishes posts this back to the connection's executor: the stream is
+    // resumed immediately instead of waiting for the next tick or the next write completion
+    // to poll the future it is parked on.
+    std::function<void()> Connection::chunk_completion() {
+        auto executor = socket_.get_executor();
+        const std::weak_ptr<Connection> weak = weak_from_this();
+        return [executor = std::move(executor), weak]() mutable {
+            asio::post(executor, [weak] {
+                if (const auto self = weak.lock()) {
+                    self->pump_chunks();
+                }
+            });
+        };
+    }
+
     void Connection::pump_chunks() {
+        // A running stream owns its batch: the chunks it already took out of the queue are
+        // not visible in pending_chunks_, so resuming it must not depend on the queue. This
+        // is what used to leave the last batch of a view distance half sent, with the
+        // client showing an endless "Loading terrain".
+        if (!chunk_stream_.finished()) {
+            chunk_stream_.resume();
+            return;
+        }
         // Nothing queued: do not build a coroutine frame only to have it return at once,
         // because this runs after every completed write.
         if (pending_chunks_.empty()) {
             return;
         }
-        if (chunk_stream_.finished()) {
-            chunk_stream_.restart(stream_chunks());
-        }
+        chunk_stream_.restart(stream_chunks());
         chunk_stream_.resume();
     }
 
@@ -530,6 +558,9 @@ namespace terila::network {
         dimension_ = kind;
         store_ = stores_[static_cast<std::size_t>(dimension_index(kind))];
         terrain_ = &terila::world::WorldContext::shared().generator(kind);
+        // The new dimension resolves its own ids and sea level; the old world's are not
+        // valid here.
+        terrain_ready_ = false;
         init_terrain();
 
         if (terrain_ == nullptr || !terrain_->ready()) {
@@ -538,6 +569,7 @@ namespace terila::network {
             dimension_ = previous;
             store_ = stores_[static_cast<std::size_t>(dimension_index(previous))];
             terrain_ = &terila::world::WorldContext::shared().generator(previous);
+            terrain_ready_ = false;
             init_terrain();
             return false;
         }
@@ -563,6 +595,14 @@ namespace terila::network {
             return false;
         }
         send(out);
+
+        // Every respawn has to be followed by "start waiting for chunks". Without it the
+        // client keeps its "Loading terrain" screen up until its own thirty second timeout,
+        // even though the new world is already streaming.
+        out.clear();
+        if (terila::protocol::write_game_event(out, 13, 0.0f)) {
+            send(out);
+        }
         send_health();
 
         out.clear();

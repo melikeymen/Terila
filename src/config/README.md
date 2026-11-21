@@ -1,13 +1,34 @@
 # terila::config
 
-Server configuration for Terila. Two headers, no translation unit: the parser
-is header-only so the server can read its settings before anything else is
-initialised.
+Server configuration for Terila. The `server.properties` parser is header-only
+so the server can read its settings before anything else is initialised.
 
 - `server_config.hpp` — the `ServerConfig` struct and the `server.properties`
   reader.
 - `server_files.hpp` — the default `server.properties` and `eula.txt` contents,
   plus the helpers that create them on first run.
+- `runtime_config.hpp/.cpp` — the resource limits kept in `configs/terila.config`
+  (memory ceiling and reserve, worker thread floor and ceiling), their file
+  helpers and the working-set cap.
+
+## `configs/terila.config`
+
+The file is written on the first start next to `server.properties` and is never
+rewritten afterwards; delete it to get the defaults back. It is read before the
+world is created, because the chunk pool and the chunk caches take their numbers
+from it.
+
+| Section   | Key             | Default | Meaning                                                   |
+| --------- | --------------- | ------- | --------------------------------------------------------- |
+| `memory`  | `max-megabytes` | `2048`  | Memory ceiling used to size the caches and cap the working set; `0` disables it |
+| `memory`  | `min-megabytes` | `256`   | Memory left free for the rest of the machine; `0` disables the reserve |
+| `threads` | `max`           | `16`    | Upper bound for the chunk generation workers               |
+| `threads` | `min`           | `2`     | Lower bound for the chunk generation workers               |
+
+The pool derives its count from the machine (one core stays with the io thread)
+and clamps it between `min` and `max`. The chunk cache gets a third of
+`max-megabytes - min-megabytes` per dimension, so a view distance of sixteen fits
+instead of being regenerated on every pass.
 
 ## ServerConfig
 

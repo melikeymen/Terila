@@ -64,6 +64,16 @@ namespace terila::world {
             index_.erase(it);
         }
 
+        // The runtime config sizes the cache from the memory budget; shrinking drops the
+        // least recently used columns first.
+        void set_capacity(std::size_t capacity) {
+            capacity_ = capacity == 0 ? 1 : capacity;
+            while (order_.size() > capacity_) {
+                index_.erase(order_.back().first);
+                order_.pop_back();
+            }
+        }
+
         std::size_t size() const noexcept { return order_.size(); }
         std::size_t capacity() const noexcept { return capacity_; }
 
