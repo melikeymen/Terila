@@ -157,6 +157,9 @@ namespace terila::world::worldgen {
                     item.start_height_absolute = kind.start_height_absolute;
                     item.has_start_height = kind.has_start_height;
                     item.project_start_to_heightmap = kind.project_start_to_heightmap;
+                    const JigsawBounds bounds = bounds_of(item.id);
+                    item.max_depth = bounds.depth;
+                    item.max_distance = bounds.distance;
                     item.underwater = kind.underwater;
                     // A structure only goes where its biome tag allows it to.
                     item.biomes = biomes_of(item.id, biome_id);
@@ -285,7 +288,8 @@ namespace terila::world::worldgen {
                         const std::int32_t origin_z = centre_z;
                         const std::int32_t origin_y = ground;
                         auto pieces = assemble_jigsaw(item.start_pool, state_,
-                            origin_x, origin_y, origin_z, structure_seed, item.max_pieces);
+                            origin_x, origin_y, origin_z, structure_seed, item.max_pieces,
+                            item.max_depth, item.max_distance);
                         // Check if any piece reaches this chunk.
                         bool reaches = false;
                         for (const auto& piece : pieces) {
@@ -317,6 +321,13 @@ namespace terila::world::worldgen {
             bool underwater = false;
         };
 
+        // How far a jigsaw structure may grow: the depth of its expansion and the distance
+        // from its centre its pieces may reach.
+        struct JigsawBounds {
+            int depth = 7;
+            int distance = 80;
+        };
+
         struct JigsawItem {
             std::string id;
             StructureSpread spread;
@@ -326,6 +337,8 @@ namespace terila::world::worldgen {
             bool has_start_height = false;
             bool project_start_to_heightmap = false;
             int max_pieces = 48;
+            int max_depth = 7;
+            int max_distance = 80;
             bool underwater = false;
             std::vector<int> biomes;
             std::vector<std::string> pool_templates;  // All template IDs this pool can produce
@@ -411,6 +424,35 @@ namespace terila::world::worldgen {
             catch (const std::exception&) {
             }
             return ids;
+        }
+
+        // The expansion bounds of a jigsaw structure: `size` is the number of layers its
+        // pieces may grow to and `max_distance_from_center` the reach from the start.
+        static JigsawBounds bounds_of(const std::string& structure_id) {
+            JigsawBounds bounds;
+            std::string text;
+            if (!data::input::read_text("worldgen/structures.json", text)) {
+                return bounds;
+            }
+            try {
+                const nlohmann::json parsed = nlohmann::json::parse(text);
+                for (const nlohmann::json& entry : parsed.at("data")) {
+                    if (entry.at("id").get<std::string>() != structure_id) {
+                        continue;
+                    }
+                    const nlohmann::json& structure = entry.at("data");
+                    if (structure.value("type", std::string()) != "minecraft:jigsaw") {
+                        break;
+                    }
+                    bounds.depth = structure.value("size", bounds.depth);
+                    bounds.distance = structure.value("max_distance_from_center", bounds.distance);
+                    break;
+                }
+            }
+            catch (const std::exception&) {
+                return JigsawBounds{};
+            }
+            return bounds;
         }
 
         // The placement block of a set: salt, spacing and separation from the data.

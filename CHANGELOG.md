@@ -38,6 +38,9 @@ All notable changes to Terila, newest first. Format follows
   slope is filled, so no building hangs in the air
 - A ruined portal, a shipwreck or any other single-template structure fills the gap under
   its lowest layer on a slope, so it no longer hangs over the drop
+- A village, outpost or city grows as deep as the structure's `size` and no farther from
+  its centre than `max_distance_from_center`, both read from the structure data instead of
+  a fixed cap
 - Respawn after a death returns the player to the dimension and spawn they died in
 - A save queued before a dimension change is written to the region files of the dimension
   it was generated in, not to the new one's

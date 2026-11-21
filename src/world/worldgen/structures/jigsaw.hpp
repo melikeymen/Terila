@@ -751,7 +751,7 @@ namespace terila::world::worldgen {
         std::vector<PlacedPiece>& placed,
         std::vector<JigsawConnection>& new_pending,
         std::uint64_t& rng,
-        int depth) {
+        int depth, std::int32_t centre_x, std::int32_t centre_z, int max_distance) {
         if (depth > 50) return false;  // Prevent infinite recursion
         if (conn.joint != "aligned") return false;  // Only handle aligned joints
         if (conn.target_pool.empty()) return true;
@@ -799,6 +799,21 @@ namespace terila::world::worldgen {
             return false;  // Nothing landed, so there is nothing to expand from.
         }
 
+        // A structure may only grow as far from its centre as its data allows, so a long
+        // chain of streets cannot run off into the world.
+        if (max_distance > 0) {
+            const std::int64_t limit = static_cast<std::int64_t>(max_distance) * max_distance;
+            for (std::size_t index = placed_before; index < placed.size(); ++index) {
+                const PlacedPiece& piece = placed[index];
+                const std::int64_t dx = piece.origin_x + piece.tmpl.size_x / 2 - centre_x;
+                const std::int64_t dz = piece.origin_z + piece.tmpl.size_z / 2 - centre_z;
+                if (dx * dx + dz * dz > limit) {
+                    placed.resize(placed_before);  // The whole connection is dropped.
+                    return false;
+                }
+            }
+        }
+
         // The new piece's jigsaws (except the one we just connected) become new pending connections.
         const PlacedPiece& new_piece = placed.back();
         for (const auto& jb : new_piece.jigsaws) {
@@ -827,7 +842,7 @@ namespace terila::world::worldgen {
     inline std::vector<PlacedPiece> assemble_jigsaw(const std::string& start_pool_id,
         const StateTextResolver& resolve,
         std::int32_t origin_x, std::int32_t origin_y, std::int32_t origin_z,
-        std::uint64_t seed, int max_pieces = 64) {
+        std::uint64_t seed, int max_pieces = 64, int max_depth = 200, int max_distance = 0) {
         std::vector<PlacedPiece> placed;
         std::vector<JigsawConnection> pending;
 
@@ -860,14 +875,17 @@ namespace terila::world::worldgen {
             }
         }
 
-        // Resolve pending connections (breadth-first, bounded by the piece cap).
-        for (int iteration = 0; iteration < 200 && !pending.empty() &&
+        // Resolve pending connections (breadth-first, bounded by the piece cap). One
+        // iteration grows the structure by one layer, so the structure's size caps the
+        // number of layers it may grow.
+        for (int iteration = 0; iteration < max_depth && !pending.empty() &&
             static_cast<int>(placed.size()) < max_pieces; ++iteration) {
             std::vector<JigsawConnection> current = std::move(pending);
             pending.clear();
             for (const auto& conn : current) {
                 if (static_cast<int>(placed.size()) >= max_pieces) break;
-                try_connect_jigsaw(conn, resolve, placed, pending, seed, iteration);
+                try_connect_jigsaw(conn, resolve, placed, pending, seed, iteration,
+                    origin_x, origin_z, max_distance);
             }
         }
 

@@ -425,6 +425,45 @@ namespace {
         EXPECT_GT(pieces.size(), 0);
     }
 
+    TEST(JigsawTest, ExpansionStopsAtTheStructureDepth) {
+        if (!input_available()) {
+            GTEST_SKIP() << "input/ is not next to the build tree";
+        }
+        using terila::world::worldgen::assemble_jigsaw;
+
+        const auto resolve = [](std::string_view) { return 0; };
+        const auto assemble = [&](int depth) {
+            return assemble_jigsaw("minecraft:village/plains/town_centers", resolve,
+                0, 70, 0, 1337, 64, depth, 80);
+        };
+        // The data bounds how many layers a village may grow; one layer is the town centre
+        // and the pieces joined straight to it, six is the whole village.
+        const auto shallow = assemble(1);
+        const auto deep = assemble(6);
+        ASSERT_GT(shallow.size(), 0u);
+        EXPECT_GT(deep.size(), shallow.size());
+    }
+
+    TEST(JigsawTest, PiecesStayWithinTheStructuresDistanceFromCenter) {
+        if (!input_available()) {
+            GTEST_SKIP() << "input/ is not next to the build tree";
+        }
+        using terila::world::worldgen::assemble_jigsaw;
+
+        const auto resolve = [](std::string_view) { return 0; };
+        const int max_distance = 24;
+        const auto pieces = assemble_jigsaw("minecraft:village/plains/town_centers", resolve,
+            0, 70, 0, 1337, 64, 6, max_distance);
+        ASSERT_GT(pieces.size(), 0u);
+        for (const auto& piece : pieces) {
+            const std::int64_t dx = piece.origin_x + piece.tmpl.size_x / 2;
+            const std::int64_t dz = piece.origin_z + piece.tmpl.size_z / 2;
+            EXPECT_LE(dx * dx + dz * dz,
+                static_cast<std::int64_t>(max_distance) * max_distance)
+                << "a piece landed at " << dx << "," << dz;
+        }
+    }
+
     TEST(JigsawTest, TerrainMatchingPiecesSitOnTheirOwnGroundAndFillBeneath) {
         using terila::world::worldgen::PlacedPiece;
         using terila::world::worldgen::write_jigsaw_pieces;
