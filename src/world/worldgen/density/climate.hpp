@@ -11,6 +11,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -104,6 +105,30 @@ namespace terila::world::worldgen {
                 }
             }
             return nullptr;
+        }
+
+        // The nearest entry, for parameter sets written as single points (the nether).
+        const std::string* find_nearest(const std::array<double, 6>& climate) const {
+            const std::string* best = nullptr;
+            double best_distance = std::numeric_limits<double>::infinity();
+            for (const auto& point : points_) {
+                double distance = 0.0;
+                for (std::size_t axis = 0; axis < 6; ++axis) {
+                    const ClimateRange& range = point.climate[axis];
+                    const double value = climate[axis];
+                    if (value < range.min) {
+                        distance += (range.min - value) * (range.min - value);
+                    }
+                    else if (value > range.max) {
+                        distance += (value - range.max) * (value - range.max);
+                    }
+                }
+                if (distance < best_distance) {
+                    best_distance = distance;
+                    best = &point.biome;
+                }
+            }
+            return best;
         }
 
         std::size_t size() const noexcept { return points_.size(); }

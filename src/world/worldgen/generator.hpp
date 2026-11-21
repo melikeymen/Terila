@@ -22,6 +22,7 @@
 #include "world/worldgen/chunk_sections.hpp"
 #include "world/worldgen/column.hpp"
 #include "world/worldgen/density_grid.hpp"
+#include "world/worldgen/dimension.hpp"
 #include "world/worldgen/settings.hpp"
 #include "world/worldgen/surface/material.hpp"
 #include "world/worldgen/structures/structures.hpp"
@@ -50,10 +51,14 @@ namespace terila::world::worldgen {
     public:
         bool init(int min_y, int section_count, std::uint32_t seed,
             const terrain::IdResolver& block, const terrain::IdResolver& biome,
-            const StateTextResolver& state = {}) {
+            const StateTextResolver& state = {},
+            DimensionKind kind = DimensionKind::Overworld) {
             min_y_ = min_y;
             section_count_ = section_count;
             seed_ = seed;
+            kind_ = kind;
+            dimension_ = dimension_type_of(kind);
+            has_skylight_ = dimension_.has_skylight;
             block_cache_ = std::make_shared<BlockSampleCache>();
             cell_cache_ = std::make_shared<CellCache<Column>>();
             world_id_ = next_world_id();
@@ -71,15 +76,24 @@ namespace terila::world::worldgen {
                 biome_index_[terrain::kBiomeNames[index]] = static_cast<int>(index);
             }
 
-            if (!settings_.load(seed)) {
-                LOG_WARN(Chunk, "terrain: the worldgen settings are missing or broken");
+            if (!settings_.load(seed, dimension_noise_preset(kind),
+                    dimension_biome_preset(kind))) {
+                LOG_WARN(Chunk, "terrain: the worldgen settings of {} are missing or broken",
+                    dimension_.name);
                 return false;
             }
-            if (settings_.section_count() != section_count_) {
+            // A dimension is taller than its noise field (both the nether and the end are
+            // 256 blocks high around a 128 block field), so the chunk height comes from the
+            // dimension and the noise only decides where the ground is inside it.
+            if (kind == DimensionKind::Overworld &&
+                settings_.section_count() != section_count_) {
                 LOG_WARN(Chunk, "terrain: {} sections expected, the settings describe {}",
                     section_count_, settings_.section_count());
             }
             sea_level_ = settings_.sea_level();
+            fluid_ = block(settings_.default_fluid()).value_or(blocks_.air);
+            deep_default_ = kind == DimensionKind::Nether ? blocks_.netherrack
+                : (kind == DimensionKind::End ? blocks_.end_stone : blocks_.deepslate);
             world_top_ = min_y_ + section_count_ * 16;
             cache_slots_ = settings_.density().cache_slot_count();
             interp_slots_ = settings_.density().interp_slot_count();
@@ -104,22 +118,28 @@ namespace terila::world::worldgen {
 
             light_rules_ = terrain::light_rules_for(blocks_);
             terrain::add_placed_light_sources(light_rules_, block);
-            ores_.init(static_cast<std::uint64_t>(seed_), min_y_, world_top_ - 1, blocks_);
             plants_.init(blocks_, biomes_, sea_level_);
-            structures_.init(static_cast<std::uint64_t>(seed_), block,
-                [this](std::string_view name) -> int {
-                    const auto found = biome_index_.find(std::string(name));
-                    if (found == biome_index_.end()) {
-                        return -1;
-                    }
-                    return biomes_[static_cast<std::size_t>(found->second)].id;
-                },
-                built_structures(), state);
+            // Ores and surface structures belong to the overworld's rule set; the nether and
+            // the end have neither in this generator yet.
+            if (kind_ == DimensionKind::Overworld) {
+                ores_.init(static_cast<std::uint64_t>(seed_), min_y_, world_top_ - 1, blocks_);
+                structures_.init(static_cast<std::uint64_t>(seed_), block,
+                    [this](std::string_view name) -> int {
+                        const auto found = biome_index_.find(std::string(name));
+                        if (found == biome_index_.end()) {
+                            return -1;
+                        }
+                        return biomes_[static_cast<std::size_t>(found->second)].id;
+                    },
+                    built_structures(), state);
+            }
             ready_ = true;
             return ready_;
         }
 
         bool ready() const { return ready_; }
+        DimensionKind kind() const { return kind_; }
+        const DimensionType& dimension() const { return dimension_; }
         std::uint32_t seed() const { return seed_; }
         int min_y() const { return min_y_; }
         int section_count() const { return section_count_; }
@@ -166,6 +186,9 @@ namespace terila::world::worldgen {
         }
 
         int sky_top(std::int32_t x, std::int32_t z) const {
+            if (!has_skylight_) {
+                return min_y_ - 1;
+            }
             ColumnCache& cache = thread_cache();
             return sky_top_with(x, z, [this, &cache](std::int32_t cx, std::int32_t cz) {
                 return cached_column(cx, cz, cache);
@@ -186,6 +209,10 @@ namespace terila::world::worldgen {
 
         template<class ColumnFn>
         int sky_top_with(std::int32_t x, std::int32_t z, ColumnFn&& get_column) const {
+            // A roofed dimension never sees the sky, so nothing casts a shadow into it.
+            if (!has_skylight_) {
+                return min_y_ - 1;
+            }
             return plants_.sky_top(x, z, std::forward<ColumnFn>(get_column));
         }
 
@@ -299,8 +326,11 @@ namespace terila::world::worldgen {
                     }
 
                     // Water is the flooded aquifer state of the ocean: every empty block
-                    // below sea level in a column whose floor is under the sea.
-                    const bool flooded = col.height < sea_level_;
+                    // below sea level in a column whose floor is under the sea. The nether
+                    // has a roof above its sea, so its column top says nothing about the
+                    // lava level: every empty block below it is lava.
+                    const bool flooded = col.height < sea_level_ ||
+                        kind_ == DimensionKind::Nether;
                     int stone_above = 0;
                     int water_height = std::numeric_limits<int>::min();
                     int next_ceiling = kWayBelow;
@@ -334,7 +364,7 @@ namespace terila::world::worldgen {
                             }
                             const auto& biome = biome_of(col);
                             state = (y == sea_level_ - 1 && biome.ice_top)
-                                ? blocks_.ice : blocks_.water;
+                                ? blocks_.ice : fluid_;
                         }
                         else {
                             stone_above = 0;
@@ -501,6 +531,9 @@ namespace terila::world::worldgen {
                         return cached_column(x, z, cache);
                     },
                     tops);
+                if (!has_skylight_) {
+                    std::fill(tops.begin(), tops.end(), min_y_ - 1);
+                }
                 mark("tops");
                 const auto top = [this, &cache, &tops, hx0, hz0](std::int32_t wx,
                     std::int32_t wz) {
@@ -665,6 +698,11 @@ namespace terila::world::worldgen {
         // The game fades stone into deepslate over the eight blocks above y=0: a block there
         // is deepslate with a chance that falls from seven eighths at y=1 to nothing at y=8.
         std::int32_t deep_filler(std::int32_t x, std::int32_t y, std::int32_t z) const {
+            // The nether and the end have no deepslate gradient: everything under the
+            // surface is the dimension's own rock.
+            if (kind_ != DimensionKind::Overworld) {
+                return deep_default_;
+            }
             if (blocks_.deepslate == blocks_.stone || y >= 8) {
                 return blocks_.stone;
             }
@@ -703,7 +741,8 @@ namespace terila::world::worldgen {
             if (state < 0) {
                 state = blocks_.stone;
             }
-            if (state == blocks_.stone || state == blocks_.deepslate) {
+            if (kind_ == DimensionKind::Overworld &&
+                (state == blocks_.stone || state == blocks_.deepslate)) {
                 state = ores_.replace_deep(x, y, z, state);
             }
             return state;
@@ -777,7 +816,7 @@ namespace terila::world::worldgen {
             if (y >= sea_level_ || col.height >= sea_level_) {
                 return blocks_.air;
             }
-            return (y == sea_level_ - 1 && biome_of(col).ice_top) ? blocks_.ice : blocks_.water;
+            return (y == sea_level_ - 1 && biome_of(col).ice_top) ? blocks_.ice : fluid_;
         }
 
         const terrain::Biome& biome_of(const Column& col) const {
@@ -803,6 +842,12 @@ namespace terila::world::worldgen {
 
         int biome_at(std::int32_t x, int y, std::int32_t z,
             const ClimateSample& climate) const {
+            // The end picks its biome from the island noise and the distance to the centre,
+            // which is what puts the central island, the barrens and the outer islands where
+            // the game has them.
+            if (kind_ == DimensionKind::End) {
+                return end_biome_at(x, z);
+            }
             double depth = 0.0;
             if (const DfPtr function = settings_.root("depth")) {
                 EvalContext& context = thread_context();
@@ -816,11 +861,44 @@ namespace terila::world::worldgen {
             if (const std::string* name = settings_.climate().find(point)) {
                 index = biome_index_for(*name);
             }
+            // The nether's parameter entries are single points, so a point that no box
+            // contains goes to the nearest one, like the game's noise search does.
+            if (index < 0 && kind_ == DimensionKind::Nether) {
+                if (const std::string* nearest = settings_.climate().find_nearest(point)) {
+                    index = biome_index_for(*nearest);
+                }
+            }
             if (index < 0) {
                 index = fallback_biome(climate.temperature, climate.humidity,
                     climate.continents);
             }
             return std::max(0, index);
+        }
+
+        // The end biome source: the central island is `the_end`, and the outer islands are
+        // picked from the island noise in the bands the game uses.
+        int end_biome_at(std::int32_t x, std::int32_t z) const {
+            const std::int64_t dx = x;
+            const std::int64_t dz = z;
+            if (dx * dx + dz * dz <= 4096) {
+                return static_cast<int>(terrain::kTheEnd);
+            }
+            double islands = 0.0;
+            if (const DfPtr function = settings_.root("erosion")) {
+                EvalContext& context = thread_context();
+                context.reset(cache_slots_);
+                islands = settings_.density().sample(function, x, 0.0, z, context);
+            }
+            if (islands > 0.25) {
+                return static_cast<int>(terrain::kEndHighlands);
+            }
+            if (islands >= -0.0625) {
+                return static_cast<int>(terrain::kEndMidlands);
+            }
+            if (islands <= -0.1875) {
+                return static_cast<int>(terrain::kSmallEndIslands);
+            }
+            return static_cast<int>(terrain::kEndBarrens);
         }
 
         int surface_depth_of(std::int32_t x, std::int32_t z) const {
@@ -1057,6 +1135,12 @@ namespace terila::world::worldgen {
         LightRules light_rules_{};
         const NormalNoise* surface_noise_ = nullptr;
         const NormalNoise* surface_secondary_noise_ = nullptr;
+
+        DimensionKind kind_ = DimensionKind::Overworld;
+        DimensionType dimension_{};
+        bool has_skylight_ = true;
+        std::int32_t fluid_ = 0;
+        std::int32_t deep_default_ = 0;
 
         int min_y_ = -64;
         int section_count_ = 24;

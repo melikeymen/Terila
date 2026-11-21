@@ -18,6 +18,11 @@ All notable changes to Terila, newest first. Format follows
   or the shore
 - Templates carry the exact block states their palette names, not just the default state
 - Jigsaw and processor test suites
+- Nether and End dimensions: dimension types and their noise settings are read from the dump,
+  so each dimension builds with its own height, sea level, fluid and skylight
+- The nether floods everything under its lava sea, not only the columns below the sea level
+- Nether and End biomes are resolved from their own parameter sets, the End from its island
+  noise around the central island
 
 ### Fixed
 

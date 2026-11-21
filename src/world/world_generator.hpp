@@ -43,8 +43,10 @@ namespace terila::world {
     public:
         bool init(WorldType type, int min_y, int section_count, std::uint32_t seed,
             const terrain::IdResolver& block, const terrain::IdResolver& biome,
-            const worldgen::StateTextResolver& state = {}) {
+            const worldgen::StateTextResolver& state = {},
+            worldgen::DimensionKind kind = worldgen::DimensionKind::Overworld) {
             type_ = type;
+            kind_ = kind;
             min_y_ = min_y;
             section_count_ = section_count;
             seed_ = seed;
@@ -52,7 +54,7 @@ namespace terila::world {
             biome_ = biome;
 
             if (type_ != WorldType::Flat) {
-                ready_ = terrain_.init(min_y, section_count, seed, block, biome, state);
+                ready_ = terrain_.init(min_y, section_count, seed, block, biome, state, kind);
                 return ready_;
             }
 
@@ -84,6 +86,7 @@ namespace terila::world {
             return type_ == WorldType::Flat ? flat_rules_ : terrain_.light_rules();
         }
         WorldType type() const { return type_; }
+        worldgen::DimensionKind kind() const { return kind_; }
         std::uint32_t seed() const { return seed_; }
         int min_y() const { return min_y_; }
         int section_count() const { return section_count_; }
@@ -226,6 +229,7 @@ namespace terila::world {
         static constexpr int kSeaLevel = 63;
 
         WorldType type_ = WorldType::Terrain;
+        worldgen::DimensionKind kind_ = worldgen::DimensionKind::Overworld;
         terrain::Generator terrain_;
         flat::FlatSpec spec_;
         LightRules flat_rules_;

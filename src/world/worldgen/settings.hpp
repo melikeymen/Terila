@@ -24,7 +24,8 @@ namespace terila::world::worldgen {
 
     class Settings {
     public:
-        bool load(std::uint32_t seed, std::string_view preset = "minecraft:overworld") {
+        bool load(std::uint32_t seed, std::string_view preset = "minecraft:overworld",
+            std::string_view biome_preset = "minecraft/overworld") {
             seed_ = seed;
             const nlohmann::json noise_settings = read_json("worldgen/noise_settings.json");
             if (noise_settings.is_null()) {
@@ -58,10 +59,16 @@ namespace terila::world::worldgen {
                 return false;
             }
 
-            const nlohmann::json parameters = read_json("worldgen/biome_parameters.json");
-            if (parameters.is_null() || !climate_.load(parameters, "minecraft/overworld")) {
-                LOG_WARN(Chunk, "worldgen: cannot load the biome parameters");
-                return false;
+            // The End has no climate table: its biomes follow the island noise instead, so
+            // an empty preset leaves the multi-noise source unused.
+            if (!biome_preset.empty()) {
+                const nlohmann::json parameters = read_json("worldgen/biome_parameters.json");
+                if (parameters.is_null() || !climate_.load(parameters, biome_preset)) {
+                    LOG_WARN(Chunk, "worldgen: cannot load the biome parameters of {}",
+                        preset);
+                    return false;
+                }
+                climate_ready_ = true;
             }
 
             material_rules_ = read_json("registries/dump/minecraft/worldgen/material_rule.json");
@@ -75,6 +82,11 @@ namespace terila::world::worldgen {
                 for (const auto& entry : data["noise_router"].items()) {
                     if (entry.value().is_string()) {
                         router_[entry.key()] = density_.find(entry.value().get<std::string>());
+                    }
+                    else if (!entry.value().is_null()) {
+                        // Some dimensions spell a field out inline (the nether's temperature
+                        // and vegetation are plain noise nodes) instead of naming it.
+                        router_[entry.key()] = density_.compile(entry.value());
                     }
                 }
             }
@@ -102,6 +114,7 @@ namespace terila::world::worldgen {
 
         const DensityGraph& density() const noexcept { return density_; }
         const BiomeParameters& climate() const noexcept { return climate_; }
+        bool has_climate() const noexcept { return climate_ready_; }
         const nlohmann::json& material_rules() const noexcept { return material_rules_; }
         const nlohmann::json& material_conditions() const noexcept {
             return material_conditions_;
@@ -184,6 +197,7 @@ namespace terila::world::worldgen {
         int height_ = 384;
         int sea_level_ = 63;
         bool ready_ = false;
+        bool climate_ready_ = false;
     };
 
 } // namespace terila::world::worldgen

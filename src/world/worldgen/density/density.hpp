@@ -293,6 +293,11 @@ namespace terila::world::worldgen {
             return parsed;
         }
 
+        // A density node written inline in the noise settings (the nether's temperature and
+        // vegetation fields are spelled out there instead of being named) compiles through
+        // the same parser as the registry entries.
+        DfPtr compile(const nlohmann::json& value) { return parse(value, 0); }
+
         double sample(const DfPtr& node, double x, double y, double z,
             EvalContext& context) const {
             if (!node) {

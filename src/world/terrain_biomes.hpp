@@ -36,6 +36,10 @@ namespace terila::world::terrain {
         std::int32_t gravel = 0;
         std::int32_t water = 0;
         std::int32_t ice = 0;
+        std::int32_t lava = 0;
+        // The other dimensions' ground; the overworld falls back to stone.
+        std::int32_t netherrack = 0;
+        std::int32_t end_stone = 0;
         std::int32_t snow = 0;
         std::int32_t snow_block = 0;
         std::int32_t powder_snow = 0;
@@ -95,7 +99,11 @@ namespace terila::world::terrain {
     enum BiomeIndex : std::size_t {
         kDeepOcean = 0, kOcean, kFrozenOcean, kBeach, kStonyShore, kSnowyPlains,
         kSnowyTaiga, kTaiga, kWindsweptHills, kStonyPeaks, kMeadow, kPlains, kForest,
-        kBirchForest, kSwamp, kJungle, kSavanna, kBadlands, kDesert, kBiomeCount
+        kBirchForest, kSwamp, kJungle, kSavanna, kBadlands, kDesert,
+        // The other dimensions follow, so the overworld indices keep their meaning.
+        kNetherWastes, kSoulSandValley, kCrimsonForest, kWarpedForest, kBasaltDeltas,
+        kTheEnd, kEndHighlands, kEndMidlands, kEndBarrens, kSmallEndIslands,
+        kBiomeCount
     };
 
     // The same order as ids, so a biome index can be looked up in the game data
@@ -120,6 +128,16 @@ namespace terila::world::terrain {
         "minecraft:savanna",
         "minecraft:badlands",
         "minecraft:desert",
+        "minecraft:nether_wastes",
+        "minecraft:soul_sand_valley",
+        "minecraft:crimson_forest",
+        "minecraft:warped_forest",
+        "minecraft:basalt_deltas",
+        "minecraft:the_end",
+        "minecraft:end_highlands",
+        "minecraft:end_midlands",
+        "minecraft:end_barrens",
+        "minecraft:small_end_islands",
     };
 
     inline std::optional<Blocks> resolve_blocks(const IdResolver& block) {
@@ -167,6 +185,9 @@ namespace terila::world::terrain {
         blocks.red_sand = soft_id("minecraft:red_sand", blocks.sand);
         blocks.terracotta = soft_id("minecraft:terracotta", blocks.sand);
         blocks.ice = soft_id("minecraft:ice", blocks.water);
+        blocks.lava = soft_id("minecraft:lava", blocks.water);
+        blocks.netherrack = soft_id("minecraft:netherrack", blocks.stone);
+        blocks.end_stone = soft_id("minecraft:end_stone", blocks.stone);
         blocks.deepslate = soft_id("minecraft:deepslate", blocks.stone);
         blocks.tuff = soft_id("minecraft:tuff", blocks.stone);
         blocks.granite = soft_id("minecraft:granite", blocks.stone);
@@ -257,6 +278,29 @@ namespace terila::world::terrain {
             0, 0, 0, 60, false);
         add("minecraft:desert", blocks.sand, blocks.sand, blocks.sandstone,
             0, 0, 0, 40, false);
+
+        // The other dimensions' biomes: nothing grows on them through this table, and a
+        // checkout whose registry predates them keeps working with a placeholder id.
+        const auto soft_add = [&](const char* name, std::int32_t surface, std::int32_t filler,
+            std::int32_t deep) {
+            const auto resolved = biome(name);
+            if (!resolved) {
+                LOG_DEBUG(Chunk, "terrain: biome '{}' is not in this registry", name);
+                out.push_back(Biome{ 0, surface, filler, deep, 0, 0, 0, 0, false });
+                return;
+            }
+            out.push_back(Biome{ *resolved, surface, filler, deep, 0, 0, 0, 0, false });
+        };
+        for (const char* name : { "minecraft:nether_wastes", "minecraft:soul_sand_valley",
+                 "minecraft:crimson_forest", "minecraft:warped_forest",
+                 "minecraft:basalt_deltas" }) {
+            soft_add(name, blocks.netherrack, blocks.netherrack, blocks.netherrack);
+        }
+        for (const char* name : { "minecraft:the_end", "minecraft:end_highlands",
+                 "minecraft:end_midlands", "minecraft:end_barrens",
+                 "minecraft:small_end_islands" }) {
+            soft_add(name, blocks.end_stone, blocks.end_stone, blocks.end_stone);
+        }
 
         return complete && out.size() == kBiomeCount;
     }
