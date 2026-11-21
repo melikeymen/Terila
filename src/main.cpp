@@ -400,8 +400,13 @@ int main() {
     const terila::world::worldgen::StateTextResolver resolve_state_text = [&data](std::string_view text) {
         return terila::world::worldgen::template_state_id(text, data.block_states, data.block_state_ids);
     };
+    // A structure piece may be laid down with a quarter turn, so the registry also hands the
+    // generator the turned form of every state a template can hold.
+    const terila::world::worldgen::StateRotator rotate_state =
+        terila::world::worldgen::template_rotator(data);
     if (!world_terrain.init(world_type, data.overworld.min_y, data.overworld.height / 16,
-            world_seed, resolve_block_id, resolve_biome_id, resolve_state_text)) {
+            world_seed, resolve_block_id, resolve_biome_id, resolve_state_text,
+            terila::world::worldgen::DimensionKind::Overworld, rotate_state)) {
         LOG_FATAL(Data, "{} world generator failed to initialise",
             terila::world::world_type_name(world_type));
         return 7;

@@ -464,6 +464,132 @@ namespace {
         }
     }
 
+    TEST(StructureTemplateTest, AQuarterTurnTurnsDirectionsAxesAndStairShapes) {
+        using terila::world::worldgen::template_rotator;
+
+        RegistryData registry;
+        const auto add = [&registry](const std::string& block,
+            std::initializer_list<std::pair<std::string, std::string>> properties,
+            std::int32_t id) {
+            BlockStateInfo info;
+            info.id = id;
+            info.properties = { properties.begin(), properties.end() };
+            registry.block_states[block].push_back(info);
+        };
+        add("minecraft:oak_stairs", { { "facing", "north" }, { "half", "bottom" },
+            { "shape", "straight" } }, 10);
+        add("minecraft:oak_stairs", { { "facing", "east" }, { "half", "bottom" },
+            { "shape", "straight" } }, 11);
+        add("minecraft:oak_stairs", { { "facing", "north" }, { "half", "bottom" },
+            { "shape", "inner_left" } }, 12);
+        add("minecraft:oak_stairs", { { "facing", "east" }, { "half", "bottom" },
+            { "shape", "inner_right" } }, 13);
+        add("minecraft:oak_pillar", { { "axis", "y" } }, 20);
+        add("minecraft:oak_pillar", { { "axis", "x" } }, 21);
+        add("minecraft:oak_pillar", { { "axis", "z" } }, 22);
+
+        const auto rotate = template_rotator(registry);
+        EXPECT_EQ(rotate(10, 1), 11);   // north becomes east
+        EXPECT_EQ(rotate(11, 3), 10);   // and three turns bring it back
+        EXPECT_EQ(rotate(10, 2), 10);   // no south variant, so it is left as it is
+        EXPECT_EQ(rotate(12, 1), 13);   // the stair's inner corner swaps sides
+        EXPECT_EQ(rotate(21, 1), 22);   // the x and z axes exchange
+        EXPECT_EQ(rotate(20, 1), 20);   // the y axis is the turn's axis
+        EXPECT_EQ(rotate(10, 0), 10);   // no turn, no change
+    }
+
+    TEST(JigsawTest, JigsawOrientationsAreReadFromTheTemplateState) {
+        if (!input_available()) {
+            GTEST_SKIP() << "input/ is not next to the build tree";
+        }
+        using terila::world::worldgen::JigsawOrientation;
+        using terila::world::worldgen::StructureTemplate;
+        using terila::world::worldgen::JigsawBlock;
+        using terila::world::worldgen::load_template_with_jigsaws;
+        using terila::world::worldgen::parse_orientation;
+
+        StructureTemplate tmpl;
+        std::vector<JigsawBlock> jigsaws;
+        ASSERT_TRUE(load_template_with_jigsaws("minecraft:village/plains/streets/corner_01",
+            [](std::string_view) { return 0; }, tmpl, jigsaws));
+        ASSERT_FALSE(jigsaws.empty());
+        int known = 0;
+        for (const auto& jigsaw : jigsaws) {
+            if (parse_orientation(jigsaw.orientation) != JigsawOrientation::Unknown) {
+                ++known;
+            }
+        }
+        // The state text names the orientation, so every jigsaw of a real template is known.
+        EXPECT_EQ(known, static_cast<int>(jigsaws.size()));
+    }
+
+    TEST(JigsawTest, ARotatedPieceTurnsItsCellsAndItsStates) {
+        using terila::world::worldgen::PlacedPiece;
+        using terila::world::worldgen::write_jigsaw_pieces;
+
+        // A three by one row of blocks, laid down with one quarter turn clockwise: a cell at
+        // x becomes a cell at z.
+        PlacedPiece piece;
+        piece.tmpl.size_x = 3;
+        piece.tmpl.size_y = 1;
+        piece.tmpl.size_z = 1;
+        piece.origin_y = 64;
+        piece.rotation = 1;
+        piece.tmpl.cells.push_back({ 0, 0, 0, 5 });
+        piece.tmpl.cells.push_back({ 1, 0, 0, 5 });
+        piece.tmpl.cells.push_back({ 2, 0, 0, 5 });
+
+        std::vector<std::pair<std::int32_t, std::int32_t>> columns;
+        int turned_states = 0;
+        write_jigsaw_pieces(std::vector<PlacedPiece>{ piece }, 0, 0,
+            [](std::int32_t, std::int32_t) { return 63; }, 9,
+            [](std::int32_t, int quarter_turns) { return 55 + quarter_turns; },
+            [&](std::int32_t x, std::int32_t y, std::int32_t z, std::int32_t state) {
+                if (state == 9) return;
+                columns.emplace_back(x, z);
+                if (state == 56) ++turned_states;
+                EXPECT_EQ(y, 64);
+            });
+
+        ASSERT_EQ(columns.size(), 3u);
+        EXPECT_EQ(columns[0].first, 0);
+        EXPECT_EQ(columns[0].second, 0);
+        EXPECT_EQ(columns[1].first, 0);
+        EXPECT_EQ(columns[1].second, 1);
+        EXPECT_EQ(columns[2].first, 0);
+        EXPECT_EQ(columns[2].second, 2);
+        EXPECT_EQ(turned_states, 3);
+    }
+
+    TEST(JigsawTest, AssemblyTurnsPiecesToFaceTheirConnections) {
+        if (!input_available()) {
+            GTEST_SKIP() << "input/ is not next to the build tree";
+        }
+        using terila::world::worldgen::assemble_jigsaw;
+
+        const auto resolve = [](std::string_view) { return 0; };
+        const auto rotate = [](std::int32_t state, int) { return state; };
+        // With a rotation table the assembly may lay a piece down turned, which is how a
+        // house that does not already face a street still joins it.
+        const auto pieces = assemble_jigsaw("minecraft:village/plains/town_centers",
+            resolve, 0, 70, 0, 1337, 64, 4, 80, rotate);
+        ASSERT_GT(pieces.size(), 0u);
+        int turned = 0;
+        for (const auto& piece : pieces) {
+            if (piece.rotation != 0) {
+                ++turned;
+            }
+        }
+        EXPECT_GT(turned, 0) << "pieces " << pieces.size();
+
+        // Without the table nothing may be turned: its cells would keep their unturned states.
+        const auto plain = assemble_jigsaw("minecraft:ancient_city/city_center",
+            resolve, 0, -27, 0, 1337, 64, 4, 116);
+        for (const auto& piece : plain) {
+            EXPECT_EQ(piece.rotation, 0);
+        }
+    }
+
     TEST(JigsawTest, TerrainMatchingPiecesSitOnTheirOwnGroundAndFillBeneath) {
         using terila::world::worldgen::PlacedPiece;
         using terila::world::worldgen::write_jigsaw_pieces;
@@ -493,7 +619,7 @@ namespace {
         std::vector<std::pair<std::int32_t, std::int32_t>> floor;
         int filled = 0;
         write_jigsaw_pieces(std::vector<PlacedPiece>{ make_floor(70, true) }, 0, 0, surface,
-            filler, [&](std::int32_t x, std::int32_t y, std::int32_t, std::int32_t state) {
+            filler, {}, [&](std::int32_t x, std::int32_t y, std::int32_t, std::int32_t state) {
                 if (state == filler) {
                     ++filled;
                     return;
@@ -516,7 +642,7 @@ namespace {
         std::vector<std::pair<std::int32_t, std::int32_t>> rigid_floor;
         int rigid_filled = 0;
         write_jigsaw_pieces(std::vector<PlacedPiece>{ make_floor(80, false) }, 0, 0, surface,
-            filler, [&](std::int32_t x, std::int32_t y, std::int32_t, std::int32_t state) {
+            filler, {}, [&](std::int32_t x, std::int32_t y, std::int32_t, std::int32_t state) {
                 if (state == filler) {
                     ++rigid_filled;
                     return;

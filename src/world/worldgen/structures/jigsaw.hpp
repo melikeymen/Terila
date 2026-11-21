@@ -62,7 +62,7 @@ namespace terila::world::worldgen {
         if (orient_pos == std::string_view::npos) {
             return JigsawOrientation::Unknown;
         }
-        const std::size_t start = orient_pos + 10;
+        const std::size_t start = orient_pos + std::string_view("orientation=").size();
         const std::size_t end = state.find_first_of(",]", start);
         const std::string_view orient = state.substr(start, end - start);
 
@@ -109,8 +109,83 @@ namespace terila::world::worldgen {
         // A terrain-matching piece follows the ground under it; a rigid one keeps the
         // height its connector gave it.
         bool terrain_matching = false;
+        // Quarter turns clockwise the template is laid down with, so the piece faces the
+        // jigsaw it joins. The cells stay as the template holds them and are turned when
+        // they are written.
+        int rotation = 0;
         std::vector<JigsawBlock> jigsaws;  // Jigsaws in world coordinates
     };
+
+    // A quarter turn clockwise moves a cell of a size_x by size_z template.
+    inline void rotate_cell(int quarter_turns, std::int32_t size_x, std::int32_t size_z,
+        std::int32_t& x, std::int32_t& z) {
+        switch (quarter_turns & 3) {
+            case 1: {
+                const std::int32_t turned = size_z - 1 - z;
+                z = x;
+                x = turned;
+                break;
+            }
+            case 2:
+                x = size_x - 1 - x;
+                z = size_z - 1 - z;
+                break;
+            case 3: {
+                const std::int32_t turned = z;
+                z = size_x - 1 - x;
+                x = turned;
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    inline std::int32_t rotated_size_x(int quarter_turns, std::int32_t size_x,
+        std::int32_t size_z) {
+        return (quarter_turns & 1) != 0 ? size_z : size_x;
+    }
+
+    inline std::int32_t rotated_size_z(int quarter_turns, std::int32_t size_x,
+        std::int32_t size_z) {
+        return (quarter_turns & 1) != 0 ? size_x : size_z;
+    }
+
+    inline std::int32_t piece_size_x(const PlacedPiece& piece) {
+        return rotated_size_x(piece.rotation, piece.tmpl.size_x, piece.tmpl.size_z);
+    }
+
+    inline std::int32_t piece_size_z(const PlacedPiece& piece) {
+        return rotated_size_z(piece.rotation, piece.tmpl.size_x, piece.tmpl.size_z);
+    }
+
+    // A quarter turn clockwise on a jigsaw orientation: the side it faces turns with the
+    // piece while up and down stay on the vertical axis.
+    inline JigsawOrientation rotate_orientation(JigsawOrientation orientation,
+        int quarter_turns) {
+        const auto turn = [](JigsawOrientation side) {
+            switch (side) {
+                case JigsawOrientation::NorthUp: return JigsawOrientation::EastUp;
+                case JigsawOrientation::EastUp: return JigsawOrientation::SouthUp;
+                case JigsawOrientation::SouthUp: return JigsawOrientation::WestUp;
+                case JigsawOrientation::WestUp: return JigsawOrientation::NorthUp;
+                case JigsawOrientation::UpNorth: return JigsawOrientation::UpEast;
+                case JigsawOrientation::UpEast: return JigsawOrientation::UpSouth;
+                case JigsawOrientation::UpSouth: return JigsawOrientation::UpWest;
+                case JigsawOrientation::UpWest: return JigsawOrientation::UpNorth;
+                case JigsawOrientation::DownNorth: return JigsawOrientation::DownEast;
+                case JigsawOrientation::DownEast: return JigsawOrientation::DownSouth;
+                case JigsawOrientation::DownSouth: return JigsawOrientation::DownWest;
+                case JigsawOrientation::DownWest: return JigsawOrientation::DownNorth;
+                default: return side;
+            }
+        };
+        JigsawOrientation turned = orientation;
+        for (int index = 0; index < (quarter_turns & 3); ++index) {
+            turned = turn(turned);
+        }
+        return turned;
+    }
 
     // A pending jigsaw connection to resolve.
     struct JigsawConnection {
@@ -654,7 +729,7 @@ namespace terila::world::worldgen {
         std::vector<PlacedPiece>& placed,
         std::vector<JigsawConnection>& pending,
         std::int32_t origin_x, std::int32_t origin_y, std::int32_t origin_z,
-        std::uint64_t& rng) {
+        std::uint64_t& rng, int rotation = 0) {
         switch (elem.type) {
             case PoolElement::Type::Single:
             case PoolElement::Type::LegacySingle: {
@@ -673,17 +748,24 @@ namespace terila::world::worldgen {
                     }
                 }
 
+                const std::int32_t size_x = tmpl.size_x;
+                const std::int32_t size_z = tmpl.size_z;
                 PlacedPiece piece;
                 piece.tmpl = std::move(tmpl);
                 piece.origin_x = origin_x;
                 piece.origin_y = origin_y;
                 piece.origin_z = origin_z;
                 piece.terrain_matching = elem.projection == "terrain_matching";
-                // Convert local jigsaw positions to world coordinates.
+                piece.rotation = rotation & 3;
+                // A jigsaw turns with its piece, so its connection is made where the turn
+                // puts it.
                 for (auto& jb : jigsaws) {
-                    jb.x += origin_x;
+                    std::int32_t local_x = jb.x;
+                    std::int32_t local_z = jb.z;
+                    rotate_cell(piece.rotation, size_x, size_z, local_x, local_z);
+                    jb.x = local_x + origin_x;
                     jb.y += origin_y;
-                    jb.z += origin_z;
+                    jb.z = local_z + origin_z;
                 }
                 piece.jigsaws = std::move(jigsaws);
                 placed.push_back(std::move(piece));
@@ -692,7 +774,7 @@ namespace terila::world::worldgen {
             case PoolElement::Type::List: {
                 for (const auto& child : elem.elements) {
                     if (!place_pool_element(child, resolve, placed, pending,
-                            origin_x, origin_y, origin_z, rng)) {
+                            origin_x, origin_y, origin_z, rng, rotation)) {
                         return false;
                     }
                 }
@@ -710,6 +792,8 @@ namespace terila::world::worldgen {
     struct JigsawCandidate {
         PoolElement elem;
         JigsawBlock jigsaw;
+        std::int32_t size_x = 0;
+        std::int32_t size_z = 0;
     };
 
     // Every candidate for (pool, jigsaw name), built once per pair. The pool scan reads
@@ -736,7 +820,7 @@ namespace terila::world::worldgen {
                     if (!load_template_with_jigsaws(tmpl_id, resolve, tmpl, jigsaws)) continue;
                     for (const auto& jb : jigsaws) {
                         if (jb.name == target_name) {
-                            list.push_back({ elem, jb });
+                            list.push_back({ elem, jb, tmpl.size_x, tmpl.size_z });
                         }
                     }
                 }
@@ -751,7 +835,8 @@ namespace terila::world::worldgen {
         std::vector<PlacedPiece>& placed,
         std::vector<JigsawConnection>& new_pending,
         std::uint64_t& rng,
-        int depth, std::int32_t centre_x, std::int32_t centre_z, int max_distance) {
+        int depth, std::int32_t centre_x, std::int32_t centre_z, int max_distance,
+        bool allow_rotation) {
         if (depth > 50) return false;  // Prevent infinite recursion
         if (conn.joint != "aligned") return false;  // Only handle aligned joints
         if (conn.target_pool.empty()) return true;
@@ -763,75 +848,96 @@ namespace terila::world::worldgen {
             return true;
         }
 
-        // Pick a random candidate.
-        const std::uint64_t pick = rng % candidates.size();
+        // The draw picks the first candidate; when it does not fit, the rest of the pool is
+        // tried before the connection is given up, so a street is not lost to a bad draw.
+        const std::size_t picked = static_cast<std::size_t>(rng % candidates.size());
         rng = rng * 6364136223846793005ull + 1442695040888963407ull;
-        const JigsawCandidate& chosen = candidates[pick];
-        const PoolElement& chosen_elem = chosen.elem;
-        const JigsawBlock& matching_jigsaw = chosen.jigsaw;
-
-        // Compute the origin for the new piece so its jigsaw aligns with ours.
-        // Our jigsaw is at (conn.x, conn.y, conn.z) with orientation conn.orientation.
-        // The matching jigsaw in the new piece is at (matching_jigsaw.x, matching_jigsaw.y, matching_jigsaw.z)
-        // with orientation matching_jigsaw.orientation.
-        // We need: new_piece_origin + matching_jigsaw.pos = conn.pos
-        // and the orientations must be opposite.
         const JigsawOrientation needed_orient = opposite(conn.orientation);
-        const JigsawOrientation piece_orient = parse_orientation(matching_jigsaw.orientation);
-        if (piece_orient != needed_orient) {
-            // Orientation doesn't match; this candidate won't align properly.
-            // In vanilla, the piece would be rotated, but we only support aligned joints
-            // with matching orientations for now.
-            return false;
-        }
 
-        const std::int32_t new_origin_x = conn.x - matching_jigsaw.x;
-        const std::int32_t new_origin_y = conn.y - matching_jigsaw.y;
-        const std::int32_t new_origin_z = conn.z - matching_jigsaw.z;
+        for (std::size_t attempt = 0; attempt < candidates.size(); ++attempt) {
+            const JigsawCandidate& chosen =
+                candidates[(picked + attempt) % candidates.size()];
+            const PoolElement& chosen_elem = chosen.elem;
+            const JigsawBlock& matching_jigsaw = chosen.jigsaw;
 
-        // Place the chosen element at the computed origin.
-        const std::size_t placed_before = placed.size();
-        if (!place_pool_element(chosen_elem, resolve, placed, new_pending,
-                new_origin_x, new_origin_y, new_origin_z, rng)) {
-            return false;
-        }
-        if (placed.size() == placed_before) {
-            return false;  // Nothing landed, so there is nothing to expand from.
-        }
+            // The piece's jigsaw must land on the connection and face it. A piece may be laid
+            // down with a quarter turn, so the turn that puts its jigsaw right is the one
+            // used.
+            int rotation = 0;
+            bool aligned = false;
+            std::int32_t new_origin_x = 0;
+            std::int32_t new_origin_y = 0;
+            std::int32_t new_origin_z = 0;
+            for (; rotation < (allow_rotation ? 4 : 1); ++rotation) {
+                std::int32_t local_x = matching_jigsaw.x;
+                std::int32_t local_z = matching_jigsaw.z;
+                rotate_cell(rotation, chosen.size_x, chosen.size_z, local_x, local_z);
+                const JigsawOrientation piece_orient = rotate_orientation(
+                    parse_orientation(matching_jigsaw.orientation), rotation);
+                if (piece_orient != needed_orient) {
+                    continue;
+                }
+                new_origin_x = conn.x - local_x;
+                new_origin_y = conn.y - matching_jigsaw.y;
+                new_origin_z = conn.z - local_z;
+                aligned = true;
+                break;
+            }
+            if (!aligned) {
+                continue;
+            }
 
-        // A structure may only grow as far from its centre as its data allows, so a long
-        // chain of streets cannot run off into the world.
-        if (max_distance > 0) {
-            const std::int64_t limit = static_cast<std::int64_t>(max_distance) * max_distance;
-            for (std::size_t index = placed_before; index < placed.size(); ++index) {
-                const PlacedPiece& piece = placed[index];
-                const std::int64_t dx = piece.origin_x + piece.tmpl.size_x / 2 - centre_x;
-                const std::int64_t dz = piece.origin_z + piece.tmpl.size_z / 2 - centre_z;
-                if (dx * dx + dz * dz > limit) {
-                    placed.resize(placed_before);  // The whole connection is dropped.
-                    return false;
+            // Place the candidate at the computed origin, turned to face the connection.
+            const std::size_t placed_before = placed.size();
+            if (!place_pool_element(chosen_elem, resolve, placed, new_pending,
+                    new_origin_x, new_origin_y, new_origin_z, rng, rotation)) {
+                continue;
+            }
+            if (placed.size() == placed_before) {
+                continue;  // Nothing landed, so there is nothing to expand from.
+            }
+
+            // A structure may only grow as far from its centre as its data allows, so a long
+            // chain of streets cannot run off into the world.
+            bool within = true;
+            if (max_distance > 0) {
+                const std::int64_t limit =
+                    static_cast<std::int64_t>(max_distance) * max_distance;
+                for (std::size_t index = placed_before; index < placed.size(); ++index) {
+                    const PlacedPiece& piece = placed[index];
+                    const std::int64_t dx = piece.origin_x + piece_size_x(piece) / 2 - centre_x;
+                    const std::int64_t dz = piece.origin_z + piece_size_z(piece) / 2 - centre_z;
+                    if (dx * dx + dz * dz > limit) {
+                        within = false;
+                        break;
+                    }
                 }
             }
-        }
+            if (!within) {
+                placed.resize(placed_before);  // The whole connection is dropped.
+                continue;
+            }
 
-        // The new piece's jigsaws (except the one we just connected) become new pending connections.
-        const PlacedPiece& new_piece = placed.back();
-        for (const auto& jb : new_piece.jigsaws) {
-            if (jb.x == conn.x && jb.y == conn.y && jb.z == conn.z) continue;  // The one we connected
-            if (jb.target_pool.empty()) continue;
-            JigsawConnection new_conn;
-            new_conn.x = jb.x;
-            new_conn.y = jb.y;
-            new_conn.z = jb.z;
-            new_conn.orientation = parse_orientation(jb.orientation);
-            new_conn.target_pool = jb.target_pool;
-            new_conn.target_name = jb.target_name;
-            new_conn.final_state = jb.final_state;
-            new_conn.joint = jb.joint;
-            new_pending.push_back(new_conn);
+            // The new piece's jigsaws (except the one we just connected) become new pending
+            // connections.
+            const PlacedPiece& new_piece = placed.back();
+            for (const auto& jb : new_piece.jigsaws) {
+                if (jb.x == conn.x && jb.y == conn.y && jb.z == conn.z) continue;  // The one we connected
+                if (jb.target_pool.empty()) continue;
+                JigsawConnection new_conn;
+                new_conn.x = jb.x;
+                new_conn.y = jb.y;
+                new_conn.z = jb.z;
+                new_conn.orientation = parse_orientation(jb.orientation);
+                new_conn.target_pool = jb.target_pool;
+                new_conn.target_name = jb.target_name;
+                new_conn.final_state = jb.final_state;
+                new_conn.joint = jb.joint;
+                new_pending.push_back(new_conn);
+            }
+            return true;
         }
-
-        return true;
+        return false;
     }
 
     // Assemble a jigsaw structure starting from a start pool.
@@ -842,7 +948,8 @@ namespace terila::world::worldgen {
     inline std::vector<PlacedPiece> assemble_jigsaw(const std::string& start_pool_id,
         const StateTextResolver& resolve,
         std::int32_t origin_x, std::int32_t origin_y, std::int32_t origin_z,
-        std::uint64_t seed, int max_pieces = 64, int max_depth = 200, int max_distance = 0) {
+        std::uint64_t seed, int max_pieces = 64, int max_depth = 200, int max_distance = 0,
+        const StateRotator& rotate = {}) {
         std::vector<PlacedPiece> placed;
         std::vector<JigsawConnection> pending;
 
@@ -885,7 +992,7 @@ namespace terila::world::worldgen {
             for (const auto& conn : current) {
                 if (static_cast<int>(placed.size()) >= max_pieces) break;
                 try_connect_jigsaw(conn, resolve, placed, pending, seed, iteration,
-                    origin_x, origin_z, max_distance);
+                    origin_x, origin_z, max_distance, static_cast<bool>(rotate));
             }
         }
 
@@ -898,15 +1005,18 @@ namespace terila::world::worldgen {
     template<class Surface, class Write>
     int write_jigsaw_pieces(const std::vector<PlacedPiece>& pieces,
         std::int32_t chunk_x, std::int32_t chunk_z,
-        Surface&& surface, std::int32_t filler, Write&& write) {
-        // The height a piece's floor sits at: its own ground for a piece that follows the
-        // terrain, and the height its connector gave it otherwise.
+        Surface&& surface, std::int32_t filler, const StateRotator& rotate, Write&& write) {
+        // A turned piece owns the turned footprint, so its ground and its blocks follow the
+        // turn as well.
         const auto base_of = [&surface](const PlacedPiece& piece) {
             if (!piece.terrain_matching) {
                 return piece.origin_y;
             }
-            return surface(piece.origin_x + piece.tmpl.size_x / 2,
-                piece.origin_z + piece.tmpl.size_z / 2);
+            return surface(piece.origin_x + piece_size_x(piece) / 2,
+                piece.origin_z + piece_size_z(piece) / 2);
+        };
+        const auto state_of = [&rotate](std::int32_t state, int rotation) {
+            return rotate ? rotate(state, rotation) : state;
         };
 
         // The beards first: every column a piece covers is raised to its floor, so a house
@@ -915,10 +1025,10 @@ namespace terila::world::worldgen {
         for (const auto& piece : pieces) {
             const std::int32_t base_y = base_of(piece);
             for (std::int32_t wz = piece.origin_z;
-                wz < piece.origin_z + piece.tmpl.size_z; ++wz) {
+                wz < piece.origin_z + piece_size_z(piece); ++wz) {
                 if ((wz >> 4) != chunk_z) continue;
                 for (std::int32_t wx = piece.origin_x;
-                    wx < piece.origin_x + piece.tmpl.size_x; ++wx) {
+                    wx < piece.origin_x + piece_size_x(piece); ++wx) {
                     if ((wx >> 4) != chunk_x) continue;
                     const std::int32_t ground = surface(wx, wz);
                     if (base_y - 1 > ground + kMaxBeard) continue;
@@ -934,11 +1044,15 @@ namespace terila::world::worldgen {
             const std::int32_t base_y = base_of(piece);
             for (const auto& cell : piece.tmpl.cells) {
                 if (cell.state == 0) continue;  // Skip air
-                const std::int32_t wx = piece.origin_x + cell.x;
+                std::int32_t local_x = cell.x;
+                std::int32_t local_z = cell.z;
+                rotate_cell(piece.rotation, piece.tmpl.size_x, piece.tmpl.size_z,
+                    local_x, local_z);
+                const std::int32_t wx = piece.origin_x + local_x;
                 const std::int32_t wy = base_y + cell.y;
-                const std::int32_t wz = piece.origin_z + cell.z;
+                const std::int32_t wz = piece.origin_z + local_z;
                 if ((wx >> 4) != chunk_x || (wz >> 4) != chunk_z) continue;
-                write(wx, wy, wz, cell.state);
+                write(wx, wy, wz, state_of(cell.state, piece.rotation));
                 ++placed;
             }
         }

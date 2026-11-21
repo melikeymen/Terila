@@ -42,6 +42,7 @@ namespace terila::network {
         const auto resolve_state_text = [this](std::string_view text) {
             return world::worldgen::template_state_id(text, data_.block_states, data_.block_state_ids);
         };
+        const auto rotate_state = world::worldgen::template_rotator(data_);
 
         // A flat world is a shape the overworld generator builds; the nether and the end
         // always come from their own noise settings, whatever level-type says.
@@ -50,7 +51,8 @@ namespace terila::network {
         const auto dimension_type = terila::world::worldgen::dimension_type_of(dimension_);
 
         if (!generator.init(world, dimension_type.min_y, dimension_type.height / 16,
-                world_seed_, resolve_block, resolve_biome, resolve_state_text, dimension_)) {
+                world_seed_, resolve_block, resolve_biome, resolve_state_text, dimension_,
+                rotate_state)) {
             LOG_CRITICAL(Chunk, "cannot initialise the {} world generator — no player can join "
                 "until the block and biome registries are fixed",
                 terila::world::worldgen::dimension_name(dimension_));

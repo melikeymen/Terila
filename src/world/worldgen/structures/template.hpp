@@ -12,6 +12,8 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -105,6 +107,107 @@ namespace terila::world::worldgen {
     // Turns a state string into the number the world stores; the generator has no registry
     // at hand and answers with the block's default state instead.
     using StateTextResolver = std::function<std::int32_t(std::string_view)>;
+
+    // The reverse of the palette lookup: a state id turned a quarter turn clockwise. Without
+    // it a rotated piece would keep its stairs, doors and pillars facing the unturned way.
+    using StateRotator = std::function<std::int32_t(std::int32_t state, int quarter_turns)>;
+
+    // Builds the rotation table from the registry's own variants: for every state, the state
+    // whose direction, axis, sixteenth of a turn or stair shape follows the turn. A state the
+    // table does not know the turned form of stays as it is.
+    inline StateRotator template_rotator(const data::RegistryData& registry) {
+        const auto property_text =
+            [](const std::unordered_map<std::string, std::string>& properties) {
+                std::map<std::string, std::string> ordered(properties.begin(), properties.end());
+                std::string text;
+                for (const auto& [key, value] : ordered) {
+                    if (!text.empty()) text.push_back(',');
+                    text += key;
+                    text.push_back('=');
+                    text += value;
+                }
+                return text;
+            };
+        const auto turn_direction = [](const std::string& value, int quarters) {
+            std::string side = value;
+            for (int index = 0; index < quarters; ++index) {
+                if (side == "north") side = "east";
+                else if (side == "east") side = "south";
+                else if (side == "south") side = "west";
+                else if (side == "west") side = "north";
+            }
+            return side;
+        };
+        const auto turn = [&turn_direction](const std::string& key, const std::string& value,
+            int quarters) -> std::string {
+            if (key == "facing") {
+                return turn_direction(value, quarters);
+            }
+            if (key == "orientation") {
+                // "north_up": the half that names the face turns, the vertical half stays.
+                const std::size_t underscore = value.find('_');
+                if (underscore == std::string::npos) {
+                    return turn_direction(value, quarters);
+                }
+                return turn_direction(value.substr(0, underscore), quarters) +
+                    value.substr(underscore);
+            }
+            if (key == "axis" && (quarters % 2) == 1) {
+                if (value == "x") return "z";
+                if (value == "z") return "x";
+                return value;
+            }
+            if (key == "rotation" && (quarters % 2) == 1) {
+                // Signs and banners store sixteenths of a turn.
+                try {
+                    return std::to_string((std::stoi(value) + 4 * quarters) % 16);
+                }
+                catch (const std::exception&) {
+                    return value;
+                }
+            }
+            if (key == "shape" && quarters != 0) {
+                // A stair's inner corner moves to the other side of the step.
+                if (value == "inner_left") return "inner_right";
+                if (value == "inner_right") return "inner_left";
+            }
+            return value;
+        };
+
+        auto table = std::make_shared<std::unordered_map<std::uint64_t, std::int32_t>>();
+        for (const auto& entry : registry.block_states) {
+            std::unordered_map<std::string, std::int32_t> by_text;
+            for (const data::BlockStateInfo& variant : entry.second) {
+                by_text.emplace(property_text(variant.properties), variant.id);
+            }
+            for (const data::BlockStateInfo& variant : entry.second) {
+                for (int quarters = 1; quarters <= 3; ++quarters) {
+                    std::unordered_map<std::string, std::string> turned;
+                    for (const auto& [key, value] : variant.properties) {
+                        turned.emplace(key, turn(key, value, quarters));
+                    }
+                    const auto found = by_text.find(property_text(turned));
+                    if (found == by_text.end()) {
+                        continue;
+                    }
+                    const std::uint64_t key =
+                        (static_cast<std::uint64_t>(static_cast<std::uint32_t>(variant.id)) << 2) |
+                        static_cast<std::uint64_t>(quarters);
+                    table->emplace(key, found->second);
+                }
+            }
+        }
+        return [table](std::int32_t state, int quarter_turns) {
+            if (state <= 0 || quarter_turns == 0) {
+                return state;
+            }
+            const std::uint64_t key =
+                (static_cast<std::uint64_t>(static_cast<std::uint32_t>(state)) << 2) |
+                static_cast<std::uint64_t>(quarter_turns & 3);
+            const auto found = table->find(key);
+            return found == table->end() ? state : found->second;
+        };
+    }
 
     inline bool load_template(std::string_view id, const StateTextResolver& resolve,
         StructureTemplate& out) {

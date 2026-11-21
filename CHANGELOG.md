@@ -41,6 +41,13 @@ All notable changes to Terila, newest first. Format follows
 - A village, outpost or city grows as deep as the structure's `size` and no farther from
   its centre than `max_distance_from_center`, both read from the structure data instead of
   a fixed cap
+- A jigsaw piece is laid down with the quarter turn that faces the piece it joins, and its
+  stairs, doors, pillars and signs are turned with it, so a house joins a street whichever
+  way the street runs
+- A jigsaw connection reads its orientation from the right offset of the block state, so a
+  piece must actually face the connection instead of being accepted whatever way it faced
+- A connection that drew a piece which does not fit tries the rest of the pool before it is
+  given up, instead of dropping the street
 - Respawn after a death returns the player to the dimension and spawn they died in
 - A save queued before a dimension change is written to the region files of the dimension
   it was generated in, not to the new one's

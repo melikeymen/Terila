@@ -125,7 +125,7 @@ namespace terila::world::worldgen {
     public:
         bool init(std::uint64_t seed, const terrain::IdResolver& block,
             const std::function<int(std::string_view)>& biome_id, std::vector<StructureKind> kinds,
-            const StateTextResolver& state = {}) {
+            const StateTextResolver& state = {}, const StateRotator& rotate = {}) {
             seed_ = seed;
             kinds_.clear();
             jigsaw_kinds_.clear();
@@ -140,8 +140,10 @@ namespace terila::world::worldgen {
             });
 
             // Kept for the jigsaw assembly: the palettes of the pieces need the full state
-            // table, not the block-default fallback.
+            // table, not the block-default fallback, and a turned piece needs the registry's
+            // own rotated variants of those states.
             state_ = resolve;
+            rotate_ = rotate;
             // The ground a piece stands on is filled with the same block a beard uses.
             filler_ = resolve("minecraft:dirt");
             for (StructureKind& kind : kinds) {
@@ -294,9 +296,9 @@ namespace terila::world::worldgen {
                         bool reaches = false;
                         for (const auto& piece : pieces) {
                             const std::int32_t low_x = piece.origin_x;
-                            const std::int32_t high_x = piece.origin_x + piece.tmpl.size_x - 1;
+                            const std::int32_t high_x = piece.origin_x + piece_size_x(piece) - 1;
                             const std::int32_t low_z = piece.origin_z;
-                            const std::int32_t high_z = piece.origin_z + piece.tmpl.size_z - 1;
+                            const std::int32_t high_z = piece.origin_z + piece_size_z(piece) - 1;
                             if ((low_x >> 4) <= chunk_x && (high_x >> 4) >= chunk_x &&
                                 (low_z >> 4) <= chunk_z && (high_z >> 4) >= chunk_z) {
                                 reaches = true;
@@ -305,7 +307,7 @@ namespace terila::world::worldgen {
                         }
                         if (!reaches) continue;
                         placed += write_jigsaw_pieces(pieces, chunk_x, chunk_z, surface,
-                            filler_, write);
+                            filler_, rotate_, write);
                     }
                 }
             }
@@ -505,6 +507,7 @@ namespace terila::world::worldgen {
         std::vector<Item> kinds_;
         std::vector<JigsawItem> jigsaw_kinds_;
         StateTextResolver state_;
+        StateRotator rotate_;
         std::int32_t filler_ = 0;
     };
 
