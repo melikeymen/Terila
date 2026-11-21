@@ -41,6 +41,23 @@ namespace terila::commands {
                     return exec.registry.run(origin, tail, exec.scope);
                 }
 
+                // `in <dimension>` does not move the source, it only says which world the
+                // rest of the chain reads its coordinates from and teleports into.
+                if (cursor.literal("in")) {
+                    auto value = Parser::resource_location().read(cursor);
+                    if (!value) {
+                        origin.say("Expected a dimension");
+                        return Result{ 0, false };
+                    }
+                    const auto* name = std::get_if<std::string>(&*value);
+                    if (name == nullptr) {
+                        origin.say("Expected a dimension");
+                        return Result{ 0, false };
+                    }
+                    origin.dimension = *name;
+                    continue;
+                }
+
                 if (cursor.literal("as") || cursor.literal("at")) {
                     const bool moves_position = keyword == "at";
                     auto value = Parser::players().read(cursor);

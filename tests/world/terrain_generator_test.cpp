@@ -590,7 +590,7 @@ TEST(ChunkJobsBench, BatchGenerationRunsInParallel) {
     std::vector<std::future<PreparedChunk>> pending;
     pending.reserve(coords.size());
     for (const auto& [cx, cz] : coords) {
-        pending.push_back(jobs.prepare(cx, cz));
+        pending.push_back(jobs.prepare(terila::world::DimensionKind::Overworld, cx, cz));
     }
     for (auto& job : pending) {
         ASSERT_FALSE(job.get().encoded.empty());

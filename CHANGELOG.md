@@ -3,6 +3,31 @@
 All notable changes to Terila, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- The overworld, the nether and the end each keep their own generator, chunk cache and
+  region files, so a column saved in one dimension is never served in another
+- `execute in <dimension> run tp` moves a player between the dimensions, streaming the new
+  world and sending a respawn packet with that dimension's type, name and sea level
+- The login and respawn packets carry the dimension type the client was handed during
+  configuration, instead of always claiming the overworld
+
+### Changed
+
+- The block overlay is keyed by dimension: the nether and the overworld share their x/z, so
+  a single table put one world's edit on top of the other's column
+- Players only see each other inside one dimension, both as entities and through selectors
+
+### Fixed
+
+- Respawn after a death returns the player to the dimension and spawn they died in
+- A save queued before a dimension change is written to the region files of the dimension
+  it was generated in, not to the new one's
+- A chunk batch left in flight by a dimension change is dropped instead of streaming the
+  old world's columns over the new one
+
 ## [v0.22.0] — 2026-11-21
 
 ### Added

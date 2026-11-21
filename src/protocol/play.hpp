@@ -14,10 +14,14 @@
 
 namespace terila::protocol {
 
+    // `dimension_type` is the index of the dimension type in the registry the client was
+    // handed during configuration, which is what tells it the height, the skylight and the
+    // coordinate scale of the world it is about to receive.
     inline bool write_login_play(std::vector<std::uint8_t>& output,
         std::int32_t entity_id, bool hardcore,
         std::uint8_t gamemode, const std::string& dimension,
-        int max_players, int view_distance, int simulation_distance)
+        int max_players, int view_distance, int simulation_distance,
+        std::int32_t dimension_type = 0)
     {
         std::vector<std::uint8_t> payload;
 
@@ -40,7 +44,7 @@ namespace terila::protocol {
         payload.push_back(1);
         payload.push_back(0);
 
-        write_varint(payload, 0);
+        write_varint(payload, dimension_type);
         write_string(payload, dimension);
         payload.insert(payload.end(), 8, 0);
         payload.push_back(gamemode);

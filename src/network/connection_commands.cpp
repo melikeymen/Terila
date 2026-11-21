@@ -50,6 +50,22 @@ namespace terila::network {
             return connection_.hub_->teleport_to(entity, x, y, z, yaw, pitch);
         }
 
+        // `execute in <dimension> run tp` lands here. The local player is moved by this
+        // connection; anybody else through the hub, which asks the connection that owns
+        // him. False when the name is not a dimension this build has, or when the player
+        // already stands there and only needs the plain teleport.
+        bool teleport_in(std::int32_t entity, std::string_view dimension, double x, double y,
+            double z, float yaw, float pitch) override {
+            terila::world::DimensionKind kind{};
+            if (!terila::world::worldgen::dimension_kind_of(dimension, kind)) {
+                return false;
+            }
+            if (entity == connection_.entity_id_ || connection_.hub_ == nullptr) {
+                return connection_.enter_dimension(kind, x, y, z, yaw, pitch);
+            }
+            return connection_.hub_->travel_to(entity, kind, x, y, z, yaw, pitch);
+        }
+
         bool set_gamemode(std::int32_t entity, int mode) override {
             if (entity == connection_.entity_id_ || connection_.hub_ == nullptr) {
                 return connection_.apply_gamemode(mode);
@@ -155,7 +171,7 @@ namespace terila::network {
         update_player_chunk(x, z);
         if (hub_) {
             hub_->move(entity_id_,
-                PlayerHub::Position{ x, y, z, yaw, pitch });
+                PlayerHub::Position{ x, y, z, yaw, pitch, dimension_ });
         }
         return true;
     }
@@ -172,7 +188,7 @@ namespace terila::network {
         send_gamemode_state();
         if (hub_) {
             hub_->move(entity_id_,
-                PlayerHub::Position{ player_x_, player_y_, player_z_, yaw_, pitch_ });
+                PlayerHub::Position{ player_x_, player_y_, player_z_, yaw_, pitch_, dimension_ });
         }
         return true;
     }

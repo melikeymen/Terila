@@ -1,6 +1,7 @@
 ﻿#include "network/connection.hpp"
 
 #include "protocol/play.hpp"
+#include "protocol/player_state.hpp"
 #include "world/chunk_encoder.hpp"
 #include "world/chunk_decoder.hpp"
 
@@ -20,7 +21,14 @@ namespace terila::network {
         // shared generator.
         air_state_ = block_state("minecraft:air").value_or(0);
 
-        if (terrain_.ready()) {
+        // Every dimension owns its generator: the nether's height, sea level and fluid are
+        // not the overworld's, and a player who steps back out must find the overworld he
+        // left instead of a copy rebuilt over the nether's settings.
+        terila::world::WorldGenerator& generator =
+            terila::world::WorldContext::shared().generator(dimension_);
+        terrain_ = &generator;
+        if (generator.ready()) {
+            sea_level_ = generator.sea_level();
             return;
         }
 
@@ -30,17 +38,25 @@ namespace terila::network {
             return world::worldgen::template_state_id(text, data_.block_states, data_.block_state_ids);
         };
 
-        if (!terrain_.init(world_type_, data_.overworld.min_y, data_.overworld.height / 16,
-                world_seed_, resolve_block, resolve_biome, resolve_state_text)) {
+        // A flat world is a shape the overworld generator builds; the nether and the end
+        // always come from their own noise settings, whatever level-type says.
+        const auto world = dimension_ == terila::world::DimensionKind::Overworld
+            ? world_type_ : terila::world::WorldType::Terrain;
+        const auto dimension_type = terila::world::worldgen::dimension_type_of(dimension_);
+
+        if (!generator.init(world, dimension_type.min_y, dimension_type.height / 16,
+                world_seed_, resolve_block, resolve_biome, resolve_state_text, dimension_)) {
             LOG_CRITICAL(Chunk, "cannot initialise the {} world generator — no player can join "
                 "until the block and biome registries are fixed",
-                terila::world::world_type_name(world_type_));
+                terila::world::worldgen::dimension_name(dimension_));
             return;
         }
+        sea_level_ = generator.sea_level();
 
-        LOG_INFO(Chunk, "{} world ready: {} sections from y={}, sea level {}, seed {}",
-            terila::world::world_type_name(terrain_.type()), terrain_.section_count(),
-            terrain_.min_y(), terrain_.sea_level(), terrain_.seed());
+        LOG_INFO(Chunk, "{} ({}) ready: {} sections from y={}, sea level {}, seed {}",
+            terila::world::worldgen::dimension_name(dimension_),
+            terila::world::world_type_name(generator.type()), generator.section_count(),
+            generator.min_y(), generator.sea_level(), generator.seed());
     }
 
     // The overlay only holds blocks that differ from the generated terrain, so a stored
@@ -95,11 +111,11 @@ namespace terila::network {
                 return taken;
             }
             terila::world::PreparedChunk fresh;
-            fresh.chunk = terrain_.generate(cx, cz);
+            fresh.chunk = terrain_->generate(cx, cz);
             return fresh;
         };
 
-        auto& cache = terila::world::WorldContext::shared().chunks();
+        auto& cache = terila::world::WorldContext::shared().chunks(dimension_);
 
         // A save still waiting its turn is the newest copy of this column. Loading the
         // region instead would hand back the version from before the last edit, and those
@@ -138,7 +154,7 @@ namespace terila::network {
             else if (loaded->present) {
                 auto decoded = terila::world::decode::decode(
                     reinterpret_cast<const std::uint8_t*>(stored.data()),
-                    stored.size(), terrain_.section_count());
+                    stored.size(), terrain_->section_count());
                 if (decoded) {
                     // The baseline is the generated chunk the overlay is diffed against;
                     // it is needed again below for the cache, so it is generated once.
@@ -179,8 +195,8 @@ namespace terila::network {
         // No stored copy exists, so this column may carry edits that were never written:
         // applying and relighting here is what keeps them visible. A plain column is
         // deterministic, so it is cached rather than written back on every visit.
-        if (world_.chunk_modified(cx, cz)) {
-            world_.apply(chunk, air_state_);
+        if (world_.chunk_modified(cx, cz, dimension_)) {
+            world_.apply(chunk, air_state_, dimension_);
             relight_chunk(chunk);
             auto out = terila::world::encode::encode(chunk);
             cache.put(std::move(chunk), out);
@@ -207,20 +223,22 @@ namespace terila::network {
         while (pending_saves_.size() >= kMaxPendingSaves) {
             pending_saves_.pop_front();
         }
-        pending_saves_.push_back(PendingSave{ cx, cz, encoded, edited });
+        pending_saves_.push_back(PendingSave{ cx, cz, encoded, edited, dimension_ });
     }
 
     void Connection::flush_pending_saves(std::size_t budget) {
         for (std::size_t i = 0; i < budget && !pending_saves_.empty(); ++i) {
             auto save = std::move(pending_saves_.front());
             pending_saves_.pop_front();
-            persist_chunk(save.x, save.z, save.bytes, save.edited);
+            persist_chunk(save.x, save.z, save.bytes, save.edited, save.dimension);
         }
     }
 
     void Connection::persist_chunk(std::int32_t cx, std::int32_t cz,
-        const std::vector<std::uint8_t>& encoded, bool edited) {
-        if (store_ == nullptr || encoded.empty()) {
+        const std::vector<std::uint8_t>& encoded, bool edited,
+        terila::world::DimensionKind kind) {
+        auto* store = stores_[static_cast<std::size_t>(terila::world::dimension_index(kind))];
+        if (store == nullptr || encoded.empty()) {
             return;
         }
         // Everything written from here on carries light computed by the current rules, which
@@ -228,7 +246,7 @@ namespace terila::network {
         const std::uint8_t flags = terila::world::trf::chunk_flags(edited, true, true);
         const auto payload = std::span<const std::byte>(
             reinterpret_cast<const std::byte*>(encoded.data()), encoded.size());
-        if (auto saved = store_->save_chunk(cx, cz, payload, flags); !saved) {
+        if (auto saved = store->save_chunk(cx, cz, payload, flags); !saved) {
             LOG_CRITICAL(Chunk, "trf save ({}, {}) failed: {} ({}) — edited chunks now live only "
                 "in memory, a restart loses them", cx, cz,
                 terila::world::trf::to_string(saved.error().code), saved.error().detail);
@@ -241,9 +259,9 @@ namespace terila::network {
     // light engine over the overlay puts the sun back into every hole and shadow under every
     // block the player placed.
     void Connection::relight_chunk(terila::world::Chunk& chunk) {
-        const auto& rules = terrain_.light_rules();
-        const int min_y = terrain_.min_y();
-        const int world_top = min_y + terrain_.section_count() * 16 - 1;
+        const auto& rules = terrain_->light_rules();
+        const int min_y = terrain_->min_y();
+        const int world_top = min_y + terrain_->section_count() * 16 - 1;
 
         // The engine reads 15 blocks past the border, so the neighbouring columns are
         // generated once and sampled with the overlay on top of them.
@@ -260,10 +278,10 @@ namespace terila::network {
             // The generator cache usually holds the columns that were just streamed, so a
             // relight does not have to regenerate up to eight neighbours.
             if (const auto* cached =
-                terila::world::WorldContext::shared().chunks().find(cx, cz)) {
+                terila::world::WorldContext::shared().chunks(dimension_).find(cx, cz)) {
                 return neighbours.emplace(key, cached->chunk).first->second;
             }
-            return neighbours.emplace(key, terrain_.generate(cx, cz)).first->second;
+            return neighbours.emplace(key, terrain_->generate(cx, cz)).first->second;
         };
 
         const auto state_at_edited = [&](std::int32_t x, std::int32_t y,
@@ -279,10 +297,10 @@ namespace terila::network {
             const auto index = ((local_y % 16) * 16 + (z & 15)) * 16 + (x & 15);
             const std::int32_t generated =
                 terila::world::section_state(c.sections[section], index);
-            if (!world_.chunk_modified(cx, cz)) {
+            if (!world_.chunk_modified(cx, cz, dimension_)) {
                 return generated;
             }
-            return world_.get(terila::world::BlockPos{ x, y, z }, generated);
+            return world_.get(terila::world::BlockPos{ x, y, z }, generated, dimension_);
         };
 
         const auto sky_top = [&](std::int32_t x, std::int32_t z) {
@@ -305,7 +323,7 @@ namespace terila::network {
 
         terila::world::LightEngine::compute(chunk, rules, sky_top, state_at_edited);
         LOG_TRACE(Chunk, "relit chunk ({}, {}) with {} edits", chunk.x, chunk.z,
-            world_.modified_count(chunk.x, chunk.z));
+            world_.modified_count(chunk.x, chunk.z, dimension_));
     }
 
     // An edit only exists in BlockWorld until the affected chunk is re-encoded and
@@ -318,17 +336,17 @@ namespace terila::network {
     // column in a tick, and re-encoding it once per cascade is what keeps that affordable.
     void Connection::persist_chunk_edits(std::int32_t cx, std::int32_t cz) {
         // The column changed, so the shared copy no longer matches what this player holds.
-        terila::world::WorldContext::shared().chunks().erase(cx, cz);
+        terila::world::WorldContext::shared().chunks(dimension_).erase(cx, cz);
         if (store_ == nullptr) {
             return;
         }
 
         init_terrain();
-        auto chunk = terrain_.generate(cx, cz);
-        world_.apply(chunk, air_state_);
+        auto chunk = terrain_->generate(cx, cz);
+        world_.apply(chunk, air_state_, dimension_);
         relight_chunk(chunk);
         LOG_DEBUG(Chunk, "queued chunk ({}, {}) with {} edits total", cx, cz,
-            world_.modified_count(cx, cz));
+            world_.modified_count(cx, cz, dimension_));
         // Queued instead of written here: a region write inside the click handler stalls
         // every other player on the io thread.
         queue_persist(cx, cz, terila::world::encode::encode(chunk), true);
@@ -378,7 +396,14 @@ namespace terila::network {
         // off the chunk path.
         init_terrain();
 
+        // A dimension change bumps the epoch: the batch below was generated for the world
+        // the player has already left, so it is dropped instead of streamed over the new one.
+        const std::uint32_t epoch = chunk_epoch_;
+
         while (!pending_chunks_.empty()) {
+            if (epoch != chunk_epoch_) {
+                co_return;
+            }
             if (write_queue_.size() >= kMaxWriteQueue) {
                 co_await terila::async::Yield{};
                 continue;
@@ -401,7 +426,7 @@ namespace terila::network {
             std::vector<std::future<terila::world::PreparedChunk>> prepared;
             prepared.reserve(batch.size());
             for (const auto& pos : batch) {
-                prepared.push_back(jobs.prepare(pos.x, pos.z));
+                prepared.push_back(jobs.prepare(dimension_, pos.x, pos.z));
             }
 
             std::vector<std::uint8_t> out;
@@ -419,6 +444,9 @@ namespace terila::network {
                 while (prepared[i].wait_for(std::chrono::seconds(0)) !=
                     std::future_status::ready) {
                     co_await terila::async::Yield{};
+                }
+                if (epoch != chunk_epoch_) {
+                    co_return;
                 }
 
                 if (!terila::protocol::write_chunk_data(group,
@@ -484,6 +512,81 @@ namespace terila::network {
 
         forget_far_chunks(cx, cz);
         queue_chunk_area(cx, cz);
+    }
+
+    // Stepping into another dimension replaces the whole world the client holds. The move
+    // reopens the region files of that dimension, drops every column the old one streamed and
+    // starts the view distance again from the new generator; an unfinished batch of the old
+    // world is left to the epoch guard in stream_chunks.
+    bool Connection::enter_dimension(terila::world::DimensionKind kind, double x, double y,
+        double z, float yaw, float pitch) {
+        using terila::world::dimension_index;
+
+        if (state_ != State::Play || closed_ || kind == dimension_) {
+            return false;
+        }
+
+        const auto previous = dimension_;
+        dimension_ = kind;
+        store_ = stores_[static_cast<std::size_t>(dimension_index(kind))];
+        terrain_ = &terila::world::WorldContext::shared().generator(kind);
+        init_terrain();
+
+        if (terrain_ == nullptr || !terrain_->ready()) {
+            // Nothing to stand on: the player stays where he is rather than dropping into an
+            // empty world.
+            dimension_ = previous;
+            store_ = stores_[static_cast<std::size_t>(dimension_index(previous))];
+            terrain_ = &terila::world::WorldContext::shared().generator(previous);
+            init_terrain();
+            return false;
+        }
+
+        ++chunk_epoch_;
+        pending_chunks_.clear();
+        sent_chunks_.clear();
+        known_entities_.clear();
+        known_drops_.clear();
+        abort_breaking();
+
+        player_x_ = x;
+        player_y_ = y;
+        player_z_ = z;
+        yaw_ = yaw;
+        pitch_ = pitch;
+
+        std::vector<std::uint8_t> out;
+        const auto name = terila::world::worldgen::dimension_name(kind);
+        if (!terila::protocol::write_respawn(out, name, static_cast<std::int64_t>(world_seed_),
+                static_cast<std::uint8_t>(gamemode_), sea_level_,
+                terila::world::worldgen::dimension_type_id(kind))) {
+            return false;
+        }
+        send(out);
+        send_health();
+
+        out.clear();
+        if (terila::protocol::write_player_position(out, next_teleport_id_++, x, y, z,
+                0.0, 0.0, 0.0, yaw, pitch)) {
+            send(out);
+        }
+
+        if (hub_) {
+            hub_->move(entity_id_, PlayerHub::Position{ x, y, z, yaw, pitch, kind });
+        }
+
+        // The client threw its world away with the respawn packet, so every column is
+        // streamed again even though the centre may not have moved in chunk coordinates.
+        center_cx_ = chunk_coordinate(x);
+        center_cz_ = chunk_coordinate(z);
+        out.clear();
+        if (terila::protocol::write_set_center_chunk(out, center_cx_, center_cz_)) {
+            send(out);
+        }
+        queue_chunk_area(center_cx_, center_cz_);
+
+        LOG_INFO(Network, "{} entered {} at ({:.1f}, {:.1f}, {:.1f})", username_, name, x, y, z);
+        return true;
     }
 
 } // namespace terila::network

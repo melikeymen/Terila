@@ -654,6 +654,16 @@ int main() {
     // never streams chunks a terrain run saved. The seed lives in the descriptor inside.
     const auto region_dir = terila::world::trf::default_region_directory(world_root);
     terila::world::trf::ChunkStore chunk_store(region_dir, *world_identity);
+    // Every dimension owns its region files, under the names vanilla writes them to, so the
+    // nether never reads a column the overworld saved at the same coordinates.
+    terila::world::trf::ChunkStore nether_store(
+        terila::world::trf::default_region_directory(world_root, "the_nether"),
+        *world_identity);
+    terila::world::trf::ChunkStore end_store(
+        terila::world::trf::default_region_directory(world_root, "the_end"),
+        *world_identity);
+    const std::array<terila::world::trf::ChunkStore*, terila::world::kDimensionCount> chunk_stores{
+        &chunk_store, &nether_store, &end_store };
     LOG_INFO(Main, "world directory: {}", world_root.string());
     LOG_DEBUG(Main, "region directory: {}", region_dir.string());
 
@@ -723,7 +733,7 @@ int main() {
 
     auto do_accept = [&](auto&& self) -> void {
         acceptor.async_accept(
-            [&acceptor, &data, &mobs, &world, &falling, &fluids, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, fluid_items, world_type, world_seed, &spawn, &srv, &players, &player_hub, &chunk_store, &next_player_entity_id, &world_terrain, clock, &world_difficulty, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
+            [&acceptor, &data, &mobs, &world, &falling, &fluids, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, fluid_items, world_type, world_seed, &spawn, &srv, &players, &player_hub, &chunk_stores, &next_player_entity_id, &world_terrain, clock, &world_difficulty, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
                 if (error) {
                     LOG_ERROR(Network, "accept failed: {} ({})", error.message(), error.value());
                     self(self);
@@ -735,7 +745,7 @@ int main() {
                     LOG_DEBUG(Network, "new connection from {}:{}", remote_ep.address().to_string(), remote_ep.port());
                 }
                 auto conn = std::make_shared<terila::network::Connection>(std::move(socket), data, mobs,
-                    world, falling, fluids, item_block_state, player_hub, &chunk_store, &drops, block_state_item,
+                    world, falling, fluids, item_block_state, player_hub, chunk_stores, &drops, block_state_item,
                     item_entity_type, &recipes, menu_blocks, furnace_states, furnace_item_id,
                     fluid_items, world_seed, world_type, spawn.x, spawn.z, srv.view_distance,
                     srv.simulation_distance, static_cast<int>(srv.max_players),
@@ -766,8 +776,11 @@ int main() {
             for (const auto& player : players) {
                 if (const auto conn = player.lock()) {
                     // A dead player is not a target: the mobs lose interest until the
-                    // respawn button puts them back in the world.
-                    if (conn->joined() && !conn->dead()) {
+                    // respawn button puts them back in the world. The mobs, the drops and
+                    // the fluid simulation are the overworld's, so a player standing in
+                    // another dimension takes no part in them.
+                    if (conn->joined() && !conn->dead() &&
+                        conn->dimension() == terila::world::DimensionKind::Overworld) {
                         player_positions.push_back(conn->player_position());
                     }
                 }

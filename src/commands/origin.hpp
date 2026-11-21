@@ -30,6 +30,20 @@ namespace terila::commands {
             const item::ComponentsPtr& components) = 0;
         virtual bool teleport(std::int32_t entity, double x, double y, double z,
             float yaw, float pitch) = 0;
+        // Moves an entity into another dimension. False when the build has no such
+        // dimension, or when the entity is already in it: the caller then falls back to a
+        // plain teleport, which is the same move inside one world.
+        virtual bool teleport_in(std::int32_t entity, std::string_view dimension, double x,
+            double y, double z, float yaw, float pitch) {
+            (void)entity;
+            (void)dimension;
+            (void)x;
+            (void)y;
+            (void)z;
+            (void)yaw;
+            (void)pitch;
+            return false;
+        }
         virtual bool set_gamemode(std::int32_t entity, int mode) = 0;
         virtual int gamemode(std::int32_t entity) const = 0;
         // False when the type has no entity behind it in this build.
@@ -56,6 +70,8 @@ namespace terila::commands {
         double z = 0.0;
         float yaw = 0.0f;
         float pitch = 0.0f;
+        // Set by `execute in <dimension>`: empty means the dimension the source stands in.
+        std::string dimension;
         Capability capability = Capability::Owner;
         bool console = false;
         bool silent = false;

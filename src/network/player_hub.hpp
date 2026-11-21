@@ -5,6 +5,7 @@
 #include "protocol/packet.hpp"
 #include "protocol/packet_ids.hpp"
 #include "protocol/player_info.hpp"
+#include "world/dimension_kind.hpp"
 
 #include <algorithm>
 #include <array>
@@ -39,6 +40,8 @@ namespace terila::network {
             double z = 0.0;
             float yaw = 0.0f;
             float pitch = 0.0f;
+            // Players only see each other inside one dimension.
+            terila::world::DimensionKind dimension = terila::world::DimensionKind::Overworld;
         };
 
         // Handing an item over is not a packet: the hub only knows how to ask the
@@ -112,6 +115,9 @@ namespace terila::network {
         // can apply the change: the same reason the giver and the damager exist.
         using Teleporter = std::function<bool(double x, double y, double z, float yaw,
             float pitch)>;
+        // A move into another dimension, which only the owning connection can carry out.
+        using Traveler = std::function<bool(terila::world::DimensionKind kind, double x,
+            double y, double z, float yaw, float pitch)>;
         using Messenger = std::function<bool(std::string_view text)>;
         using ModeSetter = std::function<bool(int mode)>;
 
@@ -121,6 +127,28 @@ namespace terila::network {
             if (it != players_.end()) {
                 it->second.teleport = std::move(teleporter);
             }
+        }
+
+        void set_traveler(std::int32_t entity_id, Traveler traveler)
+        {
+            const auto it = players_.find(entity_id);
+            if (it != players_.end()) {
+                it->second.travel = std::move(traveler);
+            }
+        }
+
+        bool travel_to(std::int32_t entity_id, terila::world::DimensionKind kind, double x,
+            double y, double z, float yaw, float pitch)
+        {
+            const auto it = players_.find(entity_id);
+            if (it == players_.end() || !it->second.travel) {
+                return false;
+            }
+            const bool moved = it->second.travel(kind, x, y, z, yaw, pitch);
+            if (moved) {
+                it->second.position.dimension = kind;
+            }
+            return moved;
         }
 
         void set_messenger(std::int32_t entity_id, Messenger messenger)
@@ -237,6 +265,7 @@ namespace terila::network {
             float yaw = 0.0f;
             float pitch = 0.0f;
             int gamemode = 0;
+            terila::world::DimensionKind dimension = terila::world::DimensionKind::Overworld;
         };
 
         std::vector<MemberInfo> member_info() const
@@ -246,7 +275,7 @@ namespace terila::network {
             for (const auto& [id, member] : players_) {
                 out.push_back(MemberInfo{ id, member.name, member.position.x,
                     member.position.y, member.position.z, member.position.yaw,
-                    member.position.pitch, member.gamemode });
+                    member.position.pitch, member.gamemode, member.position.dimension });
             }
             return out;
         }
@@ -387,6 +416,7 @@ namespace terila::network {
             Runner run;
             Damager hurt;
             Teleporter teleport;
+            Traveler travel;
             Messenger message;
             ModeSetter set_mode;
         };
@@ -428,6 +458,9 @@ namespace terila::network {
 
         bool in_range(const Position& viewer, const Position& target) const
         {
+            if (viewer.dimension != target.dimension) {
+                return false;
+            }
             const double range = static_cast<double>(view_distance_) * 16.0;
             const double dx = target.x - viewer.x;
             const double dz = target.z - viewer.z;

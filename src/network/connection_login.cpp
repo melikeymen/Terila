@@ -169,7 +169,7 @@ namespace terila::network {
             LOG_DEBUG(Network, "state: Configuration → Play");
 
             init_terrain();
-            if (!terrain_.ready()) {
+            if (!terrain_->ready()) {
                 LOG_ERROR(Network, "terrain generator unavailable, closing the connection");
                 close();
                 return;
@@ -179,7 +179,9 @@ namespace terila::network {
 
             if (!terila::protocol::write_login_play(out, entity_id_, hardcore_,
                 static_cast<std::uint8_t>(gamemode_),
-                "minecraft:overworld", max_players_, view_distance_, simulation_distance_)) {
+                terila::world::worldgen::dimension_name(dimension_), max_players_,
+                view_distance_, simulation_distance_,
+                terila::world::worldgen::dimension_type_id(dimension_))) {
                 LOG_ERROR(Network, "login_play failed");
                 close();
                 return;
@@ -201,7 +203,7 @@ namespace terila::network {
             const double spawn_x = spawn_x_ + 0.5;
             const double spawn_z = spawn_z_ + 0.5;
             const double spawn_y =
-                static_cast<double>(terrain_.surface_height(spawn_x_, spawn_z_) + 1);
+                static_cast<double>(terrain_->surface_height(spawn_x_, spawn_z_) + 1);
             if (!terila::protocol::write_player_position(out, next_teleport_id_++,
                 spawn_x, spawn_y, spawn_z, 0.0, 0.0, 0.0, 0.0f, 0.0f)) {
                 LOG_ERROR(Network, "player_position failed");
@@ -270,7 +272,8 @@ namespace terila::network {
             if (hub_) {
                 const auto weak_self = weak_from_this();
                 hub_->join(entity_id_, uuid_, username_, gamemode_, profile_properties_,
-                    PlayerHub::Position{ player_x_, player_y_, player_z_, yaw_, pitch_ },
+                    PlayerHub::Position{ player_x_, player_y_, player_z_, yaw_, pitch_,
+                        dimension_ },
                     [weak_self](const std::vector<std::uint8_t>& packet) {
                         if (const auto connection = weak_self.lock()) {
                             connection->send(packet);
@@ -293,6 +296,14 @@ namespace terila::network {
                     float yaw, float pitch) {
                     if (const auto connection = weak_self.lock()) {
                         return connection->teleport_player(x, y, z, yaw, pitch);
+                    }
+                    return false;
+                });
+                hub_->set_traveler(entity_id_, [weak_self](
+                    terila::world::DimensionKind kind, double x, double y, double z,
+                    float yaw, float pitch) {
+                    if (const auto connection = weak_self.lock()) {
+                        return connection->enter_dimension(kind, x, y, z, yaw, pitch);
                     }
                     return false;
                 });

@@ -6,6 +6,7 @@
 // instead of carrying a guessed height.
 
 #include "data/input_store.hpp"
+#include "world/dimension_kind.hpp"
 
 #include <array>
 #include <cstdint>
@@ -16,11 +17,7 @@
 
 namespace terila::world::worldgen {
 
-    enum class DimensionKind : std::uint8_t {
-        Overworld = 0,
-        Nether = 1,
-        End = 2,
-    };
+    using DimensionKind = terila::world::DimensionKind;
 
     struct DimensionType {
         DimensionKind kind = DimensionKind::Overworld;
@@ -136,6 +133,35 @@ namespace terila::world::worldgen {
         } catch (const std::exception&) {
         }
         return types;
+    }
+
+    // The id a command names, e.g. `execute in minecraft:the_nether run tp`. Short names
+    // are accepted because a command never needs the namespace for the three shipped
+    // dimensions.
+    inline bool dimension_kind_of(std::string_view name, DimensionKind& kind) {
+        if (name == "minecraft:overworld" || name == "overworld") {
+            kind = DimensionKind::Overworld;
+            return true;
+        }
+        if (name == "minecraft:the_nether" || name == "the_nether" || name == "nether") {
+            kind = DimensionKind::Nether;
+            return true;
+        }
+        if (name == "minecraft:the_end" || name == "the_end" || name == "end") {
+            kind = DimensionKind::End;
+            return true;
+        }
+        return false;
+    }
+
+    // The registry order the dump ships: overworld, overworld_caves, the_nether, the_end.
+    // The client reads the same list during configuration, so the index has to match it.
+    inline std::int32_t dimension_type_id(DimensionKind kind) {
+        switch (kind) {
+            case DimensionKind::Nether: return 2;
+            case DimensionKind::End:    return 3;
+            default:                    return 0;
+        }
     }
 
     inline DimensionType dimension_type_of(DimensionKind kind) {

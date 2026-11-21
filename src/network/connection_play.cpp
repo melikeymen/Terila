@@ -28,7 +28,7 @@ namespace terila::network {
         send_gamemode_state();
         if (hub_) {
             hub_->move(entity_id_,
-                PlayerHub::Position{ player_x_, player_y_, player_z_, yaw_, pitch_ });
+                PlayerHub::Position{ player_x_, player_y_, player_z_, yaw_, pitch_, dimension_ });
         }
     }
 
@@ -239,7 +239,7 @@ namespace terila::network {
                 }
                 if (hub_) {
                     hub_->move(entity_id_,
-                        PlayerHub::Position{ player_x_, player_y_, player_z_, yaw_, pitch_ });
+                        PlayerHub::Position{ player_x_, player_y_, player_z_, yaw_, pitch_, dimension_ });
                 }
             }
             return;

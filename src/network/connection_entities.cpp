@@ -24,6 +24,11 @@ namespace terila::network {
         if (state_ != State::Play || closed_) {
             return;
         }
+        // The mobs and the drops belong to the overworld simulation: a player standing in
+        // another dimension must not see an overworld mob next to him at the same x/z.
+        if (dimension_ != terila::world::DimensionKind::Overworld) {
+            return;
+        }
 
         const double range = static_cast<double>(view_distance_) * 16.0;
         const double range_sq = range * range;

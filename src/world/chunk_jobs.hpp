@@ -7,6 +7,7 @@
 // still being built here.
 
 #include "world/chunk.hpp"
+#include "world/dimension_kind.hpp"
 #include "world/world_generator.hpp"
 
 #include <condition_variable>
@@ -35,7 +36,7 @@ namespace terila::world {
 
         // Generated and encoded off the calling thread; the result is ready in roughly the
         // cost of one chunk divided by the number of workers.
-        std::future<PreparedChunk> prepare(std::int32_t cx, std::int32_t cz);
+        std::future<PreparedChunk> prepare(DimensionKind kind, std::int32_t cx, std::int32_t cz);
 
         ChunkJobs(const ChunkJobs&) = delete;
         ChunkJobs& operator=(const ChunkJobs&) = delete;

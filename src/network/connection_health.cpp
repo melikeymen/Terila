@@ -78,16 +78,19 @@ namespace terila::network {
         dead_ = false;
 
         std::vector<std::uint8_t> out;
-        if (terila::protocol::write_respawn(out, "minecraft:overworld",
+        // A death only sends the player back to this dimension's own spawn: dying in the
+        // nether must not move him to the overworld.
+        if (terila::protocol::write_respawn(out,
+                terila::world::worldgen::dimension_name(dimension_),
                 static_cast<std::int64_t>(world_seed_), static_cast<std::uint8_t>(gamemode_),
-                sea_level_)) {
+                sea_level_, terila::world::worldgen::dimension_type_id(dimension_))) {
             send(out);
         }
         send_health();
 
         player_x_ = spawn_x_ + 0.5;
         player_z_ = spawn_z_ + 0.5;
-        player_y_ = static_cast<double>(terrain_.surface_height(spawn_x_, spawn_z_) + 1);
+        player_y_ = static_cast<double>(terrain_->surface_height(spawn_x_, spawn_z_) + 1);
 
         out.clear();
         if (terila::protocol::write_player_position(out, next_teleport_id_++, player_x_, player_y_,
@@ -97,7 +100,7 @@ namespace terila::network {
 
         if (hub_) {
             hub_->move(entity_id_,
-                PlayerHub::Position{ player_x_, player_y_, player_z_, yaw_, pitch_ });
+                PlayerHub::Position{ player_x_, player_y_, player_z_, yaw_, pitch_, dimension_ });
         }
 
         // The client dropped the whole world with the respawn packet, so every chunk has to

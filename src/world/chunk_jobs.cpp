@@ -45,12 +45,13 @@ namespace terila::world {
         }
     }
 
-    std::future<PreparedChunk> ChunkJobs::prepare(std::int32_t cx, std::int32_t cz) {
+    std::future<PreparedChunk> ChunkJobs::prepare(DimensionKind kind, std::int32_t cx,
+        std::int32_t cz) {
         // The shared generator is read-only after its init(), and the noise caches are
         // per-thread, so several chunks of the same world generate side by side safely.
-        std::packaged_task<PreparedChunk()> task([cx, cz] {
+        std::packaged_task<PreparedChunk()> task([kind, cx, cz] {
             PreparedChunk prepared;
-            prepared.chunk = WorldContext::shared().generator().generate(cx, cz);
+            prepared.chunk = WorldContext::shared().generator(kind).generate(cx, cz);
             prepared.encoded = encode::encode(prepared.chunk);
             return prepared;
         });

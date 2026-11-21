@@ -53,7 +53,7 @@ namespace terila::network {
             terila::world::FluidFlow& fluids,
             const std::unordered_map<std::int32_t, std::int32_t>& item_block_state,
             std::shared_ptr<PlayerHub> hub,
-            terila::world::trf::ChunkStore* store,
+            const std::array<terila::world::trf::ChunkStore*, terila::world::kDimensionCount>& stores,
             terila::entity::ItemDropManager* drops,
             const std::unordered_map<std::int32_t, std::int32_t>& block_state_item,
             std::int32_t item_entity_type,
@@ -69,13 +69,13 @@ namespace terila::network {
             std::shared_ptr<terila::world::WorldClock> clock, int sea_level)
             : socket_(std::move(socket)), keep_alive_timer_(socket_.get_executor()), data_(data),
               mobs_(mobs), world_(world), falling_(falling), fluids_(fluids), item_block_state_(item_block_state),
-              hub_(std::move(hub)), store_(store), drops_(drops),
+              hub_(std::move(hub)), stores_(stores), store_(stores[0]), drops_(drops),
               block_state_item_(block_state_item), item_entity_type_(item_entity_type),
               recipes_(recipes), menu_blocks_(menu_blocks), furnace_states_(furnace_states),
               furnace_item_id_(furnace_item_id), fluid_items_(fluid_items),
               world_seed_(world_seed),
               world_type_(world_type),               spawn_x_(spawn_x), spawn_z_(spawn_z),
-              terrain_(terila::world::WorldContext::shared().generator()),
+              terrain_(&terila::world::WorldContext::shared().generator()),
               view_distance_(view_distance), simulation_distance_(simulation_distance),
               max_players_(max_players), entity_id_(entity_id), gamemode_(gamemode),
               difficulty_(difficulty), hardcore_(hardcore),
@@ -112,6 +112,8 @@ namespace terila::network {
         void persist_chunk_edits(std::int32_t cx, std::int32_t cz);
 
         bool joined() const { return joined_; }
+
+        terila::world::DimensionKind dimension() const noexcept { return dimension_; }
 
         terila::entity::PlayerPos player_position() const {
             terila::entity::PlayerPos pos;
@@ -232,7 +234,8 @@ namespace terila::network {
         void apply_loaded_chunk(const terila::world::Chunk& chunk,
             const terila::world::Chunk& generated);
         void persist_chunk(std::int32_t cx, std::int32_t cz,
-            const std::vector<std::uint8_t>& encoded, bool edited);
+            const std::vector<std::uint8_t>& encoded, bool edited,
+            terila::world::DimensionKind kind);
         // Chunks generated while streaming are written back on later ticks.
         void queue_persist(std::int32_t cx, std::int32_t cz,
             const std::vector<std::uint8_t>& encoded, bool edited);
@@ -342,6 +345,10 @@ namespace terila::network {
         // A command acts on another player through the hub; these are the local half of
         // that path, and the bridge in connection_commands.cpp chooses between them.
         bool teleport_player(double x, double y, double z, float yaw, float pitch);
+        // Moves this player to another dimension and streams that world instead. False when
+        // the dimension is the one already loaded, or when its generator is unavailable.
+        bool enter_dimension(terila::world::DimensionKind kind, double x, double y, double z,
+            float yaw, float pitch);
         bool apply_gamemode(int mode);
         bool tell_player(std::string_view text);
         bool summon_entity(std::string_view type, double x, double y, double z);
@@ -379,8 +386,12 @@ namespace terila::network {
         // Block column every player starts at, chosen by the world generator.
         std::int32_t spawn_x_ = 8;
         std::int32_t spawn_z_ = 8;
-        		// Shared by every connection: the terrain of a column is the same for all of them.
-		terila::world::WorldGenerator& terrain_;
+        // Points at the shared generator of the dimension this player is standing in.
+        terila::world::DimensionKind dimension_ = terila::world::DimensionKind::Overworld;
+        terila::world::WorldGenerator* terrain_ = nullptr;
+        // Bumped whenever the dimension changes, so a batch of the old world that is still
+        // in flight can tell it is stale and stop instead of streaming over the new one.
+        std::uint32_t chunk_epoch_ = 0;
         std::deque<ChunkPos> pending_chunks_;
         // Keeps the coroutine frame of the chunk stream, so an unfinished batch survives a
         // full write queue.
@@ -391,6 +402,8 @@ namespace terila::network {
             std::vector<std::uint8_t> bytes;
             // A column that carries player edits must not be written back as pristine.
             bool edited = false;
+            // A save queued before a dimension change still belongs to the old world.
+            terila::world::DimensionKind dimension = terila::world::DimensionKind::Overworld;
         };
         std::deque<PendingSave> pending_saves_;
         std::unordered_set<std::uint64_t> sent_chunks_;
@@ -408,6 +421,8 @@ namespace terila::network {
         terila::world::FluidFlow& fluids_;
         const std::unordered_map<std::int32_t, std::int32_t>& item_block_state_;
         std::shared_ptr<PlayerHub> hub_;
+        std::array<terila::world::trf::ChunkStore*, terila::world::kDimensionCount> stores_{};
+        // The store of the dimension this player currently stands in.
         terila::world::trf::ChunkStore* store_ = nullptr;
         terila::entity::ItemDropManager* drops_ = nullptr;
         const std::unordered_map<std::int32_t, std::int32_t>& block_state_item_;

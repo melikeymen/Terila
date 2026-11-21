@@ -86,9 +86,10 @@ namespace terila::protocol {
     // debug, flat, last death, portal cooldown, sea level) followed by dataToKeep. The bytes
     // mirror write_login_play, which the client already accepts for the first spawn.
     inline bool write_respawn(std::vector<std::uint8_t>& output, const std::string& dimension,
-        std::int64_t seed, std::uint8_t gamemode, int sea_level) {
+        std::int64_t seed, std::uint8_t gamemode, int sea_level,
+        std::int32_t dimension_type = 0) {
         std::vector<std::uint8_t> payload;
-        write_varint(payload, 0);            // minecraft:overworld dimension type
+        write_varint(payload, dimension_type);
         write_string(payload, dimension);
         write_int64(payload, seed);
         payload.push_back(gamemode);

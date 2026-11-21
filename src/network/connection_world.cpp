@@ -23,11 +23,11 @@ namespace terila::network {
     }
 
     std::int32_t Connection::state_at(const terila::world::BlockPos& pos) const {
-        return world_.get(pos, terrain_.state_at(pos.x, pos.y, pos.z));
+        return world_.get(pos, terrain_->state_at(pos.x, pos.y, pos.z), dimension_);
     }
 
     bool Connection::inside_world(std::int32_t y) const {
-        return y >= terrain_.min_y() && y < terrain_.min_y() + terrain_.section_count() * 16;
+        return y >= terrain_->min_y() && y < terrain_->min_y() + terrain_->section_count() * 16;
     }
 
     // The block simulation moved a block in the shared overlay. A client only needs the
@@ -195,7 +195,7 @@ namespace terila::network {
 
     void Connection::break_now(const terila::world::BlockPos& target, std::int32_t sequence) {
         const std::int32_t broken = state_at(target);
-        world_.set(target, air_state_);
+        world_.set(target, air_state_, dimension_);
         // Whatever stood on it may now be hanging, so it and the cell above get a tick.
         falling_.block_changed(target);
         fluids_.block_changed(target);
@@ -279,7 +279,7 @@ namespace terila::network {
             }
         }
 
-        world_.set(target, placed);
+        world_.set(target, placed, dimension_);
         // A placed sand is scheduled like any other block that might not stay up, and the
         // water around a placement checks whether it can flow into the new gap.
         falling_.block_changed(target);
@@ -353,7 +353,7 @@ namespace terila::network {
     // Drops fall onto the surface under the block that produced them, not onto the height
     // of the spawn column.
     double Connection::drop_ground_y(std::int32_t x, std::int32_t z) const {
-        return static_cast<double>(terrain_.surface_height(x, z) + 2);
+        return static_cast<double>(terrain_->surface_height(x, z) + 2);
     }
 
     // Every broken block turns into a drop so the world feels physical; blocks without

@@ -1,5 +1,6 @@
 #include "data/input_store.hpp"
 #include "world/block_world.hpp"
+#include "world/world_context.hpp"
 #include "world/world_generator.hpp"
 #include "world/worldgen/dimension.hpp"
 
@@ -93,6 +94,50 @@ TEST(DimensionTypeTest, ReadsTheShippedDimensions) {
     EXPECT_EQ(end.min_y, 0);
     EXPECT_EQ(end.height, 256);
     EXPECT_TRUE(end.dragon_fight);
+}
+
+TEST(DimensionTypeTest, NamesTheTypeAndTheDimensionACommandCanReach) {
+    using terila::world::worldgen::dimension_kind_of;
+    using terila::world::worldgen::dimension_type_id;
+
+    EXPECT_EQ(dimension_type_id(DimensionKind::Overworld), 0);
+    EXPECT_EQ(dimension_type_id(DimensionKind::Nether), 2);
+    EXPECT_EQ(dimension_type_id(DimensionKind::End), 3);
+
+    DimensionKind kind = DimensionKind::Overworld;
+    ASSERT_TRUE(dimension_kind_of("minecraft:the_nether", kind));
+    EXPECT_EQ(kind, DimensionKind::Nether);
+    ASSERT_TRUE(dimension_kind_of("minecraft:the_end", kind));
+    EXPECT_EQ(kind, DimensionKind::End);
+    EXPECT_FALSE(dimension_kind_of("minecraft:moon", kind));
+}
+
+TEST(BlockWorldTest, KeepsEachDimensionOnItsOwnCoordinate) {
+    terila::world::BlockWorld world;
+    const terila::world::BlockPos pos{ 4, 70, 4 };
+    world.set(pos, 11);
+
+    EXPECT_EQ(world.get(pos, 0), 11);
+    EXPECT_EQ(world.get(pos, 0, DimensionKind::Nether), 0)
+        << "the nether column picked up an overworld edit";
+
+    world.set(pos, 22, DimensionKind::Nether);
+    EXPECT_EQ(world.get(pos, 0), 11);
+    EXPECT_EQ(world.get(pos, 0, DimensionKind::Nether), 22);
+    EXPECT_EQ(world.get(pos, 0, DimensionKind::End), 0);
+
+    EXPECT_TRUE(world.chunk_modified(0, 0));
+    EXPECT_FALSE(world.chunk_modified(0, 0, DimensionKind::End));
+}
+
+TEST(WorldContextTest, HoldsADifferentGeneratorPerDimension) {
+    auto& context = terila::world::WorldContext::shared();
+    EXPECT_NE(&context.generator(DimensionKind::Overworld),
+        &context.generator(DimensionKind::Nether));
+    EXPECT_NE(&context.generator(DimensionKind::Nether),
+        &context.generator(DimensionKind::End));
+    EXPECT_NE(&context.chunks(DimensionKind::Overworld),
+        &context.chunks(DimensionKind::Nether));
 }
 
 TEST(NetherGeneratorTest, FillsItsSeaWithLavaUnderANetherrackCeiling) {

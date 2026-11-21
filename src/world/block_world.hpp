@@ -1,8 +1,10 @@
 ﻿#pragma once
 
 #include "world/chunk.hpp"
+#include "world/dimension_kind.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <unordered_map>
 #include <vector>
@@ -92,8 +94,10 @@ namespace terila::world {
         }
     }
 
-    // Sparse overlay on top of the generated flat world. Only edited blocks are
-    // stored; untouched chunks keep streaming straight from the shared template.
+    // Sparse overlay on top of the generated world. Only edited blocks are stored; untouched
+    // chunks keep streaming straight from the generator. Every coordinate is read inside
+    // one dimension: the nether and the overworld share their x/z, so a single table would
+    // put a nether edit on top of the overworld column with the same coordinate.
     class BlockWorld {
     public:
         static std::uint64_t chunk_key(std::int32_t cx, std::int32_t cz) {
@@ -101,8 +105,9 @@ namespace terila::world {
                 static_cast<std::uint32_t>(cz);
         }
 
-        bool set(const BlockPos& pos, std::int32_t state) {
-            auto& entries = chunks_[chunk_key(pos.x >> 4, pos.z >> 4)];
+        bool set(const BlockPos& pos, std::int32_t state,
+            DimensionKind kind = DimensionKind::Overworld) {
+            auto& entries = cells(kind)[chunk_key(pos.x >> 4, pos.z >> 4)];
             for (auto& entry : entries) {
                 if (entry.pos.x == pos.x && entry.pos.y == pos.y && entry.pos.z == pos.z) {
                     entry.state = state;
@@ -113,9 +118,11 @@ namespace terila::world {
             return true;
         }
 
-        std::int32_t get(const BlockPos& pos, std::int32_t fallback) const {
-            const auto it = chunks_.find(chunk_key(pos.x >> 4, pos.z >> 4));
-            if (it == chunks_.end()) {
+        std::int32_t get(const BlockPos& pos, std::int32_t fallback,
+            DimensionKind kind = DimensionKind::Overworld) const {
+            const auto& table = cells(kind);
+            const auto it = table.find(chunk_key(pos.x >> 4, pos.z >> 4));
+            if (it == table.end()) {
                 return fallback;
             }
             for (const auto& entry : it->second) {
@@ -126,19 +133,25 @@ namespace terila::world {
             return fallback;
         }
 
-        bool chunk_modified(std::int32_t cx, std::int32_t cz) const {
-            const auto it = chunks_.find(chunk_key(cx, cz));
-            return it != chunks_.end() && !it->second.empty();
+        bool chunk_modified(std::int32_t cx, std::int32_t cz,
+            DimensionKind kind = DimensionKind::Overworld) const {
+            const auto& table = cells(kind);
+            const auto it = table.find(chunk_key(cx, cz));
+            return it != table.end() && !it->second.empty();
         }
 
-        std::size_t modified_count(std::int32_t cx, std::int32_t cz) const {
-            const auto it = chunks_.find(chunk_key(cx, cz));
-            return it == chunks_.end() ? 0 : it->second.size();
+        std::size_t modified_count(std::int32_t cx, std::int32_t cz,
+            DimensionKind kind = DimensionKind::Overworld) const {
+            const auto& table = cells(kind);
+            const auto it = table.find(chunk_key(cx, cz));
+            return it == table.end() ? 0 : it->second.size();
         }
 
-        void apply(Chunk& chunk, std::int32_t air_state) const {
-            const auto it = chunks_.find(chunk_key(chunk.x, chunk.z));
-            if (it == chunks_.end()) {
+        void apply(Chunk& chunk, std::int32_t air_state,
+            DimensionKind kind = DimensionKind::Overworld) const {
+            const auto& table = cells(kind);
+            const auto it = table.find(chunk_key(chunk.x, chunk.z));
+            if (it == table.end()) {
                 return;
             }
 
@@ -162,8 +175,9 @@ namespace terila::world {
         }
 
         void load_from_chunk(const Chunk& chunk, std::int32_t air_state,
-            std::int32_t(*base_state_fn)(std::int32_t)) {
-            auto& entries = chunks_[chunk_key(chunk.x, chunk.z)];
+            std::int32_t(*base_state_fn)(std::int32_t),
+            DimensionKind kind = DimensionKind::Overworld) {
+            auto& entries = cells(kind)[chunk_key(chunk.x, chunk.z)];
             entries.clear();
             for (int sy = 0; sy < chunk.section_count; ++sy) {
                 const auto& sec = chunk.sections[sy];
@@ -185,7 +199,17 @@ namespace terila::world {
             std::int32_t state = 0;
         };
 
-        std::unordered_map<std::uint64_t, std::vector<Entry>> chunks_;
+        using Table = std::unordered_map<std::uint64_t, std::vector<Entry>>;
+
+        Table& cells(DimensionKind kind) {
+            return chunks_[static_cast<std::size_t>(dimension_index(kind))];
+        }
+
+        const Table& cells(DimensionKind kind) const {
+            return chunks_[static_cast<std::size_t>(dimension_index(kind))];
+        }
+
+        std::array<Table, kDimensionCount> chunks_;
     };
 
 }

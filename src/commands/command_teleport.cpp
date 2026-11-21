@@ -39,7 +39,13 @@ namespace terila::commands {
                     pitch = rotation->pitch_relative ? victim.pitch + rotation->pitch
                                                      : rotation->pitch;
                 }
-                if (origin.game->teleport(victim.entity, x, y, z, yaw, pitch)) {
+                // A command run under `execute in` moves the victim across worlds; the
+                // coordinates then belong to that world. Anything else is a plain move,
+                // and so is a victim that already stands there.
+                const bool crossed = !origin.dimension.empty() &&
+                    origin.game->teleport_in(victim.entity, origin.dimension, x, y, z, yaw,
+                        pitch);
+                if (crossed || origin.game->teleport(victim.entity, x, y, z, yaw, pitch)) {
                     ++moved;
                 }
             }
