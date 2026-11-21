@@ -85,4 +85,44 @@ namespace terila::world::worldgen {
         return placed;
     }
 
+    // How far below a structure the ground may be before the gap under it is left alone: a
+    // structure on a cliff edge would otherwise stand on a column taller than a house.
+    inline constexpr std::int32_t kMaxBeard = 24;
+
+    // Fills the gap a template leaves over a slope. Its lowest layer is the ground the
+    // structure stands on, so every column under it is raised to that layer with the given
+    // filler and the structure never hangs in the air. Filling before the blocks are written
+    // lets the structure keep its own buried part.
+    template<class Surface, class Write>
+    int fill_beard(const StructureTemplate& tmpl, std::int32_t origin_x,
+        std::int32_t origin_y, std::int32_t origin_z, std::int32_t chunk_x,
+        std::int32_t chunk_z, Surface&& surface, std::int32_t filler, Write&& write) {
+        std::int32_t lowest = tmpl.size_y;
+        for (const TemplateCell& cell : tmpl.cells) {
+            if (cell.state != 0 && cell.y < lowest) {
+                lowest = cell.y;
+            }
+        }
+        if (lowest >= tmpl.size_y) {
+            return 0;  // No solid layer to stand on.
+        }
+        const std::int32_t base_y = origin_y + lowest;
+        int filled = 0;
+        for (std::int32_t dz = 0; dz < tmpl.size_z; ++dz) {
+            const std::int32_t wz = origin_z + dz;
+            if ((wz >> 4) != chunk_z) continue;
+            for (std::int32_t dx = 0; dx < tmpl.size_x; ++dx) {
+                const std::int32_t wx = origin_x + dx;
+                if ((wx >> 4) != chunk_x) continue;
+                const std::int32_t ground = surface(wx, wz);
+                if (base_y - 1 > ground + kMaxBeard) continue;
+                for (std::int32_t wy = ground + 1; wy < base_y; ++wy) {
+                    write(wx, wy, wz, filler);
+                    ++filled;
+                }
+            }
+        }
+        return filled;
+    }
+
 } // namespace terila::world::worldgen

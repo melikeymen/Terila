@@ -235,6 +235,10 @@ namespace terila::world::worldgen {
                         // Two thirds of the template sit above the ground, the rest is the
                         // buried part of the structure.
                         const std::int32_t origin_y = ground - tmpl.size_y * 2 / 3;
+                        // A whole structure also meets the ground under it: on a slope the
+                        // lower side is raised instead of hanging over the drop.
+                        fill_beard(tmpl, origin_x, origin_y, origin_z, chunk_x, chunk_z,
+                            surface, filler_, write);
                         placed += apply_template(tmpl, origin_x, origin_y, origin_z, chunk_x,
                             chunk_z, write);
                     }

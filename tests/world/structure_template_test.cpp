@@ -204,6 +204,52 @@ namespace {
     }
 
 
+    TEST(StructurePlacementTest, AGapUnderASingleTemplateIsFilledOnASlope) {
+        using terila::world::worldgen::StructureTemplate;
+        using terila::world::worldgen::fill_beard;
+
+        // A four by four floor one layer above the template's bottom: the bottom cell of a
+        // template is not always its layer 0, so the fill has to find the lowest solid one.
+        StructureTemplate tmpl;
+        tmpl.size_x = 4;
+        tmpl.size_y = 2;
+        tmpl.size_z = 4;
+        for (std::int32_t x = 0; x < 4; ++x) {
+            for (std::int32_t z = 0; z < 4; ++z) {
+                tmpl.cells.push_back({ x, 1, z, 7 });
+            }
+        }
+
+        const auto slope = [](std::int32_t x, std::int32_t) {
+            return x < 2 ? 70 : 74;
+        };
+        const std::int32_t filler = 9;
+        int filled = 0;
+        std::int32_t highest = 0;
+        std::int32_t lowest = 1000;
+        fill_beard(tmpl, 0, 78, 0, 0, 0, slope, filler,
+            [&](std::int32_t wx, std::int32_t wy, std::int32_t, std::int32_t state) {
+                EXPECT_EQ(state, filler);
+                EXPECT_LT(wy, 79) << "column " << wx << " filled above the floor";
+                ++filled;
+                if (wy > highest) highest = wy;
+                if (wy < lowest) lowest = wy;
+            });
+
+        // The floor sits at y 79; the western columns rise eight blocks to it and the
+        // eastern ones four, so the structure stands on filled ground instead of hanging.
+        EXPECT_EQ(filled, 8 * 8 + 8 * 4);
+        EXPECT_EQ(highest, 78);
+        EXPECT_EQ(lowest, 71);
+
+        // Flat ground leaves no gap to fill.
+        int on_flat = 0;
+        fill_beard(tmpl, 0, 78, 0, 0, 0,
+            [](std::int32_t, std::int32_t) { return 78; }, filler,
+            [&on_flat](std::int32_t, std::int32_t, std::int32_t, std::int32_t) { ++on_flat; });
+        EXPECT_EQ(on_flat, 0);
+    }
+
     TEST(StructurePlacementTest, AStructureOnlyGrowsInItsBiomes) {
         if (!input_available()) {
             GTEST_SKIP() << "input/ is not next to the build tree";

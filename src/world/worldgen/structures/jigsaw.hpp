@@ -7,6 +7,7 @@
 // jigsaw blocks with their final_state (usually air).
 
 #include "data/input_store.hpp"
+#include "world/worldgen/structures/placement.hpp"
 #include "world/worldgen/structures/template.hpp"
 
 #include <nlohmann/json.hpp>
@@ -872,10 +873,6 @@ namespace terila::world::worldgen {
 
         return placed;
     }
-
-    // How far below a piece the ground may be before the gap under it is left alone: a
-    // piece on a cliff edge would otherwise stand on a column taller than a house.
-    inline constexpr std::int32_t kMaxBeard = 24;
 
     // Write assembled jigsaw pieces into the world. A terrain-matching piece drops onto the
     // height under its own footprint, and the gap a piece leaves over a slope is filled with
