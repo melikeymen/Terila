@@ -5,6 +5,24 @@ All notable changes to Terila, newest first. Format follows
 
 ## [Unreleased]
 
+## [v0.21.0] — 2026-11-21
+
+### Added
+
+- Jigsaw structures: template pools (`template_pools.json`) and jigsaw block entities are
+  read from the vanilla dump, and pieces are joined by name/orientation into a whole
+  structure, capped like the game's `size` field
+- Pillager outposts, all five village types and ancient cities are built from their pools
+  in addition to the single-template portals and shipwrecks
+- Jigsaw test suite: pool loading and assembly for outpost, plains village and ancient city
+
+### Fixed
+
+- Template caches are keyed by the mounted input root, so a test that points the store at a
+  different directory no longer poisons the real template table
+- The structure palette resolver is captured by value instead of a reference to a caller
+  frame that is gone by generation time
+
 ## [v0.16.0] — 2026-11-17
 
 ### Added

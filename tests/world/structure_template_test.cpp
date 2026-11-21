@@ -307,4 +307,65 @@ namespace {
         EXPECT_EQ(from_block_default, 0);
     }
 
+
+    TEST(JigsawTest, PillagerOutpostAssemblesFromPools) {
+        if (!input_available()) {
+            GTEST_SKIP() << "input/ is not next to the build tree";
+        }
+        using terila::world::worldgen::assemble_jigsaw;
+        using terila::world::worldgen::load_pool;
+
+        // The pillager outpost start pool should load and contain elements.
+        auto pool_opt = load_pool("minecraft:pillager_outpost/base_plates");
+        ASSERT_TRUE(pool_opt.has_value());
+        EXPECT_FALSE(pool_opt->elements.empty());
+        EXPECT_EQ(pool_opt->id, "minecraft:pillager_outpost/base_plates");
+
+        // Assemble a small outpost at a fixed position.
+        const auto resolve = [](std::string_view) { return 0; };
+        auto pieces = assemble_jigsaw("minecraft:pillager_outpost/base_plates", resolve,
+            0, 70, 0, 12345);
+        // Should place at least the base plate and some connected pieces.
+        EXPECT_GT(pieces.size(), 0);
+        // The base plate should be centered at the origin.
+        EXPECT_EQ(pieces[0].origin_x, 0);
+        EXPECT_EQ(pieces[0].origin_z, 0);
+    }
+
+    TEST(JigsawTest, VillageTownCenterAssemblesFromPools) {
+        if (!input_available()) {
+            GTEST_SKIP() << "input/ is not next to the build tree";
+        }
+        using terila::world::worldgen::assemble_jigsaw;
+        using terila::world::worldgen::load_pool;
+
+        // The plains village town centers pool should load.
+        auto pool_opt = load_pool("minecraft:village/plains/town_centers");
+        ASSERT_TRUE(pool_opt.has_value());
+        EXPECT_FALSE(pool_opt->elements.empty());
+
+        const auto resolve = [](std::string_view) { return 0; };
+        auto pieces = assemble_jigsaw("minecraft:village/plains/town_centers", resolve,
+            0, 70, 0, 1337, 12);
+        EXPECT_GT(pieces.size(), 0);
+    }
+
+    TEST(JigsawTest, AncientCityAssemblesFromPools) {
+        if (!input_available()) {
+            GTEST_SKIP() << "input/ is not next to the build tree";
+        }
+        using terila::world::worldgen::assemble_jigsaw;
+        using terila::world::worldgen::load_pool;
+
+        // The ancient city center pool should load.
+        auto pool_opt = load_pool("minecraft:ancient_city/city_center");
+        ASSERT_TRUE(pool_opt.has_value());
+        EXPECT_FALSE(pool_opt->elements.empty());
+
+        const auto resolve = [](std::string_view) { return 0; };
+        auto pieces = assemble_jigsaw("minecraft:ancient_city/city_center", resolve,
+            0, -27, 0, 1337, 8);
+        EXPECT_GT(pieces.size(), 0);
+    }
+
 } // namespace
