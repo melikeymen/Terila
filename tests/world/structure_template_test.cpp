@@ -368,4 +368,79 @@ namespace {
         EXPECT_GT(pieces.size(), 0);
     }
 
+    TEST(ProcessorTest, MossyRuleRewritesCobblestone) {
+        if (!input_available()) {
+            GTEST_SKIP() << "input/ is not next to the build tree";
+        }
+        using terila::world::worldgen::apply_processors;
+        using terila::world::worldgen::load_processor_list;
+        const auto resolve = [](std::string_view text) {
+            const std::string name(text);
+            if (name == "minecraft:cobblestone") return 5;
+            if (name == "minecraft:mossy_cobblestone") return 6;
+            return 0;
+        };
+        auto list = load_processor_list("minecraft:mossify_70_percent", resolve);
+        ASSERT_TRUE(list.has_value());
+        ASSERT_FALSE(list->rules.empty());
+
+        terila::world::worldgen::StructureTemplate tmpl;
+        tmpl.size_x = 100;
+        tmpl.size_y = 1;
+        tmpl.size_z = 10;
+        for (int index = 0; index < 1000; ++index) {
+            terila::world::worldgen::TemplateCell cell;
+            cell.x = index % 100;
+            cell.z = index / 100;
+            cell.state = 5;
+            tmpl.cells.push_back(cell);
+        }
+        std::uint64_t rng = 12345;
+        apply_processors(tmpl, *list, rng);
+        int mossy = 0;
+        int plain = 0;
+        for (const auto& cell : tmpl.cells) {
+            (cell.state == 6 ? mossy : plain) += 1;
+        }
+        EXPECT_GT(mossy, 550);
+        EXPECT_LT(mossy, 850);
+        EXPECT_GT(plain, 150);
+    }
+
+    TEST(ProcessorTest, RotRemovesAboutTheMissingIntegrity) {
+        if (!input_available()) {
+            GTEST_SKIP() << "input/ is not next to the build tree";
+        }
+        using terila::world::worldgen::apply_processors;
+        using terila::world::worldgen::load_processor_list;
+        // fossil_rot keeps 90% of its blocks; nothing is protected here, because the
+        // resolver sends every tag member to air and the cells are state 5.
+        const auto resolve = [](std::string_view) { return 0; };
+        auto list = load_processor_list("minecraft:fossil_rot", resolve);
+        ASSERT_TRUE(list.has_value());
+        ASSERT_TRUE(list->has_rot);
+
+        terila::world::worldgen::StructureTemplate tmpl;
+        tmpl.size_x = 100;
+        tmpl.size_y = 1;
+        tmpl.size_z = 10;
+        for (int index = 0; index < 1000; ++index) {
+            terila::world::worldgen::TemplateCell cell;
+            cell.x = index % 100;
+            cell.z = index / 100;
+            cell.state = 5;
+            tmpl.cells.push_back(cell);
+        }
+        std::uint64_t rng = 777;
+        apply_processors(tmpl, *list, rng);
+        int air = 0;
+        for (const auto& cell : tmpl.cells) {
+            if (cell.state == 0) {
+                ++air;
+            }
+        }
+        EXPECT_GT(air, 40);
+        EXPECT_LT(air, 250);
+    }
+
 } // namespace

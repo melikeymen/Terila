@@ -5,16 +5,19 @@ All notable changes to Terila, newest first. Format follows
 
 ## [Unreleased]
 
-## [v0.21.0] — 2026-11-21
-
 ### Added
 
 - Jigsaw structures: template pools (`template_pools.json`) and jigsaw block entities are
   read from the vanilla dump, and pieces are joined by name/orientation into a whole
   structure, capped like the game's `size` field
-- Pillager outposts, all five village types and ancient cities are built from their pools
-  in addition to the single-template portals and shipwrecks
-- Jigsaw test suite: pool loading and assembly for outpost, plains village and ancient city
+- Pillager outposts, all five village types and ancient cities are built from their pools,
+  next to the single-template ruined portals and shipwrecks
+- Processor lists: block rot, rule replacements and protected blocks weather a piece
+  (cracked stone brick, mossy cobble, missing blocks) before it is written
+- Structures stay inside the biomes their tag names, and shipwrecks land on the sea floor
+  or the shore
+- Templates carry the exact block states their palette names, not just the default state
+- Jigsaw and processor test suites
 
 ### Fixed
 
@@ -22,6 +25,92 @@ All notable changes to Terila, newest first. Format follows
   different directory no longer poisons the real template table
 - The structure palette resolver is captured by value instead of a reference to a caller
   frame that is gone by generation time
+
+## [v0.21.0] — 2026-11-21
+
+### Added
+
+- Structure templates load from the vanilla dump, with their palettes resolved to states
+- Structure sites are placed on the spread grid and each template is written per chunk
+- Ruined portals built from their templates
+- The deep filler gets vanilla stone blobs, and stone fades into deepslate above y zero
+- Parity is measured over an area of chunks with the status tool
+
+### Changed
+
+- Generator split into density, surface and stage headers
+
+### Fixed
+
+- Placed light sources emit light again, and halo cells stay shared
+
+## [v0.20.0] — 2026-11-20
+
+### Added
+
+- Mobs spawn on a chunk cycle, and the world carries a difficulty level
+- Mob AI covers more of the vanilla goal registrations
+
+### Changed
+
+- Mobs are looked up by id instead of scanning the whole list
+- A mob's attack fallback and undead flag are derived at spawn
+- The spawn area and biome scan are no longer rebuilt every tick
+- The light halo's sky tops are built once per chunk instead of per column
+- Streamed chunks are no longer relit and rewritten
+
+### Fixed
+
+- `wait()` continues from the child that suspended, and the coroutine that actually
+  suspended is resumed
+- Idle despawn timers reset when a player comes close
+- The per-chunk difficulty time no longer grows without bound
+
+## [v0.19.0] — 2026-11-20
+
+### Added
+
+- Command system rebuilt on a registry, with `/tp`, `/summon`, `/msg` and `/gamemode`
+
+## [v0.18.2] — 2026-11-19
+
+### Added
+
+- Vanilla parity harness
+
+### Fixed
+
+- The sea level water surface matches vanilla
+
+### Testing
+
+- Terrain generator tests skip when the extracted input data is missing
+
+## [v0.18.1] — 2026-11-19
+
+### Changed
+
+- Command handling moved to `src/commands`, with shared selectors and `/time` in the tree
+
+## [v0.18.0] — 2026-11-19
+
+### Added
+
+- Water and lava flow, with buckets and fluid mixing
+
+## [v0.17.0] — 2026-11-19
+
+### Added
+
+- Terrain driven by the game's noise, climate and material data
+- Sand, gravel and concrete powder fall like vanilla
+- LZ4 compression in region files
+- Roadmap, security policy and public release documentation
+
+### Fixed
+
+- `ChunkStore` is thread-safe with shared ownership and a cache mutex
+- Version macros, table fields and protocol checks documented
 
 ## [v0.16.0] — 2026-11-17
 

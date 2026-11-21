@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -212,6 +213,291 @@ namespace terila::world::worldgen {
         return std::nullopt;
     }
 
+    // ---------------------------------------------------------------------------------
+    // Processor lists: the worldgen rules that weather a placed piece (cracked bricks,
+    // mossy cobble, rot). A piece names a list in its pool element; the list runs over the
+    // template cells before they are written to the world.
+    // ---------------------------------------------------------------------------------
+
+    struct RuleEntry {
+        enum class InputType {
+            AlwaysTrue,
+            BlockMatch,
+            RandomBlockMatch,
+            TagMatch
+        } input = InputType::AlwaysTrue;
+
+        std::int32_t input_state = -1;              // BlockMatch / RandomBlockMatch
+        std::vector<std::int32_t> input_states;     // TagMatch expansion
+        double probability = 1.0;                   // RandomBlockMatch
+        std::int32_t output_state = 0;
+    };
+
+    struct ProcessorList {
+        std::vector<RuleEntry> rules;
+        bool has_rot = false;
+        double integrity = 1.0;
+        bool has_rot_table = false;
+        std::vector<std::int32_t> rot_table;
+        std::vector<std::int32_t> protected_states;
+    };
+
+    inline bool state_in(const std::vector<std::int32_t>& states, std::int32_t state) {
+        for (const std::int32_t value : states) {
+            if (value == state) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // A uniform draw in [0, 1) from an LCG state.
+    inline double unit_draw(std::uint64_t& state) {
+        state = state * 6364136223846793005ull + 1442695040888963407ull;
+        return static_cast<double>(state >> 11) * (1.0 / 9007199254740992.0);
+    }
+
+    // The block tags (`#minecraft:x` in a rule) as the block names they list. Loaded once;
+    // this is the same table the biome tags come from, under the block registry.
+    inline const std::unordered_map<std::string, std::vector<std::string>>& block_tags() {
+        static const std::unordered_map<std::string, std::vector<std::string>> table = [] {
+            std::unordered_map<std::string, std::vector<std::string>> loaded;
+            std::string text;
+            if (!data::input::read_text("tags/all.json", text)) {
+                return loaded;
+            }
+            try {
+                const nlohmann::json parsed = nlohmann::json::parse(text);
+                for (const nlohmann::json& registry : parsed.at("data")) {
+                    if (registry.value("registry", std::string()) != "minecraft:block") {
+                        continue;
+                    }
+                    for (const nlohmann::json& tag : registry.at("tags")) {
+                        const std::string id = tag.value("id", std::string());
+                        for (const nlohmann::json& value : tag.at("values")) {
+                            const std::string name = value.is_string()
+                                ? value.get<std::string>()
+                                : value.value("id", std::string());
+                            if (!name.empty()) {
+                                loaded[id].push_back(name);
+                            }
+                        }
+                    }
+                    break;
+                }
+            } catch (const std::exception&) {
+            }
+            return loaded;
+        }();
+        return table;
+    }
+
+    // Expands a `#tag` into the states the named blocks default to.
+    inline std::vector<std::int32_t> resolve_tag(const std::string& tag,
+        const StateTextResolver& resolve) {
+        std::vector<std::int32_t> states;
+        std::string name = tag;
+        if (!name.empty() && name.front() == '#') {
+            name.erase(0, 1);
+        }
+        const auto found = block_tags().find(name);
+        if (found == block_tags().end()) {
+            return states;
+        }
+        for (const std::string& block : found->second) {
+            const std::int32_t state = resolve(block);
+            if (state >= 0) {
+                states.push_back(state);
+            }
+        }
+        return states;
+    }
+
+    // A processor names a state either as a plain string or as `{id, properties}`; both
+    // forms become the `name[key=value,...]` text the resolver already reads.
+    inline std::string state_text(const nlohmann::json& value) {
+        if (value.is_string()) {
+            return value.get<std::string>();
+        }
+        if (!value.is_object()) {
+            return "minecraft:air";
+        }
+        std::string text = value.value("id", std::string("minecraft:air"));
+        const auto properties = value.find("properties");
+        if (properties != value.end() && properties->is_object()) {
+            std::map<std::string, std::string> ordered;
+            for (const auto& [key, property] : properties->items()) {
+                ordered.emplace(key,
+                    property.is_string() ? property.get<std::string>() : property.dump());
+            }
+            text.push_back('[');
+            bool first = true;
+            for (const auto& [key, property] : ordered) {
+                if (!first) {
+                    text.push_back(',');
+                }
+                first = false;
+                text += key;
+                text.push_back('=');
+                text += property;
+            }
+            text.push_back(']');
+        }
+        return text;
+    }
+
+    // The state a predicate matches: newer lists name a full state under `block_state`.
+    inline std::int32_t predicate_state(const nlohmann::json& predicate,
+        const StateTextResolver& resolve) {
+        if (const auto state = predicate.find("block_state"); state != predicate.end()) {
+            return resolve(state_text(*state));
+        }
+        if (const auto block = predicate.find("block"); block != predicate.end()) {
+            return resolve(state_text(*block));
+        }
+        return -1;
+    }
+
+    // Compiles one processor list against a state resolver. Location-sensitive rules
+    // (water under a path, axis-aligned decay) cannot be judged from the template alone,
+    // so they are skipped rather than applied everywhere.
+    inline std::optional<ProcessorList> load_processor_list(const std::string& id,
+        const StateTextResolver& resolve) {
+        static std::optional<nlohmann::json> file;
+        static bool loaded = false;
+        if (!loaded) {
+            std::string text;
+            if (!data::input::read_text("worldgen/processor_lists.json", text)) {
+                return std::nullopt;
+            }
+            try {
+                file = nlohmann::json::parse(text);
+            } catch (const std::exception&) {
+                return std::nullopt;
+            }
+            loaded = true;
+        }
+        if (!file) {
+            return std::nullopt;
+        }
+
+        for (const auto& entry : file->at("data")) {
+            if (entry.at("id").get<std::string>() != id) {
+                continue;
+            }
+            ProcessorList list;
+            if (!entry.contains("data") || !entry.at("data").contains("processors")) {
+                return list;
+            }
+            for (const auto& processor : entry.at("data").at("processors")) {
+                const std::string type = processor.value("processor_type", "");
+                if (type == "minecraft:block_rot") {
+                    list.has_rot = true;
+                    list.integrity = processor.value("integrity", 1.0);
+                    if (processor.contains("rottable_blocks")) {
+                        list.has_rot_table = true;
+                        list.rot_table = resolve_tag(
+                            processor.at("rottable_blocks").get<std::string>(), resolve);
+                    }
+                } else if (type == "minecraft:protected_blocks") {
+                    if (processor.contains("value")) {
+                        const auto states = resolve_tag(
+                            processor.at("value").get<std::string>(), resolve);
+                        list.protected_states.insert(list.protected_states.end(),
+                            states.begin(), states.end());
+                    }
+                } else if (type == "minecraft:rule") {
+                    for (const auto& rule : processor.at("rules")) {
+                        const auto location = rule.find("location_predicate");
+                        if (location != rule.end() &&
+                            location->value("predicate_type", "") != "minecraft:always_true") {
+                            continue;
+                        }
+                        if (rule.contains("position_predicate")) {
+                            continue;
+                        }
+                        RuleEntry compiled;
+                        const nlohmann::json& predicate = rule.at("input_predicate");
+                        const std::string predicate_type =
+                            predicate.value("predicate_type", "minecraft:always_true");
+                        if (predicate_type == "minecraft:block_match") {
+                            compiled.input = RuleEntry::InputType::BlockMatch;
+                            compiled.input_state = predicate_state(predicate, resolve);
+                        } else if (predicate_type == "minecraft:random_block_match") {
+                            compiled.input = RuleEntry::InputType::RandomBlockMatch;
+                            compiled.input_state = predicate_state(predicate, resolve);
+                            compiled.probability = predicate.value("probability", 0.0);
+                        } else if (predicate_type == "minecraft:tag_match") {
+                            compiled.input = RuleEntry::InputType::TagMatch;
+                            compiled.input_states = resolve_tag(
+                                predicate.value("tag", ""), resolve);
+                            if (compiled.input_states.empty()) {
+                                continue;
+                            }
+                        } else {
+                            compiled.input = RuleEntry::InputType::AlwaysTrue;
+                        }
+                        compiled.output_state = rule.contains("output_state")
+                            ? resolve(state_text(rule.at("output_state")))
+                            : 0;
+                        list.rules.push_back(std::move(compiled));
+                    }
+                }
+            }
+            return list;
+        }
+        return std::nullopt;
+    }
+
+    // Runs a compiled list over the template's cells. Rot removes blocks first, then the
+    // rules rewrite what is left; a rule that matches ends the cell.
+    inline void apply_processors(StructureTemplate& tmpl, const ProcessorList& list,
+        std::uint64_t& rng) {
+        if (list.has_rot) {
+            for (TemplateCell& cell : tmpl.cells) {
+                if (cell.state == 0) {
+                    continue;
+                }
+                if (state_in(list.protected_states, cell.state)) {
+                    continue;
+                }
+                if (list.has_rot_table && !state_in(list.rot_table, cell.state)) {
+                    continue;
+                }
+                if (unit_draw(rng) >= list.integrity) {
+                    cell.state = 0;
+                }
+            }
+        }
+        for (TemplateCell& cell : tmpl.cells) {
+            if (cell.state == 0) {
+                continue;
+            }
+            for (const RuleEntry& rule : list.rules) {
+                bool matches = false;
+                switch (rule.input) {
+                    case RuleEntry::InputType::AlwaysTrue:
+                        matches = true;
+                        break;
+                    case RuleEntry::InputType::BlockMatch:
+                        matches = cell.state == rule.input_state;
+                        break;
+                    case RuleEntry::InputType::RandomBlockMatch:
+                        matches = cell.state == rule.input_state &&
+                            unit_draw(rng) < rule.probability;
+                        break;
+                    case RuleEntry::InputType::TagMatch:
+                        matches = state_in(rule.input_states, cell.state);
+                        break;
+                }
+                if (matches) {
+                    cell.state = rule.output_state;
+                    break;
+                }
+            }
+        }
+    }
+
     // Extract jigsaw blocks from a template's block_entities.
     inline std::vector<JigsawBlock> extract_jigsaws(const StructureTemplate& tmpl,
         const nlohmann::json& parsed) {
@@ -375,6 +661,13 @@ namespace terila::world::worldgen {
                     return false;
                 }
                 if (tmpl.empty()) return true;
+
+                // A pool element's processors weather the template before it is placed.
+                if (!elem.processors.empty() && elem.processors != "inline") {
+                    if (auto list = load_processor_list(elem.processors, resolve)) {
+                        apply_processors(tmpl, *list, rng);
+                    }
+                }
 
                 PlacedPiece piece;
                 piece.tmpl = std::move(tmpl);
