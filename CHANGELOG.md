@@ -33,6 +33,9 @@ All notable changes to Terila, newest first. Format follows
 
 ### Fixed
 
+- A village, outpost or any other assembled structure sits on the ground under its own
+  pieces instead of on one height taken at its centre, and the gap a piece leaves over a
+  slope is filled, so no building hangs in the air
 - Respawn after a death returns the player to the dimension and spawn they died in
 - A save queued before a dimension change is written to the region files of the dimension
   it was generated in, not to the new one's

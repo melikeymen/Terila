@@ -8,6 +8,8 @@
 
 #include <filesystem>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -348,6 +350,15 @@ namespace {
         auto pieces = assemble_jigsaw("minecraft:village/plains/town_centers", resolve,
             0, 70, 0, 1337, 12);
         EXPECT_GT(pieces.size(), 0);
+
+        // The houses and streets follow the ground they are placed on; without that flag the
+        // assembly would put every piece at the height of the centre and the village would
+        // float over a slope.
+        int terrain_matching = 0;
+        for (const auto& piece : pieces) {
+            terrain_matching += piece.terrain_matching ? 1 : 0;
+        }
+        EXPECT_GT(terrain_matching, 0);
     }
 
     TEST(JigsawTest, AncientCityAssemblesFromPools) {
@@ -366,6 +377,72 @@ namespace {
         auto pieces = assemble_jigsaw("minecraft:ancient_city/city_center", resolve,
             0, -27, 0, 1337, 8);
         EXPECT_GT(pieces.size(), 0);
+    }
+
+    TEST(JigsawTest, TerrainMatchingPiecesSitOnTheirOwnGroundAndFillBeneath) {
+        using terila::world::worldgen::PlacedPiece;
+        using terila::world::worldgen::write_jigsaw_pieces;
+
+        // A four by four floor piece: one layer of blocks with nothing above it.
+        const auto make_floor = [](std::int32_t origin_y, bool terrain_matching) {
+            PlacedPiece piece;
+            piece.tmpl.size_x = 4;
+            piece.tmpl.size_y = 1;
+            piece.tmpl.size_z = 4;
+            piece.origin_y = origin_y;
+            piece.terrain_matching = terrain_matching;
+            for (std::int32_t x = 0; x < 4; ++x) {
+                for (std::int32_t z = 0; z < 4; ++z) {
+                    piece.tmpl.cells.push_back({ x, 0, z, 7 });
+                }
+            }
+            return piece;
+        };
+
+        // The ground rises four blocks from the west edge of the piece to the east one.
+        const auto surface = [](std::int32_t x, std::int32_t) {
+            return x < 2 ? 70 : 74;
+        };
+        const std::int32_t filler = 9;
+
+        std::vector<std::pair<std::int32_t, std::int32_t>> floor;
+        int filled = 0;
+        write_jigsaw_pieces(std::vector<PlacedPiece>{ make_floor(70, true) }, 0, 0, surface,
+            filler, [&](std::int32_t x, std::int32_t y, std::int32_t, std::int32_t state) {
+                if (state == filler) {
+                    ++filled;
+                    return;
+                }
+                floor.emplace_back(x, y);
+            });
+
+        // The floor drops onto the height under the piece instead of staying at the height
+        // its connector gave it.
+        ASSERT_EQ(floor.size(), 16u);
+        for (const auto& [x, y] : floor) {
+            EXPECT_EQ(y, 74) << "column " << x << " stayed at " << y;
+        }
+        // The two western columns hang three blocks over the lower ground, and that gap is
+        // filled rather than left empty.
+        EXPECT_EQ(filled, 2 * 4 * 3);
+
+        // A rigid piece keeps the height its connector gave it, and the gap under it is
+        // filled rather than left empty.
+        std::vector<std::pair<std::int32_t, std::int32_t>> rigid_floor;
+        int rigid_filled = 0;
+        write_jigsaw_pieces(std::vector<PlacedPiece>{ make_floor(80, false) }, 0, 0, surface,
+            filler, [&](std::int32_t x, std::int32_t y, std::int32_t, std::int32_t state) {
+                if (state == filler) {
+                    ++rigid_filled;
+                    return;
+                }
+                rigid_floor.emplace_back(x, y);
+            });
+        ASSERT_EQ(rigid_floor.size(), 16u);
+        for (const auto& [x, y] : rigid_floor) {
+            EXPECT_EQ(y, 80) << "column " << x << " moved to " << y;
+        }
+        EXPECT_GT(rigid_filled, 0);
     }
 
     TEST(ProcessorTest, MossyRuleRewritesCobblestone) {

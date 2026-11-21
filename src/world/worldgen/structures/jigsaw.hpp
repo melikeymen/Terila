@@ -105,6 +105,9 @@ namespace terila::world::worldgen {
         std::int32_t origin_x = 0;
         std::int32_t origin_y = 0;
         std::int32_t origin_z = 0;
+        // A terrain-matching piece follows the ground under it; a rigid one keeps the
+        // height its connector gave it.
+        bool terrain_matching = false;
         std::vector<JigsawBlock> jigsaws;  // Jigsaws in world coordinates
     };
 
@@ -674,6 +677,7 @@ namespace terila::world::worldgen {
                 piece.origin_x = origin_x;
                 piece.origin_y = origin_y;
                 piece.origin_z = origin_z;
+                piece.terrain_matching = elem.projection == "terrain_matching";
                 // Convert local jigsaw positions to world coordinates.
                 for (auto& jb : jigsaws) {
                     jb.x += origin_x;
@@ -869,17 +873,54 @@ namespace terila::world::worldgen {
         return placed;
     }
 
-    // Write assembled jigsaw pieces into the world.
-    template<class Write>
+    // How far below a piece the ground may be before the gap under it is left alone: a
+    // piece on a cliff edge would otherwise stand on a column taller than a house.
+    inline constexpr std::int32_t kMaxBeard = 24;
+
+    // Write assembled jigsaw pieces into the world. A terrain-matching piece drops onto the
+    // height under its own footprint, and the gap a piece leaves over a slope is filled with
+    // the given filler, so a building always meets the ground.
+    template<class Surface, class Write>
     int write_jigsaw_pieces(const std::vector<PlacedPiece>& pieces,
         std::int32_t chunk_x, std::int32_t chunk_z,
-        Write&& write) {
+        Surface&& surface, std::int32_t filler, Write&& write) {
+        // The height a piece's floor sits at: its own ground for a piece that follows the
+        // terrain, and the height its connector gave it otherwise.
+        const auto base_of = [&surface](const PlacedPiece& piece) {
+            if (!piece.terrain_matching) {
+                return piece.origin_y;
+            }
+            return surface(piece.origin_x + piece.tmpl.size_x / 2,
+                piece.origin_z + piece.tmpl.size_z / 2);
+        };
+
+        // The beards first: every column a piece covers is raised to its floor, so a house
+        // on a slope stands on filled ground instead of hanging over it. Filling before the
+        // blocks are written keeps one piece's beard from covering another's floor.
+        for (const auto& piece : pieces) {
+            const std::int32_t base_y = base_of(piece);
+            for (std::int32_t wz = piece.origin_z;
+                wz < piece.origin_z + piece.tmpl.size_z; ++wz) {
+                if ((wz >> 4) != chunk_z) continue;
+                for (std::int32_t wx = piece.origin_x;
+                    wx < piece.origin_x + piece.tmpl.size_x; ++wx) {
+                    if ((wx >> 4) != chunk_x) continue;
+                    const std::int32_t ground = surface(wx, wz);
+                    if (base_y - 1 > ground + kMaxBeard) continue;
+                    for (std::int32_t wy = ground + 1; wy < base_y; ++wy) {
+                        write(wx, wy, wz, filler);
+                    }
+                }
+            }
+        }
+
         int placed = 0;
         for (const auto& piece : pieces) {
+            const std::int32_t base_y = base_of(piece);
             for (const auto& cell : piece.tmpl.cells) {
                 if (cell.state == 0) continue;  // Skip air
                 const std::int32_t wx = piece.origin_x + cell.x;
-                const std::int32_t wy = piece.origin_y + cell.y;
+                const std::int32_t wy = base_y + cell.y;
                 const std::int32_t wz = piece.origin_z + cell.z;
                 if ((wx >> 4) != chunk_x || (wz >> 4) != chunk_z) continue;
                 write(wx, wy, wz, cell.state);

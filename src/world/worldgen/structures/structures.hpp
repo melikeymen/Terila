@@ -142,6 +142,8 @@ namespace terila::world::worldgen {
             // Kept for the jigsaw assembly: the palettes of the pieces need the full state
             // table, not the block-default fallback.
             state_ = resolve;
+            // The ground a piece stands on is filled with the same block a beard uses.
+            filler_ = resolve("minecraft:dirt");
             for (StructureKind& kind : kinds) {
                 if (kind.is_jigsaw) {
                     JigsawItem item;
@@ -294,7 +296,8 @@ namespace terila::world::worldgen {
                             }
                         }
                         if (!reaches) continue;
-                        placed += write_jigsaw_pieces(pieces, chunk_x, chunk_z, write);
+                        placed += write_jigsaw_pieces(pieces, chunk_x, chunk_z, surface,
+                            filler_, write);
                     }
                 }
             }
@@ -456,6 +459,7 @@ namespace terila::world::worldgen {
         std::vector<Item> kinds_;
         std::vector<JigsawItem> jigsaw_kinds_;
         StateTextResolver state_;
+        std::int32_t filler_ = 0;
     };
 
 } // namespace terila::world::worldgen
