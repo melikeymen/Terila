@@ -7,6 +7,18 @@ All notable changes to Terila, newest first. Format follows
 
 ### Added
 
+- The plugin API's first slice: `plugins/` is scanned at start, and a folder counts as a
+  plugin only when it carries both `plugin.json` and `permissions.json`. Ids, capability
+  names and the module path are validated, and the folder must be named after the id
+- A plugin runs only when the operator's own `config/plugin-grants/<id>.json` grants some of
+  what it asked for. What it holds is `requested ∩ granted`, never the request, and a
+  package can never grant itself anything
+- The WebAssembly runtime is found by name at run time, like the OpenCL device, so the server
+  builds and starts without one; a build without the Wasmtime C API header still enforces the
+  gate and says in the log why nothing was loaded. Every refusal is one line under the new
+  PLUGIN scope
+- `plugin_tests` covers the gate without a runtime: unknown capabilities, duplicate requests,
+  module paths that escape the package, missing grants, and folder/id mismatch
 - `configs/terila.config` carries `[worldgen] backend=cpu|gpu|auto` (cpu unless it is
   changed): the density field of every chunk can be evaluated on an OpenCL device
 - The device path walks the same density graph as the chunk workers, node by node, on an

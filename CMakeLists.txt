@@ -510,6 +510,40 @@ if(WIN32)
     target_compile_definitions(plugin_spike PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
+# The plugin host: the gate (manifests, permission requests, grants) is always built and
+# has no dependencies. The wasm side is compiled in only when a developer points this
+# variable at the Wasmtime C API, so the server builds and runs without any runtime.
+set(TERILA_WASMTIME_DIR "" CACHE PATH
+    "Wasmtime C API directory (contains include/ and lib/): enables the plugin host's wasm side")
+
+target_sources(terila PRIVATE "src/plugin/plugin_host.cpp")
+
+add_executable(plugin_tests
+    "src/plugin/plugin_host.cpp"
+    "tests/plugin/plugin_host_test.cpp"
+)
+
+if(MSVC)
+    target_compile_options(plugin_tests PRIVATE /utf-8)
+endif()
+if(WIN32)
+    target_compile_definitions(plugin_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+target_include_directories(plugin_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${googletest_SOURCE_DIR}/googletest/include"
+)
+target_link_libraries(plugin_tests PRIVATE GTest::gtest_main nlohmann_json::nlohmann_json)
+
+if(TERILA_WASMTIME_DIR)
+    foreach(plugin_target terila plugin_tests)
+        target_include_directories(${plugin_target} PRIVATE "${TERILA_WASMTIME_DIR}/include")
+        target_compile_definitions(${plugin_target} PRIVATE TERILA_HAVE_WASMTIME=1)
+    endforeach()
+endif()
+
+add_test(NAME plugin_tests COMMAND plugin_tests)
+
 include(cmake/parity_dump.cmake)
 
 add_executable(trf_tests

@@ -25,6 +25,7 @@
 #include "world/world_generator.hpp"
 #include "version/mc_version.hpp"
 #include "world/trf/trf_store.hpp"
+#include "plugin/plugin_host.hpp"
 #include <nlohmann/json.hpp>
 #include <memory>
 #include <optional>
@@ -720,6 +721,23 @@ int main() {
         &chunk_store, &nether_store, &end_store };
     LOG_INFO(Main, "world directory: {}", world_root.string());
     LOG_DEBUG(Main, "region directory: {}", region_dir.string());
+
+    // Plugins are optional and the gate never trusts the package: a folder without a
+    // permission request is not a plugin, and a package without a grant stays disabled.
+    auto& plugins = terila::plugin::PluginHost::instance();
+    plugins.load_all("plugins", "config/plugin-grants");
+    LOG_INFO(Plugin, "plugins: {} package(s), runtime {}", plugins.plugins().size(),
+        plugins.has_runtime() ? plugins.runtime_name() : std::string("none"));
+    for (const auto& plugin : plugins.plugins()) {
+        if (plugin.enabled) {
+            LOG_INFO(Plugin, "enabled {} v{} with {} capabilities", plugin.manifest.id,
+                plugin.manifest.version, plugin.effective.size());
+        }
+        else {
+            LOG_WARN(Plugin, "{} v{}: {}", plugin.manifest.id, plugin.manifest.version,
+                plugin.status);
+        }
+    }
 
     // Network
     asio::io_context io;

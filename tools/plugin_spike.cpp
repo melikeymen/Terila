@@ -208,6 +208,18 @@ namespace {
         return build_module(body, 1, pages);
     }
 
+    // Module `spin`: loops forever and never returns, so a call can only end by exhausting
+    // its fuel. This is the module the trap cost is measured on.
+    std::vector<std::uint8_t> build_spin_module() {
+        const std::vector<std::uint8_t> body = {
+            0x03, 0x40,             // loop
+            0x0C, 0x00,             //   br 0
+            0x0B,                   // end
+            0x41, 0x30,             // i32.const 48 (never reached)
+        };
+        return build_module(body, 0, 1);
+    }
+
     // Module `peek`: reads one header word and returns it, which is the cheapest possible
     // call that still touches guest memory.
     std::vector<std::uint8_t> build_peek_module() {
@@ -435,6 +447,12 @@ namespace {
         decltype(&::wasmtime_func_call) func_call = nullptr;
         decltype(&::wasmtime_error_delete) error_delete = nullptr;
         decltype(&::wasm_trap_delete) trap_delete = nullptr;
+        // Fuel is optional in the C API: a runtime that predates it simply skips the trap
+        // numbers instead of failing the whole measurement.
+        decltype(&::wasm_config_new) config_new = nullptr;
+        decltype(&::wasmtime_config_consume_fuel_set) consume_fuel_set = nullptr;
+        decltype(&::wasm_engine_new_with_config) engine_new_with_config = nullptr;
+        decltype(&::wasmtime_context_set_fuel) context_set_fuel = nullptr;
 
         bool resolve(void* library) {
             engine_new = open_symbol<decltype(engine_new)>(library, "wasm_engine_new");
@@ -449,6 +467,13 @@ namespace {
             func_call = open_symbol<decltype(func_call)>(library, "wasmtime_func_call");
             error_delete = open_symbol<decltype(error_delete)>(library, "wasmtime_error_delete");
             trap_delete = open_symbol<decltype(trap_delete)>(library, "wasm_trap_delete");
+            config_new = open_symbol<decltype(config_new)>(library, "wasm_config_new");
+            consume_fuel_set = open_symbol<decltype(consume_fuel_set)>(library,
+                "wasmtime_config_consume_fuel_set");
+            engine_new_with_config = open_symbol<decltype(engine_new_with_config)>(library,
+                "wasm_engine_new_with_config");
+            context_set_fuel = open_symbol<decltype(context_set_fuel)>(library,
+                "wasmtime_context_set_fuel");
             return engine_new != nullptr && engine_delete != nullptr && store_new != nullptr &&
                 store_delete != nullptr && store_context != nullptr && module_new != nullptr &&
                 module_delete != nullptr && instance_new != nullptr && export_get != nullptr &&
@@ -540,14 +565,75 @@ namespace {
             result.of.i32);
     }
 
+    // The guard itself and the cost of tripping it: a runaway hook must be stoppable without
+    // killing a thread, so both numbers decide whether per-call fuel is affordable.
+    void measure_fuel(const WasmApi& api, wasmtime_context_t* context, const Guest& empty_guest,
+        const Guest& spin_guest) {
+        wasmtime_val_t args[2]{};
+        wasmtime_val_t result{};
+
+        constexpr int kFuel = 50000;
+        constexpr int kTrapRounds = 2000;
+        int stopped = 0;
+        const auto trap_start = std::chrono::steady_clock::now();
+        for (int i = 0; i < kTrapRounds; ++i) {
+            api.context_set_fuel(context, kFuel);
+            wasm_trap_t* trap = nullptr;
+            wasmtime_error_t* error = api.func_call(context, &spin_guest.entry, args, 2, &result,
+                1, &trap);
+            if (error != nullptr) {
+                api.error_delete(error);
+                ++stopped;
+            }
+            if (trap != nullptr) {
+                api.trap_delete(trap);
+                ++stopped;
+            }
+        }
+        const double trap_ns = std::chrono::duration<double, std::nano>(
+            std::chrono::steady_clock::now() - trap_start).count() /
+            static_cast<double>(kTrapRounds);
+        std::printf("wasm: fuel exhausted (trap)  -> %8.1f ns/call (%d of %d stopped)\n",
+            trap_ns, stopped, kTrapRounds);
+
+        // The same empty call with fuel set before it, which is what the host would do per
+        // packet: the difference from section 5 is what the guard costs.
+        constexpr int kRounds = 20000;
+        double best = 0.0;
+        for (int round = 0; round < 5; ++round) {
+            const auto start = std::chrono::steady_clock::now();
+            for (int i = 0; i < kRounds; ++i) {
+                api.context_set_fuel(context, 1000000);
+                api.func_call(context, &empty_guest.entry, args, 2, &result, 1, nullptr);
+            }
+            const double each = std::chrono::duration<double, std::nano>(
+                std::chrono::steady_clock::now() - start).count() / kRounds;
+            if (best == 0.0 || each < best) {
+                best = each;
+            }
+        }
+        std::printf("wasm: empty call + fuel set  -> %8.1f ns/call\n", best);
+    }
+
     void measure_wasm(void* library, const std::vector<std::uint8_t>& copy_module_bytes,
-        const std::vector<std::uint8_t>& peek_module_bytes) {
+        const std::vector<std::uint8_t>& peek_module_bytes,
+        const std::vector<std::uint8_t>& spin_module_bytes) {
         WasmApi api;
         if (!api.resolve(library)) {
             std::printf("wasm: the runtime is missing part of the C API the spike calls\n");
             return;
         }
-        wasm_engine_t* engine = api.engine_new();
+        const bool fuel = api.config_new != nullptr && api.consume_fuel_set != nullptr &&
+            api.engine_new_with_config != nullptr && api.context_set_fuel != nullptr;
+        wasm_engine_t* engine = nullptr;
+        if (fuel) {
+            wasm_config_t* config = api.config_new();
+            api.consume_fuel_set(config, true);
+            engine = api.engine_new_with_config(config);
+        }
+        else {
+            engine = api.engine_new();
+        }
         if (engine == nullptr) {
             std::printf("wasm: no engine\n");
             return;
@@ -569,8 +655,15 @@ namespace {
             return;
         }
 
+        wasmtime_module_t* spin_module = nullptr;
+        if (api.module_new(engine, spin_module_bytes.data(), spin_module_bytes.size(),
+                &spin_module) != nullptr) {
+            spin_module = nullptr;
+        }
+
         Guest copy_guest;
         Guest peek_guest;
+        Guest spin_guest;
         if (!instantiate(api, context, copy_module, copy_guest) ||
             !instantiate(api, context, peek_module, peek_guest)) {
             std::printf("wasm: a module could not be instantiated\n");
@@ -581,8 +674,17 @@ namespace {
             measure_call(api, context, peek_guest, 0, 0, "B header read");
             measure_call(api, context, copy_guest, 4096, 32, "C 32 B copy");
             measure_call(api, context, copy_guest, 4096, 65536, "D 64 KiB copy");
+            if (fuel && spin_module != nullptr && instantiate(api, context, spin_module, spin_guest)) {
+                measure_fuel(api, context, copy_guest, spin_guest);
+            }
+            else if (!fuel) {
+                std::printf("wasm: fuel not measured - the runtime has no fuel API\n");
+            }
         }
 
+        if (spin_module != nullptr) {
+            api.module_delete(spin_module);
+        }
         api.module_delete(peek_module);
         api.module_delete(copy_module);
         api.store_delete(store);
@@ -608,9 +710,12 @@ int main() {
     //    unverified.
     const std::vector<std::uint8_t> copy_module = build_copy_module(2);
     const std::vector<std::uint8_t> peek_module = build_peek_module();
-    std::printf("modules: loop=%zu bytes (valid=%s), peek=%zu bytes (valid=%s)\n",
+    const std::vector<std::uint8_t> spin_module = build_spin_module();
+    std::printf("modules: loop=%zu bytes (valid=%s), peek=%zu bytes (valid=%s), spin=%zu "
+                "bytes (valid=%s)\n",
         copy_module.size(), looks_well_formed(copy_module) ? "yes" : "no",
-        peek_module.size(), looks_well_formed(peek_module) ? "yes" : "no");
+        peek_module.size(), looks_well_formed(peek_module) ? "yes" : "no",
+        spin_module.size(), looks_well_formed(spin_module) ? "yes" : "no");
     if (runtime.library == nullptr) {
         std::printf("modules: not executed - the wasm boundary and copy costs are pending a "
                     "runtime\n");
@@ -647,7 +752,7 @@ int main() {
         std::printf("wasm: not measured - the runtime is missing\n");
     }
     else {
-        measure_wasm(runtime.library, copy_module, peek_module);
+        measure_wasm(runtime.library, copy_module, peek_module, spin_module);
     }
 #endif
 
