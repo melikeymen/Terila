@@ -25,10 +25,11 @@ All notable changes to Terila, newest first. Format follows
   plugin, and `events_per_second` (default 100) throttles `log.write`, which drops the extra
   lines and hands the guest the documented `-2`. A grant without `limits` gets the defaults,
   and a value outside the ceiling is a refusal, not a silent clamp
-- The second host function, `terila.chat_send`, linked only for `chat.send`: the line goes
-  through the server's own system-chat packet to every joined player. The host installs the
-  sink after the player hub exists, and a call with no sink answers "unavailable" instead of
-  failing. Both host functions draw from the plugin's one `events_per_second` budget
+- The second host function, `terila.chat_send(pointer, length, target)`, linked only for
+  `chat.send`: target 0 reaches every joined player and a positive id reaches one of them,
+  through the server's own system-chat packet. A target that names no online player is a bad
+  argument (-1), not a delivery, and a call with no sink answers "unavailable" (-3) instead
+  of failing. Both host functions draw from the plugin's one `events_per_second` budget
 - Trap policy: a trapping call is dropped and counted, and after 32 traps the instance is
   released and the plugin is listed as disabled with the reason, so a broken plugin cannot
   keep failing on every event for the rest of the run

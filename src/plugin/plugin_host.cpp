@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "log/logger.hpp"
 
@@ -62,17 +63,19 @@ namespace terila::plugin {
         // The chat sink is the host's one way out to the players; the server installs it and
         // the plugin host only knows that a line of text leaves. It lives outside the wasm
         // side so the gate stays buildable without a runtime.
-        std::function<void(std::string_view)>& chat_sink() {
-            static std::function<void(std::string_view)> sink;
+        std::function<bool(std::int32_t, std::string_view)>& chat_sink() {
+            static std::function<bool(std::int32_t, std::string_view)> sink;
             return sink;
         }
 
 #if defined(TERILA_HAVE_WASMTIME)
 
-        // One plugin's share of the event budget. Every host function of that plugin draws
-        // from the same window, because the design budgets the plugin, not the function. The
-        // window is the host's clock; the guest sees only the status of the call.
-        struct HostBudget {
+        // What one plugin's host functions share: its id for prefixes and its share of the
+        // event budget. The design budgets the plugin, not the function, so every host
+        // function of a plugin draws from this one window. The slot owns the record and the
+        // runtime is handed the pointer as the function environment.
+        struct HostCall {
+            std::string id;
             std::int32_t per_second = 0;
             std::int32_t used = 0;
             std::chrono::steady_clock::time_point window = std::chrono::steady_clock::now();
@@ -95,8 +98,8 @@ namespace terila::plugin {
             wasmtime_instance_t instance{};
             std::int32_t fuel = kDefaultFuelPerCall;
             std::int32_t traps = 0;
-            // Held for the instance's life: the host functions point at it.
-            std::unique_ptr<HostBudget> budget;
+            // Outlives every host function that points at it: the store is closed first.
+            std::unique_ptr<HostCall> call;
         };
 
         // Loaded plugins own one store each, so a runaway plugin cannot disturb another one's
@@ -240,17 +243,6 @@ namespace terila::plugin {
         constexpr std::int32_t kMaxLogLine = 1024;
         constexpr std::int32_t kMaxChatLine = 256;
 
-        // What a host function needs from the plugin it was defined for. The budget outlives
-        // the environment: the slot owns it, the runtime frees the environment.
-        struct HostEnv {
-            std::string id;
-            HostBudget* budget = nullptr;
-        };
-
-        void drop_host_env(void* env) {
-            delete static_cast<HostEnv*>(env);
-        }
-
         // Reads a (pointer, length) pair out of the guest's own memory and folds it to a
         // single line. The guest is never handed a host pointer and the host never aliases
         // guest memory past the call.
@@ -283,63 +275,59 @@ namespace terila::plugin {
             return true;
         }
 
-        // Every host function returns the same documented values: 0 success, -1 when the
-        // range is outside the guest's memory, -2 over the events_per_second budget, -3 when
-        // the host cannot serve the call. Errors are values, so a bad call is never a trap.
-        std::int32_t take_budget(HostEnv* env) {
-            return env->budget->take() ? 0 : -2;
+        // Every host function takes a (pointer, length) text argument after charging the
+        // plugin's budget, and answers with the same documented values: 0 success, -1 bad
+        // arguments, -2 over the events_per_second budget, -3 the host cannot serve it.
+        // Errors are values, so a bad call is never a trap.
+        std::int32_t read_argument(HostCall* call, wasmtime_caller_t* caller,
+            const wasmtime_val_t* args, std::int32_t limit, std::string& line) {
+            if (!call->take()) return -2;
+            if (!read_guest_line(caller, args[0].of.i32, args[1].of.i32, limit, line)) return -1;
+            return 0;
         }
 
         // terila.log_write(pointer, length) -> status
         wasm_trap_t* log_write(void* env, wasmtime_caller_t* caller, const wasmtime_val_t* args,
             std::size_t nargs, wasmtime_val_t* results, std::size_t nresults) {
             if (nargs != 2 || nresults != 1) return nullptr;
-            auto* host = static_cast<HostEnv*>(env);
-            results[0].kind = WASMTIME_I32;
-            results[0].of.i32 = take_budget(host);
-            if (results[0].of.i32 != 0) return nullptr;
-
+            auto* call = static_cast<HostCall*>(env);
             std::string line;
-            if (!read_guest_line(caller, args[0].of.i32, args[1].of.i32, kMaxLogLine, line)) {
-                results[0].of.i32 = -1;
-                return nullptr;
+            results[0].kind = WASMTIME_I32;
+            results[0].of.i32 = read_argument(call, caller, args, kMaxLogLine, line);
+            if (results[0].of.i32 == 0 && !line.empty()) {
+                LOG_INFO(Plugin, "[{}] {}", call->id, line);
             }
-            if (line.empty()) return nullptr;  // an empty line is not worth a record
-            LOG_INFO(Plugin, "[{}] {}", host->id, line);
             return nullptr;
         }
 
-        // terila.chat_send(pointer, length) -> status. One line to every player, through the
-        // server's own system-chat packet.
+        // terila.chat_send(pointer, length, target) -> status. Target 0 is every player and a
+        // positive id is one player; the sink says whether anything was sent.
         wasm_trap_t* chat_send(void* env, wasmtime_caller_t* caller, const wasmtime_val_t* args,
             std::size_t nargs, wasmtime_val_t* results, std::size_t nresults) {
-            if (nargs != 2 || nresults != 1) return nullptr;
-            auto* host = static_cast<HostEnv*>(env);
-            results[0].kind = WASMTIME_I32;
-            results[0].of.i32 = take_budget(host);
-            if (results[0].of.i32 != 0) return nullptr;
-
+            if (nargs != 3 || nresults != 1) return nullptr;
+            auto* call = static_cast<HostCall*>(env);
             std::string line;
-            if (!read_guest_line(caller, args[0].of.i32, args[1].of.i32, kMaxChatLine, line)) {
-                results[0].of.i32 = -1;
-                return nullptr;
-            }
-            if (line.empty()) return nullptr;
+            results[0].kind = WASMTIME_I32;
+            results[0].of.i32 = read_argument(call, caller, args, kMaxChatLine, line);
+            if (results[0].of.i32 != 0 || line.empty()) return nullptr;
             if (!chat_sink()) {
                 results[0].of.i32 = -3;  // nothing is listening, e.g. before the world exists
                 return nullptr;
             }
-            chat_sink()(line);
+            if (!chat_sink()(args[2].of.i32, line)) {
+                results[0].of.i32 = -1;  // no such player
+            }
             return nullptr;
         }
 
-        wasm_functype_t* i32_pair_to_i32() {
-            wasm_valtype_t* params[2] = { wasm().valtype_new(WASM_I32),
-                wasm().valtype_new(WASM_I32) };
+        // The only function shape the host serves: i32 parameters in, one i32 status out.
+        wasm_functype_t* i32_function(std::size_t parameters) {
+            std::vector<wasm_valtype_t*> params(parameters);
+            for (auto*& type : params) type = wasm().valtype_new(WASM_I32);
             wasm_valtype_t* results[1] = { wasm().valtype_new(WASM_I32) };
             wasm_valtype_vec_t param_vec{};
             wasm_valtype_vec_t result_vec{};
-            wasm().valtype_vec_new(&param_vec, 2, params);
+            wasm().valtype_vec_new(&param_vec, params.size(), params.data());
             wasm().valtype_vec_new(&result_vec, 1, results);
             return wasm().functype_new(&param_vec, &result_vec);
         }
@@ -347,23 +335,22 @@ namespace terila::plugin {
         using HostCallback = wasm_trap_t* (*)(void*, wasmtime_caller_t*, const wasmtime_val_t*,
             std::size_t, wasmtime_val_t*, std::size_t);
 
-        bool define_function(wasmtime_linker_t* linker, const char* name, HostCallback callback,
-            std::string_view id, HostBudget* budget, std::string& error) {
-            wasm_functype_t* type = i32_pair_to_i32();
+        // One host function on the linker. The environment is the plugin's own record, owned
+        // by its slot, so the runtime is given nothing to free.
+        bool define_function(wasmtime_linker_t* linker, const char* name,
+            std::size_t parameters, HostCallback callback, HostCall* call, std::string& error) {
+            wasm_functype_t* type = i32_function(parameters);
             if (type == nullptr) {
                 error = std::string("the runtime refused the ") + name + " signature";
                 return false;
             }
-            auto* env = new HostEnv{ std::string(id), budget };
             const std::size_t length = std::char_traits<char>::length(name);
             wasmtime_error_t* failure = wasm().linker_define_func(linker, kHostModule,
-                std::char_traits<char>::length(kHostModule), name, length, type, callback, env,
-                &drop_host_env);
+                std::char_traits<char>::length(kHostModule), name, length, type, callback, call,
+                nullptr);
             wasm().functype_delete(type);
             if (failure != nullptr) {
                 wasm().error_delete(failure);
-                // The definition was refused, so the environment was never handed over.
-                drop_host_env(env);
                 error = std::string("the runtime refused to link ") + name;
                 return false;
             }
@@ -373,7 +360,7 @@ namespace terila::plugin {
         // Defines the host functions this plugin holds. A capability it was not granted is
         // simply not defined, so the module fails to instantiate instead of trapping later.
         bool define_host_functions(wasmtime_linker_t* linker, const Plugin& plugin,
-            std::unique_ptr<HostBudget>& budget, std::string& error) {
+            std::unique_ptr<HostCall>& call, std::string& error) {
             const auto holds = [&](std::string_view capability) {
                 return std::find(plugin.effective.begin(), plugin.effective.end(), capability) !=
                     plugin.effective.end();
@@ -382,14 +369,13 @@ namespace terila::plugin {
             const bool chats = holds("chat.send");
             if (!logs && !chats) return true;
 
-            budget = std::make_unique<HostBudget>();
-            budget->per_second = plugin.events_per_second;
-            if (logs && !define_function(linker, "log_write", &log_write, plugin.manifest.id,
-                    budget.get(), error)) {
+            call = std::make_unique<HostCall>();
+            call->id = plugin.manifest.id;
+            call->per_second = plugin.events_per_second;
+            if (logs && !define_function(linker, "log_write", 2, &log_write, call.get(), error)) {
                 return false;
             }
-            if (chats && !define_function(linker, "chat_send", &chat_send, plugin.manifest.id,
-                    budget.get(), error)) {
+            if (chats && !define_function(linker, "chat_send", 3, &chat_send, call.get(), error)) {
                 return false;
             }
             return true;
@@ -457,7 +443,7 @@ namespace terila::plugin {
         return host;
     }
 
-    void PluginHost::set_chat_sink(std::function<void(std::string_view)> sink) {
+    void PluginHost::set_chat_sink(std::function<bool(std::int32_t, std::string_view)> sink) {
         chat_sink() = std::move(sink);
     }
 
@@ -674,7 +660,7 @@ namespace terila::plugin {
 
         wasmtime_linker_t* linker = wasm().linker_new(static_cast<wasm_engine_t*>(engine_));
         std::string link_error;
-        if (linker == nullptr || !define_host_functions(linker, plugin, slot.budget, link_error)) {
+        if (linker == nullptr || !define_host_functions(linker, plugin, slot.call, link_error)) {
             if (linker != nullptr) wasm().linker_delete(linker);
             wasm().module_delete(module);
             close_store(store);

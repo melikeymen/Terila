@@ -13,7 +13,6 @@
 #include "config/runtime_config.hpp"
 #include "world/worldgen/gpu/density_device.hpp"
 #include "data/input_store.hpp"
-#include "protocol/chat.hpp"
 #include "protocol/packet_ids_loader.hpp"
 #include "entity/mob.hpp"
 #include "entity/population.hpp"
@@ -813,11 +812,14 @@ int main() {
     // A plugin's chat.send leaves through the server's own system-chat packet, so it reaches
     // exactly the players a server message reaches. The hub outlives the plugins: unload runs
     // before it is dropped.
-    plugins.set_chat_sink([player_hub](std::string_view text) {
-        std::vector<std::uint8_t> packet;
-        if (terila::protocol::write_system_chat(packet, text)) {
-            player_hub->broadcast(packet);
+    plugins.set_chat_sink([player_hub](std::int32_t target, std::string_view text) {
+        // Target 0 is everyone; the hub answers false when a named player is not online, which
+        // is what turns chat.send's bad target into -1.
+        if (target != 0) return player_hub->message_to(target, text);
+        for (const std::int32_t id : player_hub->members()) {
+            player_hub->message_to(id, text);
         }
+        return true;
     });
 
     // Mobs use 1..N, so player entities start well above them.

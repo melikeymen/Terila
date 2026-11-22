@@ -58,9 +58,10 @@ namespace terila::plugin {
         void load_all(const std::filesystem::path& packs, const std::filesystem::path& grants);
         void unload_all();
 
-        // The server's one way out to the players. An empty function means nothing is
-        // listening, and chat.send answers "unavailable" instead of failing a call.
-        void set_chat_sink(std::function<void(std::string_view)> sink);
+        // The server's one way out to the players: target 0 is everyone, a positive id is one
+        // player, and the sink answers false when no such player is online. An empty function
+        // means nothing is listening, and chat.send answers "unavailable".
+        void set_chat_sink(std::function<bool(std::int32_t, std::string_view)> sink);
 
         const std::vector<Plugin>& plugins() const noexcept { return plugins_; }
         // Instances the host currently holds: one store per enabled plugin, none for a plugin

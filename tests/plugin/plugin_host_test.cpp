@@ -283,14 +283,24 @@ namespace {
 
     // A module that uses the ABI: it imports one terila host function, keeps one page of
     // memory with a line of text at offset 16, and returns the status of the last call from
-    // on_load. Two calls in one hook are how the event budget is observed within a call.
-    std::string module_using(const std::string& function, int calls = 1) {
+    // on_load. Two calls in one hook are how the event budget is observed within a call, and
+    // `arguments` says how many i32 parameters the imported function takes (the third is a
+    // chat target).
+    std::string module_using(const std::string& function, int calls = 1, int arguments = 2,
+        std::int32_t target = 0) {
         std::string bytes("\0asm\1\0\0\0", 8);
-        section(bytes, 1, std::string("\x01\x60\x02\x7f\x7f\x01\x7f", 7));  // (i32,i32)->i32
+        if (arguments == 3) {
+            // type 0 is the hook, type 1 is the imported function with its extra parameter
+            section(bytes, 1,
+                std::string("\x02\x60\x02\x7f\x7f\x01\x7f\x60\x03\x7f\x7f\x7f\x01\x7f", 14));
+        } else {
+            section(bytes, 1, std::string("\x01\x60\x02\x7f\x7f\x01\x7f", 7));
+        }
         std::string import("\x01\x06terila", 8);
         import.push_back(static_cast<char>(function.size()));
         import += function;
-        import += std::string("\x00\x00", 2);
+        import += std::string("\x00", 1);
+        import.push_back(arguments == 3 ? '\x01' : '\x00');  // type index
         section(bytes, 2, import);
         section(bytes, 3, std::string("\x01\x00", 2));                       // one function
         section(bytes, 5, std::string("\x01\x00\x01", 3));                   // one memory
@@ -299,7 +309,12 @@ namespace {
         std::string body("\x00", 1);  // no locals
         for (int i = 0; i < calls; ++i) {
             if (i > 0) body.push_back('\x1a');  // drop the status of the earlier call
-            body += std::string("\x41\x10\x41\x11\x10\x00", 6);  // log_write(16, 16)
+            body += std::string("\x41\x10\x41\x11", 4);   // pointer 16, length 16
+            if (arguments == 3) {
+                body.push_back('\x41');                    // the chat target
+                body.push_back(static_cast<char>(target));
+            }
+            body += std::string("\x10\x00", 2);            // call 0
         }
         body.push_back('\x0b');
         std::string code("\x01", 1);
@@ -337,11 +352,16 @@ TEST(PluginHostRuntime, ChatSendReachesTheHostSink) {
     tree.write("packs/talker/plugin.json", manifest_of("talker"));
     tree.write("packs/talker/permissions.json", request_of("talker", { "chat.send" }));
     tree.write("grants/talker.json", grant_of("talker", { "chat.send" }));
-    tree.write_text("packs/talker/plugin.wasm", module_using("chat_send"));
+    tree.write_text("packs/talker/plugin.wasm", module_using("chat_send", 1, 3));
 
     PluginHost& host = PluginHost::instance();
     std::string heard;
-    host.set_chat_sink([&heard](std::string_view text) { heard = std::string(text); });
+    std::int32_t heard_target = -1;
+    host.set_chat_sink([&](std::int32_t target, std::string_view text) {
+        heard = std::string(text);
+        heard_target = target;
+        return true;
+    });
     host.load_all(tree.root() / "packs", tree.root() / "grants");
     if (!host.has_runtime()) {
         host.set_chat_sink(nullptr);
@@ -352,6 +372,7 @@ TEST(PluginHostRuntime, ChatSendReachesTheHostSink) {
     ASSERT_NE(plugin, nullptr);
     EXPECT_TRUE(plugin->enabled) << plugin->status;
     EXPECT_EQ(heard, "hello from wasm");
+    EXPECT_EQ(heard_target, 0);  // target 0 means every player
 
     // Without a sink the call reports that the host cannot serve it, and nothing crashes.
     host.set_chat_sink(nullptr);
@@ -359,6 +380,43 @@ TEST(PluginHostRuntime, ChatSendReachesTheHostSink) {
     std::string error;
     EXPECT_TRUE(host.call("talker", "on_load", 1, 0, result, error)) << error;
     EXPECT_EQ(result, -3);
+}
+
+// A target that names no online player is a bad argument, not a delivery: the sink refuses
+// it and the guest gets -1.
+TEST(PluginHostRuntime, ChatSendRejectsATargetThatIsNotOnline) {
+    TempTree tree;
+    tree.write("packs/whisper/plugin.json", manifest_of("whisper"));
+    tree.write("packs/whisper/permissions.json", request_of("whisper", { "chat.send" }));
+    tree.write("grants/whisper.json", grant_of("whisper", { "chat.send" }));
+    tree.write_text("packs/whisper/plugin.wasm", module_using("chat_send", 1, 3, 7));
+
+    PluginHost& host = PluginHost::instance();
+    std::string heard;
+    std::int32_t heard_target = -1;
+    host.set_chat_sink([&](std::int32_t target, std::string_view text) {
+        if (target != 0 && target != 3) return false;  // only player 3 is online
+        heard = std::string(text);
+        heard_target = target;
+        return true;
+    });
+    host.load_all(tree.root() / "packs", tree.root() / "grants");
+    if (!host.has_runtime()) {
+        host.set_chat_sink(nullptr);
+        GTEST_SKIP() << "no WebAssembly runtime was found; set TERILA_WASM_RUNTIME";
+    }
+
+    const Plugin* plugin = find_plugin("whisper");
+    ASSERT_NE(plugin, nullptr);
+    EXPECT_TRUE(plugin->enabled) << plugin->status;
+    EXPECT_TRUE(heard.empty());
+    EXPECT_EQ(heard_target, -1);
+
+    std::int32_t result = 0;
+    std::string error;
+    EXPECT_TRUE(host.call("whisper", "on_load", 1, 0, result, error)) << error;
+    EXPECT_EQ(result, -1);
+    host.set_chat_sink(nullptr);
 }
 
 // A plugin that keeps trapping is released: the call is dropped, the count is kept, and once
