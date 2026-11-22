@@ -26,6 +26,13 @@
 #include <dlfcn.h>
 #endif
 
+// The Wasmtime C API header is used only when the spike is built for measurement
+// (-DTERILA_HAVE_WASMTIME and the header's include directory). The runtime itself is still
+// found at run time, so the normal build of this tool has no dependency at all.
+#if defined(TERILA_HAVE_WASMTIME)
+#include <wasmtime.h>
+#endif
+
 namespace {
 
     // --- runtime discovery ---------------------------------------------------------
@@ -402,6 +409,188 @@ namespace {
         }
     }
 
+#if defined(TERILA_HAVE_WASMTIME)
+
+    template <typename Fn>
+    Fn open_symbol(void* library, const char* name) {
+#ifdef _WIN32
+        return reinterpret_cast<Fn>(::GetProcAddress(static_cast<HMODULE>(library), name));
+#else
+        return reinterpret_cast<Fn>(::dlsym(library, name));
+#endif
+    }
+
+    // The handful of C API entry points the spike needs, resolved from the library the probe
+    // found. Nothing here is linked in.
+    struct WasmApi {
+        decltype(&::wasm_engine_new) engine_new = nullptr;
+        decltype(&::wasm_engine_delete) engine_delete = nullptr;
+        decltype(&::wasmtime_store_new) store_new = nullptr;
+        decltype(&::wasmtime_store_delete) store_delete = nullptr;
+        decltype(&::wasmtime_store_context) store_context = nullptr;
+        decltype(&::wasmtime_module_new) module_new = nullptr;
+        decltype(&::wasmtime_module_delete) module_delete = nullptr;
+        decltype(&::wasmtime_instance_new) instance_new = nullptr;
+        decltype(&::wasmtime_instance_export_get) export_get = nullptr;
+        decltype(&::wasmtime_func_call) func_call = nullptr;
+        decltype(&::wasmtime_error_delete) error_delete = nullptr;
+        decltype(&::wasm_trap_delete) trap_delete = nullptr;
+
+        bool resolve(void* library) {
+            engine_new = open_symbol<decltype(engine_new)>(library, "wasm_engine_new");
+            engine_delete = open_symbol<decltype(engine_delete)>(library, "wasm_engine_delete");
+            store_new = open_symbol<decltype(store_new)>(library, "wasmtime_store_new");
+            store_delete = open_symbol<decltype(store_delete)>(library, "wasmtime_store_delete");
+            store_context = open_symbol<decltype(store_context)>(library, "wasmtime_store_context");
+            module_new = open_symbol<decltype(module_new)>(library, "wasmtime_module_new");
+            module_delete = open_symbol<decltype(module_delete)>(library, "wasmtime_module_delete");
+            instance_new = open_symbol<decltype(instance_new)>(library, "wasmtime_instance_new");
+            export_get = open_symbol<decltype(export_get)>(library, "wasmtime_instance_export_get");
+            func_call = open_symbol<decltype(func_call)>(library, "wasmtime_func_call");
+            error_delete = open_symbol<decltype(error_delete)>(library, "wasmtime_error_delete");
+            trap_delete = open_symbol<decltype(trap_delete)>(library, "wasm_trap_delete");
+            return engine_new != nullptr && engine_delete != nullptr && store_new != nullptr &&
+                store_delete != nullptr && store_context != nullptr && module_new != nullptr &&
+                module_delete != nullptr && instance_new != nullptr && export_get != nullptr &&
+                func_call != nullptr && error_delete != nullptr && trap_delete != nullptr;
+        }
+    };
+
+    // How long the runtime takes to turn module bytes into a callable instance: that cost is
+    // paid on load and on reload, so it belongs in the spike next to the per-call cost.
+    void measure_instance(const WasmApi& api, wasm_engine_t* engine,
+        const std::vector<std::uint8_t>& module_bytes) {
+        constexpr int kRounds = 20;
+        double best = 0.0;
+        for (int round = 0; round < kRounds; ++round) {
+            const auto start = std::chrono::steady_clock::now();
+            wasmtime_module_t* module = nullptr;
+            if (wasmtime_error_t* error = api.module_new(engine, module_bytes.data(),
+                    module_bytes.size(), &module)) {
+                api.error_delete(error);
+                std::printf("wasm: module rejected by the runtime\n");
+                return;
+            }
+            const double elapsed = std::chrono::duration<double, std::nano>(
+                std::chrono::steady_clock::now() - start).count();
+            api.module_delete(module);
+            if (best == 0.0 || elapsed < best) {
+                best = elapsed;
+            }
+        }
+        std::printf("wasm: compiling one module -> %8.1f us (best of %d)\n", best / 1000.0,
+            kRounds);
+    }
+
+    struct Guest {
+        wasmtime_instance_t instance{};
+        wasmtime_func_t entry{};
+    };
+
+    bool instantiate(const WasmApi& api, wasmtime_context_t* context, wasmtime_module_t* module,
+        Guest& guest) {
+        wasmtime_instance_t instance{};
+        wasm_trap_t* trap = nullptr;
+        if (wasmtime_error_t* error = api.instance_new(context, module, nullptr, 0, &instance,
+                &trap)) {
+            api.error_delete(error);
+            return false;
+        }
+        if (trap != nullptr) {
+            api.trap_delete(trap);
+            return false;
+        }
+        wasmtime_extern_t item{};
+        if (!api.export_get(context, &instance, "entry", 5, &item) ||
+            item.kind != WASMTIME_EXTERN_FUNC) {
+            return false;
+        }
+        guest.instance = instance;
+        guest.entry = item.of.func;
+        return true;
+    }
+
+    void measure_call(const WasmApi& api, wasmtime_context_t* context, const Guest& guest,
+        std::int32_t dst, std::int32_t length, const char* label) {
+        wasmtime_val_t args[2]{};
+        args[0].kind = WASMTIME_I32;
+        args[0].of.i32 = dst;
+        args[1].kind = WASMTIME_I32;
+        args[1].of.i32 = length;
+        wasmtime_val_t result{};
+        constexpr int kWarmup = 200;
+        constexpr int kRounds = 20000;
+        for (int i = 0; i < kWarmup; ++i) {
+            api.func_call(context, &guest.entry, args, 2, &result, 1, nullptr);
+        }
+        double best = 0.0;
+        for (int round = 0; round < 5; ++round) {
+            const auto start = std::chrono::steady_clock::now();
+            for (int i = 0; i < kRounds; ++i) {
+                api.func_call(context, &guest.entry, args, 2, &result, 1, nullptr);
+            }
+            const double elapsed = std::chrono::duration<double, std::nano>(
+                std::chrono::steady_clock::now() - start).count();
+            const double each = elapsed / kRounds;
+            if (best == 0.0 || each < best) {
+                best = each;
+            }
+        }
+        std::printf("wasm: %-22s -> %8.1f ns/call (result %d)\n", label, best,
+            result.of.i32);
+    }
+
+    void measure_wasm(void* library, const std::vector<std::uint8_t>& copy_module_bytes,
+        const std::vector<std::uint8_t>& peek_module_bytes) {
+        WasmApi api;
+        if (!api.resolve(library)) {
+            std::printf("wasm: the runtime is missing part of the C API the spike calls\n");
+            return;
+        }
+        wasm_engine_t* engine = api.engine_new();
+        if (engine == nullptr) {
+            std::printf("wasm: no engine\n");
+            return;
+        }
+        wasmtime_store_t* store = api.store_new(engine, nullptr, nullptr);
+        wasmtime_context_t* context = api.store_context(store);
+
+        measure_instance(api, engine, copy_module_bytes);
+
+        wasmtime_module_t* copy_module = nullptr;
+        wasmtime_module_t* peek_module = nullptr;
+        if (api.module_new(engine, copy_module_bytes.data(), copy_module_bytes.size(),
+                &copy_module) != nullptr ||
+            api.module_new(engine, peek_module_bytes.data(), peek_module_bytes.size(),
+                &peek_module) != nullptr) {
+            std::printf("wasm: the modules were rejected\n");
+            api.store_delete(store);
+            api.engine_delete(engine);
+            return;
+        }
+
+        Guest copy_guest;
+        Guest peek_guest;
+        if (!instantiate(api, context, copy_module, copy_guest) ||
+            !instantiate(api, context, peek_module, peek_guest)) {
+            std::printf("wasm: a module could not be instantiated\n");
+        }
+        else {
+            // A, C and D of the design: the same module called with a different length.
+            measure_call(api, context, copy_guest, 4096, 0, "A empty call");
+            measure_call(api, context, peek_guest, 0, 0, "B header read");
+            measure_call(api, context, copy_guest, 4096, 32, "C 32 B copy");
+            measure_call(api, context, copy_guest, 4096, 65536, "D 64 KiB copy");
+        }
+
+        api.module_delete(peek_module);
+        api.module_delete(copy_module);
+        api.store_delete(store);
+        api.engine_delete(engine);
+    }
+
+#endif // TERILA_HAVE_WASMTIME
+
 } // namespace
 
 int main() {
@@ -451,6 +640,16 @@ int main() {
     // 4. What a payload copy costs on its own, which is what module C and D add to a call.
     std::printf("\n");
     report_copy_cost(scratch.data(), source);
+
+#if defined(TERILA_HAVE_WASMTIME)
+    std::printf("\nwasm calls\n");
+    if (runtime.library == nullptr) {
+        std::printf("wasm: not measured - the runtime is missing\n");
+    }
+    else {
+        measure_wasm(runtime.library, copy_module, peek_module);
+    }
+#endif
 
     std::printf("\nverdict: filled into design/spike-results.md\n");
     return 0;
