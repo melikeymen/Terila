@@ -17,8 +17,14 @@ All notable changes to Terila, newest first. Format follows
   builds and starts without one; a build without the Wasmtime C API header still enforces the
   gate and says in the log why nothing was loaded. Every refusal is one line under the new
   PLUGIN scope
+- The first host function of ABI version 1: `terila.log_write` is linked only when the
+  plugin actually holds `log.write`, so a module that imports more than it was granted fails
+  to instantiate and the refusal names the missing import. Text is copied out of guest memory
+  with a size and range check, folded to one line, and logged under the plugin's id
 - `plugin_tests` covers the gate without a runtime: unknown capabilities, duplicate requests,
-  module paths that escape the package, missing grants, and folder/id mismatch
+  module paths that escape the package, missing grants, and folder/id mismatch. With a
+  runtime present it also drives real modules: an accepted `on_load`, a refused one that
+  leaves no store or reachable instance, and the `log.write` import on both sides of the gate
 - `configs/terila.config` carries `[worldgen] backend=cpu|gpu|auto` (cpu unless it is
   changed): the density field of every chunk can be evaluated on an OpenCL device
 - The device path walks the same density graph as the chunk workers, node by node, on an

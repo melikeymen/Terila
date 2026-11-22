@@ -249,7 +249,72 @@ namespace {
         return bytes;
     }
 
+    // A module that uses the ABI: it imports terila.log_write, keeps one page of memory with a
+    // line of text at offset 16, and returns the status of the call from on_load.
+    std::string module_that_logs() {
+        std::string bytes("\0asm\1\0\0\0", 8);
+        section(bytes, 1, std::string("\x01\x60\x02\x7f\x7f\x01\x7f", 7));  // (i32,i32)->i32
+        section(bytes, 2, std::string("\x01\x06terila\x09log_write\x00\x00", 20));
+        section(bytes, 3, std::string("\x01\x00", 2));                       // one function
+        section(bytes, 5, std::string("\x01\x00\x01", 3));                   // one memory
+        section(bytes, 7, std::string("\x02\x06memory\x02\x00\x07on_load\x00\x01", 20));
+        section(bytes, 10,
+            std::string("\x01\x08\x00\x41\x10\x41\x11\x10\x00\x0b", 10));  // call log_write
+        std::string data("\x01\x00\x41\x10\x0b\x10", 6);
+        data += "hello from wasm\n";
+        section(bytes, 11, data);
+        return bytes;
+    }
+
 } // namespace
+
+// The import layer is the security boundary: a granted function is linked in and the call
+// crosses memory correctly, so on_load returns the host's own status.
+TEST(PluginHostRuntime, LogWriteImportIsLinkedAndCallable) {
+    TempTree tree;
+    tree.write("packs/logging/plugin.json", manifest_of("logging"));
+    tree.write("packs/logging/permissions.json", request_of("logging", { "log.write" }));
+    tree.write("grants/logging.json", grant_of("logging", { "log.write" }));
+    tree.write_text("packs/logging/plugin.wasm", module_that_logs());
+
+    PluginHost& host = PluginHost::instance();
+    host.load_all(tree.root() / "packs", tree.root() / "grants");
+    if (!host.has_runtime()) {
+        GTEST_SKIP() << "no WebAssembly runtime was found; set TERILA_WASM_RUNTIME";
+    }
+
+    const Plugin* plugin = find_plugin("logging");
+    ASSERT_NE(plugin, nullptr);
+    ASSERT_TRUE(plugin->enabled) << plugin->status;
+    EXPECT_EQ(host.live_stores(), 1u);
+
+    std::int32_t result = -1;
+    std::string error;
+    EXPECT_TRUE(host.call("logging", "on_load", 1, 0, result, error)) << error;
+    EXPECT_EQ(result, 0);
+}
+
+// A capability the plugin does not hold is not linked, so the module cannot start at all and
+// the refusal names the import.
+TEST(PluginHostRuntime, AnImportThatWasNotGrantedIsRefusedBeforeItRuns) {
+    TempTree tree;
+    tree.write("packs/asking/plugin.json", manifest_of("asking"));
+    tree.write("packs/asking/permissions.json", request_of("asking", { "chat.send" }));
+    tree.write("grants/asking.json", grant_of("asking", { "chat.send" }));
+    tree.write_text("packs/asking/plugin.wasm", module_that_logs());
+
+    PluginHost& host = PluginHost::instance();
+    host.load_all(tree.root() / "packs", tree.root() / "grants");
+    if (!host.has_runtime()) {
+        GTEST_SKIP() << "no WebAssembly runtime was found; set TERILA_WASM_RUNTIME";
+    }
+
+    const Plugin* plugin = find_plugin("asking");
+    ASSERT_NE(plugin, nullptr);
+    EXPECT_FALSE(plugin->enabled);
+    EXPECT_NE(plugin->status.find("log_write"), std::string::npos) << plugin->status;
+    EXPECT_EQ(host.live_stores(), 0u);
+}
 
 // The leak this guards against: an instance registered before on_load ran stayed in the host
 // after the hook was refused, so it kept its store and was still reachable through call().

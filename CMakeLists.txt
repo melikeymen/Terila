@@ -520,6 +520,7 @@ target_sources(terila PRIVATE "src/plugin/plugin_host.cpp")
 
 add_executable(plugin_tests
     "src/plugin/plugin_host.cpp"
+    "src/log/logger.cpp"
     "tests/plugin/plugin_host_test.cpp"
 )
 

@@ -1,11 +1,15 @@
 #include "plugin/plugin_host.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdlib>
 #include <fstream>
 #include <map>
 #include <string>
+#include <string_view>
 #include <utility>
+
+#include "log/logger.hpp"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -88,12 +92,25 @@ namespace terila::plugin {
             decltype(&::wasmtime_store_context) store_context = nullptr;
             decltype(&::wasmtime_module_new) module_new = nullptr;
             decltype(&::wasmtime_module_delete) module_delete = nullptr;
-            decltype(&::wasmtime_instance_new) instance_new = nullptr;
             decltype(&::wasmtime_instance_export_get) export_get = nullptr;
             decltype(&::wasmtime_func_call) func_call = nullptr;
             decltype(&::wasmtime_context_set_fuel) context_set_fuel = nullptr;
             decltype(&::wasmtime_error_delete) error_delete = nullptr;
+            decltype(&::wasmtime_error_message) error_message = nullptr;
             decltype(&::wasm_trap_delete) trap_delete = nullptr;
+            decltype(&::wasm_valtype_new) valtype_new = nullptr;
+            decltype(&::wasm_valtype_vec_new) valtype_vec_new = nullptr;
+            decltype(&::wasm_functype_new) functype_new = nullptr;
+            decltype(&::wasm_functype_delete) functype_delete = nullptr;
+            decltype(&::wasm_byte_vec_delete) byte_vec_delete = nullptr;
+            decltype(&::wasmtime_linker_new) linker_new = nullptr;
+            decltype(&::wasmtime_linker_define_func) linker_define_func = nullptr;
+            decltype(&::wasmtime_linker_instantiate) linker_instantiate = nullptr;
+            decltype(&::wasmtime_linker_delete) linker_delete = nullptr;
+            decltype(&::wasmtime_caller_context) caller_context = nullptr;
+            decltype(&::wasmtime_caller_export_get) caller_export_get = nullptr;
+            decltype(&::wasmtime_memory_data) memory_data = nullptr;
+            decltype(&::wasmtime_memory_data_size) memory_data_size = nullptr;
 
             bool resolve(void* library) {
                 engine_new = symbol<decltype(engine_new)>(library, "wasm_engine_new");
@@ -109,18 +126,45 @@ namespace terila::plugin {
                     "wasmtime_store_context");
                 module_new = symbol<decltype(module_new)>(library, "wasmtime_module_new");
                 module_delete = symbol<decltype(module_delete)>(library, "wasmtime_module_delete");
-                instance_new = symbol<decltype(instance_new)>(library, "wasmtime_instance_new");
                 export_get = symbol<decltype(export_get)>(library,
                     "wasmtime_instance_export_get");
                 func_call = symbol<decltype(func_call)>(library, "wasmtime_func_call");
                 context_set_fuel = symbol<decltype(context_set_fuel)>(library,
                     "wasmtime_context_set_fuel");
                 error_delete = symbol<decltype(error_delete)>(library, "wasmtime_error_delete");
+                error_message = symbol<decltype(error_message)>(library,
+                    "wasmtime_error_message");
                 trap_delete = symbol<decltype(trap_delete)>(library, "wasm_trap_delete");
+                valtype_new = symbol<decltype(valtype_new)>(library, "wasm_valtype_new");
+                valtype_vec_new = symbol<decltype(valtype_vec_new)>(library,
+                    "wasm_valtype_vec_new");
+                functype_new = symbol<decltype(functype_new)>(library, "wasm_functype_new");
+                functype_delete = symbol<decltype(functype_delete)>(library,
+                    "wasm_functype_delete");
+                byte_vec_delete = symbol<decltype(byte_vec_delete)>(library,
+                    "wasm_byte_vec_delete");
+                linker_new = symbol<decltype(linker_new)>(library, "wasmtime_linker_new");
+                linker_define_func = symbol<decltype(linker_define_func)>(library,
+                    "wasmtime_linker_define_func");
+                linker_instantiate = symbol<decltype(linker_instantiate)>(library,
+                    "wasmtime_linker_instantiate");
+                linker_delete = symbol<decltype(linker_delete)>(library,
+                    "wasmtime_linker_delete");
+                caller_context = symbol<decltype(caller_context)>(library,
+                    "wasmtime_caller_context");
+                caller_export_get = symbol<decltype(caller_export_get)>(library,
+                    "wasmtime_caller_export_get");
+                memory_data = symbol<decltype(memory_data)>(library, "wasmtime_memory_data");
+                memory_data_size = symbol<decltype(memory_data_size)>(library,
+                    "wasmtime_memory_data_size");
                 return engine_new && engine_delete && config_new && consume_fuel_set &&
                     engine_new_with_config && store_new && store_delete && store_context &&
-                    module_new && module_delete && instance_new && export_get && func_call &&
-                    context_set_fuel && error_delete && trap_delete;
+                    module_new && module_delete && export_get && func_call &&
+                    context_set_fuel && error_delete && error_message && trap_delete &&
+                    valtype_new && valtype_vec_new && functype_new && functype_delete &&
+                    byte_vec_delete && linker_new && linker_define_func &&
+                    linker_instantiate && linker_delete && caller_context &&
+                    caller_export_get && memory_data && memory_data_size;
             }
         };
 
@@ -150,6 +194,119 @@ namespace terila::plugin {
             if (wasmtime_error_t* failure = wasm().context_set_fuel(context, 10'000'000)) {
                 wasm().error_delete(failure);
             }
+        }
+
+        // The host surface of ABI version 1. The import layer is the security boundary, so a
+        // function is defined only when the plugin holds the capability behind it.
+        constexpr const char* kHostModule = "terila";
+        constexpr std::int32_t kMaxLogLine = 1024;
+
+        // What the host functions need from the plugin they were defined for.
+        struct HostCall {
+            std::string id;
+        };
+
+        void drop_host_call(void* env) {
+            delete static_cast<HostCall*>(env);
+        }
+
+        // Reads a (pointer, length) pair out of the guest's own memory. The guest is never
+        // handed a host pointer and the host never aliases guest memory past the call.
+        bool copy_guest_text(wasmtime_caller_t* caller, std::int32_t pointer, std::int32_t length,
+            std::string& out) {
+            if (pointer < 0 || length <= 0 || length > kMaxLogLine) return false;
+            wasmtime_extern_t item{};
+            if (!wasm().caller_export_get(caller, "memory", 6, &item) ||
+                item.kind != WASMTIME_EXTERN_MEMORY) {
+                return false;
+            }
+            wasmtime_context_t* context = wasm().caller_context(caller);
+            const std::size_t start = static_cast<std::size_t>(pointer);
+            const std::size_t size = wasm().memory_data_size(context, &item.of.memory);
+            if (start + static_cast<std::size_t>(length) > size) return false;
+            const std::uint8_t* data = wasm().memory_data(context, &item.of.memory);
+            out.assign(reinterpret_cast<const char*>(data) + start,
+                static_cast<std::size_t>(length));
+            return true;
+        }
+
+        // terila.log_write(pointer, length) -> 0, or -1 when the range is outside the guest's
+        // memory. Errors are values, so a bad call is not a trap.
+        wasm_trap_t* log_write(void* env, wasmtime_caller_t* caller, const wasmtime_val_t* args,
+            std::size_t nargs, wasmtime_val_t* results, std::size_t nresults) {
+            if (nargs != 2 || nresults != 1) return nullptr;
+            results[0].kind = WASMTIME_I32;
+            results[0].of.i32 = -1;
+
+            std::string line;
+            if (!copy_guest_text(caller, args[0].of.i32, args[1].of.i32, line)) return nullptr;
+            // A log record is one line: anything that could forge or split one is replaced.
+            for (char& c : line) {
+                if (static_cast<unsigned char>(c) < 0x20 || c == 0x7f) c = ' ';
+            }
+            const auto first = line.find_first_not_of(' ');
+            if (first == std::string::npos) {
+                results[0].of.i32 = 0;  // an empty line is not worth a record
+                return nullptr;
+            }
+            line = line.substr(first, line.find_last_not_of(' ') - first + 1);
+            LOG_INFO(Plugin, "[{}] {}", static_cast<const HostCall*>(env)->id, line);
+            results[0].of.i32 = 0;
+            return nullptr;
+        }
+
+        wasm_functype_t* i32_pair_to_i32() {
+            wasm_valtype_t* params[2] = { wasm().valtype_new(WASM_I32),
+                wasm().valtype_new(WASM_I32) };
+            wasm_valtype_t* results[1] = { wasm().valtype_new(WASM_I32) };
+            wasm_valtype_vec_t param_vec{};
+            wasm_valtype_vec_t result_vec{};
+            wasm().valtype_vec_new(&param_vec, 2, params);
+            wasm().valtype_vec_new(&result_vec, 1, results);
+            return wasm().functype_new(&param_vec, &result_vec);
+        }
+
+        // Defines the host functions this plugin holds. A capability it was not granted is
+        // simply not defined, so the module fails to instantiate instead of trapping later.
+        bool define_host_functions(wasmtime_linker_t* linker, const Plugin& plugin,
+            std::string& error) {
+            const auto holds = [&](std::string_view capability) {
+                return std::find(plugin.effective.begin(), plugin.effective.end(), capability) !=
+                    plugin.effective.end();
+            };
+            if (!holds("log.write")) return true;
+
+            wasm_functype_t* type = i32_pair_to_i32();
+            if (type == nullptr) {
+                error = "the runtime refused the log.write signature";
+                return false;
+            }
+            HostCall* call = new HostCall{ plugin.manifest.id };
+            wasmtime_error_t* failure = wasm().linker_define_func(linker, kHostModule,
+                std::char_traits<char>::length(kHostModule), "log_write", 9, type, &log_write,
+                call, &drop_host_call);
+            wasm().functype_delete(type);
+            if (failure != nullptr) {
+                wasm().error_delete(failure);
+                // The definition was refused, so the environment was never handed over.
+                drop_host_call(call);
+                error = "the runtime refused to link log_write";
+                return false;
+            }
+            return true;
+        }
+
+        // The runtime's own message names the import that could not be linked, which is what
+        // an operator needs to fix the pack or the grant.
+        std::string error_text(wasmtime_error_t* failure) {
+            wasm_name_t text{};
+            wasm().error_message(failure, &text);
+            std::string message;
+            if (text.data != nullptr && text.size > 0) {
+                message.assign(text.data, text.size);
+                wasm().byte_vec_delete(&text);
+            }
+            return message;
         }
 
         bool call_export(wasmtime_context_t* context, const wasmtime_instance_t& instance,
@@ -392,16 +549,31 @@ namespace terila::plugin {
         wasmtime_context_t* context = wasm().store_context(store);
         Slot slot;
         slot.store = store;
+
+        wasmtime_linker_t* linker = wasm().linker_new(static_cast<wasm_engine_t*>(engine_));
+        std::string link_error;
+        if (linker == nullptr || !define_host_functions(linker, plugin, link_error)) {
+            if (linker != nullptr) wasm().linker_delete(linker);
+            wasm().module_delete(module);
+            close_store(store);
+            stop("refused: " + (link_error.empty() ? std::string("no import namespace")
+                                                  : link_error));
+            return;
+        }
+
         wasm_trap_t* trap = nullptr;
-        wasmtime_error_t* failure = wasm().instance_new(context, module, nullptr, 0,
+        wasmtime_error_t* failure = wasm().linker_instantiate(linker, context, module,
             &slot.instance, &trap);
+        wasm().linker_delete(linker);
         wasm().module_delete(module);
         if (failure != nullptr) {
+            const std::string message = error_text(failure);
             wasm().error_delete(failure);
             if (trap != nullptr) wasm().trap_delete(trap);
             close_store(store);
-            // This version serves no host imports, so a module that wants any cannot start.
-            stop("refused: it needs host imports this version does not serve");
+            // The message names the import that was not granted, or the module's own fault.
+            stop("refused: " + (message.empty() ? std::string("the module could not be linked")
+                                                : message));
             return;
         }
         if (trap != nullptr) {
