@@ -724,8 +724,11 @@ int main() {
 
     // Plugins are optional and the gate never trusts the package: a folder without a
     // permission request is not a plugin, and a package without a grant stays disabled.
+    // Both directories sit next to the executable, like the world and the config files, so a
+    // build started from any working directory reads the same packs.
     auto& plugins = terila::plugin::PluginHost::instance();
-    plugins.load_all("plugins", "config/plugin-grants");
+    const fs::path install_root = executable_directory();
+    plugins.load_all(install_root / "plugins", install_root / "config" / "plugin-grants");
     LOG_INFO(Plugin, "plugins: {} package(s), runtime {}", plugins.plugins().size(),
         plugins.has_runtime() ? plugins.runtime_name() : std::string("none"));
     for (const auto& plugin : plugins.plugins()) {
@@ -950,6 +953,10 @@ int main() {
 
     schedule_tick();
     io.run();
+
+    // Plugin instances hold engine stores and wasm memory, so they are released while the
+    // log still writes.
+    plugins.unload_all();
 
     if (auto flushed = chunk_store.flush(); !flushed) {
         LOG_WARN(Main, "flushing region metadata failed: {}", flushed.error().detail);

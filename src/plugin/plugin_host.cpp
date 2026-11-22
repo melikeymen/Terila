@@ -400,10 +400,10 @@ namespace terila::plugin {
             return;
         }
 
+        // The lifecycle hook is optional: a plugin without on_load is still a plugin. It runs
+        // before the instance is registered, so a plugin that fails it leaves no store and
+        // no instance behind.
         slot.instance = new wasmtime_instance_t(instance);
-        slots()[plugin.manifest.id] = slot;
-
-        // The lifecycle hook is optional: a plugin without on_load is still a plugin.
         std::int32_t result = 0;
         std::string hook_error;
         if (wasmtime_error_t* fuel = wasm().context_set_fuel(context, 10'000'000)) {
@@ -412,11 +412,14 @@ namespace terila::plugin {
         const bool hooked = call_export(context, instance, "on_load", kApiVersion,
             static_cast<std::int32_t>(plugin.manifest.memory_pages), result, hook_error);
         if (!hooked && hook_error != "no export named on_load") {
+            delete slot.instance;
+            wasm().store_delete(slot.store);
             plugin.status = "refused: on_load " + hook_error;
             plugins_.push_back(std::move(plugin));
             return;
         }
 
+        slots()[plugin.manifest.id] = slot;
         plugin.enabled = true;
         plugin.status = "enabled";
         plugins_.push_back(std::move(plugin));
