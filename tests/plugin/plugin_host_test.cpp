@@ -309,7 +309,60 @@ namespace {
         return bytes;
     }
 
+    // A module with one hook that accepts and one function that always traps, so the trap
+    // policy can be driven without a real event.
+    std::string module_with_a_trap() {
+        std::string bytes("\0asm\1\0\0\0", 8);
+        section(bytes, 1, std::string("\x01\x60\x02\x7f\x7f\x01\x7f", 7));  // (i32,i32)->i32
+        section(bytes, 3, std::string("\x02\x00\x00", 3));  // on_load and boom, type 0
+        section(bytes, 5, std::string("\x01\x00\x01", 3));  // one memory
+        // The name is concatenated because 'b' would continue a \x escape.
+        section(bytes, 7, std::string("\x03\x06memory\x02\x00\x07on_load\x00\x00", 20) +
+                std::string("\x04" "boom\x00\x01", 7));
+        section(bytes, 10,
+            std::string("\x02\x04\x00\x41\x00\x0b\x03\x00\x00\x0b", 10));
+        return bytes;
+    }
+
 } // namespace
+
+// A plugin that keeps trapping is released: the call is dropped, the count is kept, and once
+// it reaches kMaxTraps the instance is gone instead of failing on every event.
+TEST(PluginHostRuntime, RepeatedTrapsDisableThePlugin) {
+    TempTree tree;
+    tree.write("packs/boomy/plugin.json", manifest_of("boomy"));
+    tree.write("packs/boomy/permissions.json", request_of("boomy", { "log.write" }));
+    tree.write("grants/boomy.json", grant_of("boomy", { "log.write" }));
+    tree.write_text("packs/boomy/plugin.wasm", module_with_a_trap());
+
+    PluginHost& host = PluginHost::instance();
+    host.load_all(tree.root() / "packs", tree.root() / "grants");
+    if (!host.has_runtime()) {
+        GTEST_SKIP() << "no WebAssembly runtime was found; set TERILA_WASM_RUNTIME";
+    }
+
+    const Plugin* plugin = find_plugin("boomy");
+    ASSERT_NE(plugin, nullptr);
+    ASSERT_TRUE(plugin->enabled) << plugin->status;
+    EXPECT_EQ(host.live_stores(), 1u);
+
+    std::int32_t result = 0;
+    std::string error;
+    for (std::int32_t i = 0; i < terila::plugin::kMaxTraps; ++i) {
+        ASSERT_FALSE(host.call("boomy", "boom", 1, 0, result, error));
+        ASSERT_EQ(error, "trapped");
+    }
+
+    EXPECT_EQ(host.live_stores(), 0u);
+    const Plugin* disabled = find_plugin("boomy");
+    ASSERT_NE(disabled, nullptr);
+    EXPECT_FALSE(disabled->enabled);
+    EXPECT_EQ(disabled->status, "disabled: it trapped " +
+        std::to_string(terila::plugin::kMaxTraps) + " times");
+
+    EXPECT_FALSE(host.call("boomy", "boom", 1, 0, result, error));
+    EXPECT_EQ(error, "not loaded");
+}
 
 // The import layer is the security boundary: a granted function is linked in and the call
 // crosses memory correctly, so on_load returns the host's own status.

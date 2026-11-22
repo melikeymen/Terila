@@ -26,6 +26,10 @@
 
 namespace terila::plugin {
 
+    // A plugin that keeps trapping is a broken plugin: the event is dropped, and after this
+    // many traps the instance is released and the run continues without it.
+    inline constexpr std::int32_t kMaxTraps = 32;
+
     struct Plugin {
         std::filesystem::path directory;
         Manifest manifest;
@@ -72,6 +76,9 @@ namespace terila::plugin {
 
         void load_one(const std::filesystem::path& directory,
             const std::filesystem::path& grants);
+
+        // Releases a plugin's instance and records why, so a trap run cannot keep calling it.
+        void disable(std::string_view id, std::int32_t traps);
 
         std::vector<Plugin> plugins_;
         void* library_ = nullptr;

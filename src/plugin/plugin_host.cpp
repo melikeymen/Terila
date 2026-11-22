@@ -63,6 +63,7 @@ namespace terila::plugin {
             wasmtime_store_t* store = nullptr;
             wasmtime_instance_t instance{};
             std::int32_t fuel = kDefaultFuelPerCall;
+            std::int32_t traps = 0;
         };
 
         // Loaded plugins own one store each, so a runaway plugin cannot disturb another one's
@@ -385,6 +386,22 @@ namespace terila::plugin {
         return host;
     }
 
+    void PluginHost::disable(std::string_view id, std::int32_t traps) {
+#if defined(TERILA_HAVE_WASMTIME)
+        const auto found = slots().find(std::string(id));
+        if (found != slots().end()) {
+            close_store(found->second.store);
+            slots().erase(found);
+        }
+#endif
+        for (Plugin& plugin : plugins_) {
+            if (plugin.manifest.id != id) continue;
+            plugin.enabled = false;
+            plugin.status = "disabled: it trapped " + std::to_string(traps) + " times";
+        }
+        LOG_WARN(Plugin, "{} was disabled after {} traps", id, traps);
+    }
+
     void PluginHost::unload_all() {
 #if defined(TERILA_HAVE_WASMTIME)
         for (auto& entry : slots()) {
@@ -652,10 +669,17 @@ namespace terila::plugin {
             error = "not loaded";
             return false;
         }
-        wasmtime_context_t* context = wasm().store_context(found->second.store);
-        set_fuel(context, found->second.fuel);
-        return call_export(context, found->second.instance, std::string(function).c_str(),
+        Slot& slot = found->second;
+        wasmtime_context_t* context = wasm().store_context(slot.store);
+        set_fuel(context, slot.fuel);
+        const bool ok = call_export(context, slot.instance, std::string(function).c_str(),
             first, second, result, error);
+        // A trap drops the call and counts against the plugin; a plugin that keeps trapping is
+        // released instead of being allowed to fail on every event for the rest of the run.
+        if (!ok && error == "trapped" && ++slot.traps >= kMaxTraps) {
+            disable(id, slot.traps);
+        }
+        return ok;
 #else
         (void)id;
         (void)function;
