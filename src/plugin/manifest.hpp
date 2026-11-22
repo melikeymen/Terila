@@ -25,6 +25,14 @@ namespace terila::plugin {
     inline constexpr int kApiVersion = 1;
     inline constexpr std::uint32_t kDefaultMemoryPages = 64;
 
+    // The budgets a plugin runs with. The design fixes the fuel default; the design leaves
+    // the event rate to the host, so it is 100 lines or events per second here. A grant may
+    // only tighten these, and a hard ceiling keeps a typo from turning the budget off.
+    inline constexpr std::int32_t kDefaultFuelPerCall = 200000;
+    inline constexpr std::int32_t kDefaultEventsPerSecond = 100;
+    inline constexpr std::int32_t kMaxFuelPerCall = 50000000;
+    inline constexpr std::int32_t kMaxEventsPerSecond = 10000;
+
     // One refusal, carrying the field it is about so an operator can fix the file without
     // guessing.
     struct Problem {
@@ -63,9 +71,15 @@ namespace terila::plugin {
         explicit operator bool() const noexcept { return !problem.has_value(); }
     };
 
+    struct Limits {
+        std::int32_t fuel_per_call = kDefaultFuelPerCall;
+        std::int32_t events_per_second = kDefaultEventsPerSecond;
+    };
+
     struct GrantResult {
         std::string id;
         std::vector<std::string> granted;
+        Limits limits;
         std::optional<Problem> problem;
 
         explicit operator bool() const noexcept { return !problem.has_value(); }
@@ -273,6 +287,35 @@ namespace terila::plugin {
         if (!detail::read_capabilities(json, "granted", listed, problem)) return result;
         for (const std::string& name : listed) {
             if (is_known_capability(name)) result.granted.push_back(name);
+        }
+
+        const auto limits = json.find("limits");
+        if (limits != json.end() && !limits->is_null()) {
+            if (!limits->is_object()) {
+                problem = Problem{ "limits", "must contain an object" };
+                return result;
+            }
+            int fuel = kDefaultFuelPerCall;
+            if (!detail::read_integer(*limits, "fuel_per_call", fuel, problem, false)) {
+                return result;
+            }
+            if (fuel < 1 || fuel > kMaxFuelPerCall) {
+                problem = Problem{ "limits.fuel_per_call",
+                    "must be between 1 and " + std::to_string(kMaxFuelPerCall) };
+                return result;
+            }
+            result.limits.fuel_per_call = fuel;
+
+            int events = kDefaultEventsPerSecond;
+            if (!detail::read_integer(*limits, "events_per_second", events, problem, false)) {
+                return result;
+            }
+            if (events < 1 || events > kMaxEventsPerSecond) {
+                problem = Problem{ "limits.events_per_second",
+                    "must be between 1 and " + std::to_string(kMaxEventsPerSecond) };
+                return result;
+            }
+            result.limits.events_per_second = events;
         }
         return result;
     }

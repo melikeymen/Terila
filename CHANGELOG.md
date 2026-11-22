@@ -21,6 +21,10 @@ All notable changes to Terila, newest first. Format follows
   plugin actually holds `log.write`, so a module that imports more than it was granted fails
   to instantiate and the refusal names the missing import. Text is copied out of guest memory
   with a size and range check, folded to one line, and logged under the plugin's id
+- The grant's `limits` are read: `fuel_per_call` (default 200000) bounds every call into a
+  plugin, and `events_per_second` (default 100) throttles `log.write`, which drops the extra
+  lines and hands the guest the documented `-2`. A grant without `limits` gets the defaults,
+  and a value outside the ceiling is a refusal, not a silent clamp
 - `plugin_tests` covers the gate without a runtime: unknown capabilities, duplicate requests,
   module paths that escape the package, missing grants, and folder/id mismatch. With a
   runtime present it also drives real modules: an accepted `on_load`, a refused one that

@@ -1,6 +1,7 @@
 #include "plugin/plugin_host.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdlib>
 #include <fstream>
@@ -61,6 +62,7 @@ namespace terila::plugin {
         struct Slot {
             wasmtime_store_t* store = nullptr;
             wasmtime_instance_t instance{};
+            std::int32_t fuel = kDefaultFuelPerCall;
         };
 
         // Loaded plugins own one store each, so a runaway plugin cannot disturb another one's
@@ -189,9 +191,11 @@ namespace terila::plugin {
         }
 
         // Fuel bounds the work of one call: a hook that never returns is stopped by the
-        // runtime instead of holding the thread.
-        void set_fuel(wasmtime_context_t* context) {
-            if (wasmtime_error_t* failure = wasm().context_set_fuel(context, 10'000'000)) {
+        // runtime instead of holding the thread. Every call gets the same budget again, so a
+        // plugin cannot save up work for a later call.
+        void set_fuel(wasmtime_context_t* context, std::int32_t fuel) {
+            if (wasmtime_error_t* failure = wasm().context_set_fuel(context,
+                    static_cast<std::uint64_t>(fuel))) {
                 wasm().error_delete(failure);
             }
         }
@@ -201,9 +205,26 @@ namespace terila::plugin {
         constexpr const char* kHostModule = "terila";
         constexpr std::int32_t kMaxLogLine = 1024;
 
-        // What the host functions need from the plugin they were defined for.
+        // What the host functions need from the plugin they were defined for, including its
+        // share of the log budget. The window is the host's clock; the guest sees only the
+        // status of the call.
         struct HostCall {
             std::string id;
+            std::int32_t per_second = 0;
+            std::int32_t used = 0;
+            std::chrono::steady_clock::time_point window = std::chrono::steady_clock::now();
+
+            bool take() {
+                if (per_second <= 0) return true;
+                const auto now = std::chrono::steady_clock::now();
+                if (now - window >= std::chrono::seconds(1)) {
+                    window = now;
+                    used = 0;
+                }
+                if (used >= per_second) return false;
+                ++used;
+                return true;
+            }
         };
 
         void drop_host_call(void* env) {
@@ -230,13 +251,19 @@ namespace terila::plugin {
             return true;
         }
 
-        // terila.log_write(pointer, length) -> 0, or -1 when the range is outside the guest's
-        // memory. Errors are values, so a bad call is not a trap.
+        // terila.log_write(pointer, length) -> 0, -1 when the range is outside the guest's
+        // memory, -2 when the plugin is over its events_per_second budget. Errors are values,
+        // so a bad call is never a trap.
         wasm_trap_t* log_write(void* env, wasmtime_caller_t* caller, const wasmtime_val_t* args,
             std::size_t nargs, wasmtime_val_t* results, std::size_t nresults) {
             if (nargs != 2 || nresults != 1) return nullptr;
+            auto* call = static_cast<HostCall*>(env);
             results[0].kind = WASMTIME_I32;
             results[0].of.i32 = -1;
+            if (!call->take()) {
+                results[0].of.i32 = -2;  // over budget: the line is dropped, not logged
+                return nullptr;
+            }
 
             std::string line;
             if (!copy_guest_text(caller, args[0].of.i32, args[1].of.i32, line)) return nullptr;
@@ -250,7 +277,7 @@ namespace terila::plugin {
                 return nullptr;
             }
             line = line.substr(first, line.find_last_not_of(' ') - first + 1);
-            LOG_INFO(Plugin, "[{}] {}", static_cast<const HostCall*>(env)->id, line);
+            LOG_INFO(Plugin, "[{}] {}", call->id, line);
             results[0].of.i32 = 0;
             return nullptr;
         }
@@ -281,7 +308,7 @@ namespace terila::plugin {
                 error = "the runtime refused the log.write signature";
                 return false;
             }
-            HostCall* call = new HostCall{ plugin.manifest.id };
+            HostCall* call = new HostCall{ plugin.manifest.id, plugin.events_per_second };
             wasmtime_error_t* failure = wasm().linker_define_func(linker, kHostModule,
                 std::char_traits<char>::length(kHostModule), "log_write", 9, type, &log_write,
                 call, &drop_host_call);
@@ -513,6 +540,8 @@ namespace terila::plugin {
             return;
         }
         plugin.granted = std::move(grant.granted);
+        plugin.fuel_per_call = grant.limits.fuel_per_call;
+        plugin.events_per_second = grant.limits.events_per_second;
         plugin.effective = effective_capabilities(plugin.requested, plugin.granted);
         plugin.accepted = true;
         if (plugin.effective.empty()) {
@@ -549,6 +578,7 @@ namespace terila::plugin {
         wasmtime_context_t* context = wasm().store_context(store);
         Slot slot;
         slot.store = store;
+        slot.fuel = plugin.fuel_per_call;
 
         wasmtime_linker_t* linker = wasm().linker_new(static_cast<wasm_engine_t*>(engine_));
         std::string link_error;
@@ -586,7 +616,7 @@ namespace terila::plugin {
         // The lifecycle hook is optional: a plugin without on_load is still a plugin. It runs
         // before the instance is registered, so a plugin that fails it never becomes callable
         // and holds no store.
-        set_fuel(context);
+        set_fuel(context, slot.fuel);
         std::int32_t result = 0;
         std::string hook_error;
         const bool hooked = call_export(context, slot.instance, "on_load", kApiVersion,
@@ -623,7 +653,7 @@ namespace terila::plugin {
             return false;
         }
         wasmtime_context_t* context = wasm().store_context(found->second.store);
-        set_fuel(context);
+        set_fuel(context, found->second.fuel);
         return call_export(context, found->second.instance, std::string(function).c_str(),
             first, second, result, error);
 #else

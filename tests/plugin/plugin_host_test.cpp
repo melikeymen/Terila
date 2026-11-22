@@ -80,6 +80,13 @@ namespace {
         return nlohmann::json{ { "id", id }, { "granted", std::move(granted) } };
     }
 
+    nlohmann::json grant_with_limits(const std::string& id, std::vector<std::string> granted,
+        int fuel, int events) {
+        nlohmann::json document = grant_of(id, std::move(granted));
+        document["limits"] = { { "fuel_per_call", fuel }, { "events_per_second", events } };
+        return document;
+    }
+
     const Plugin* find_plugin(const std::string& id) {
         for (const Plugin& plugin : PluginHost::instance().plugins()) {
             if (plugin.manifest.id == id) return &plugin;
@@ -111,6 +118,31 @@ TEST(PluginCapability, IdsThatWouldEscapeThePackAreRejected) {
     EXPECT_FALSE(terila::plugin::is_valid_plugin_id("../demo"));
     EXPECT_FALSE(terila::plugin::is_valid_plugin_id("demo..plugin"));
     EXPECT_FALSE(terila::plugin::is_valid_plugin_id("ab"));
+}
+
+TEST(PluginGrant, LimitsSetTheBudgetsAndAreChecked) {
+    nlohmann::json document = grant_with_limits("demo", { "log.write" }, 5000, 7);
+    const auto result = terila::plugin::parse_grant(document);
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result.limits.fuel_per_call, 5000);
+    EXPECT_EQ(result.limits.events_per_second, 7);
+
+    document["limits"]["fuel_per_call"] = 0;
+    const auto refused_fuel = terila::plugin::parse_grant(document);
+    ASSERT_FALSE(refused_fuel);
+    EXPECT_EQ(refused_fuel.problem->field, "limits.fuel_per_call");
+
+    document = grant_with_limits("demo", { "log.write" }, 5000, 0);
+    const auto refused_events = terila::plugin::parse_grant(document);
+    ASSERT_FALSE(refused_events);
+    EXPECT_EQ(refused_events.problem->field, "limits.events_per_second");
+}
+
+TEST(PluginGrant, WithoutLimitsTheDefaultsApply) {
+    const auto result = terila::plugin::parse_grant(grant_of("demo", { "log.write" }));
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result.limits.fuel_per_call, terila::plugin::kDefaultFuelPerCall);
+    EXPECT_EQ(result.limits.events_per_second, terila::plugin::kDefaultEventsPerSecond);
 }
 
 TEST(PluginManifest, UnknownCapabilityIsRefused) {
@@ -250,16 +282,27 @@ namespace {
     }
 
     // A module that uses the ABI: it imports terila.log_write, keeps one page of memory with a
-    // line of text at offset 16, and returns the status of the call from on_load.
-    std::string module_that_logs() {
+    // line of text at offset 16, and returns the status of the last call from on_load. Two
+    // calls in one hook are how the event budget is observed within a single call.
+    std::string module_that_logs(int calls = 1) {
         std::string bytes("\0asm\1\0\0\0", 8);
         section(bytes, 1, std::string("\x01\x60\x02\x7f\x7f\x01\x7f", 7));  // (i32,i32)->i32
         section(bytes, 2, std::string("\x01\x06terila\x09log_write\x00\x00", 20));
         section(bytes, 3, std::string("\x01\x00", 2));                       // one function
         section(bytes, 5, std::string("\x01\x00\x01", 3));                   // one memory
         section(bytes, 7, std::string("\x02\x06memory\x02\x00\x07on_load\x00\x01", 20));
-        section(bytes, 10,
-            std::string("\x01\x08\x00\x41\x10\x41\x11\x10\x00\x0b", 10));  // call log_write
+
+        std::string body("\x00", 1);  // no locals
+        for (int i = 0; i < calls; ++i) {
+            if (i > 0) body.push_back('\x1a');  // drop the status of the earlier call
+            body += std::string("\x41\x10\x41\x11\x10\x00", 6);  // log_write(16, 16)
+        }
+        body.push_back('\x0b');
+        std::string code("\x01", 1);
+        code.push_back(static_cast<char>(body.size()));
+        code += body;
+        section(bytes, 10, code);
+
         std::string data("\x01\x00\x41\x10\x0b\x10", 6);
         data += "hello from wasm\n";
         section(bytes, 11, data);
@@ -314,6 +357,56 @@ TEST(PluginHostRuntime, AnImportThatWasNotGrantedIsRefusedBeforeItRuns) {
     EXPECT_FALSE(plugin->enabled);
     EXPECT_NE(plugin->status.find("log_write"), std::string::npos) << plugin->status;
     EXPECT_EQ(host.live_stores(), 0u);
+}
+
+// Fuel is the grant's number, not a constant in the host: one unit is not enough to run
+// on_load, and a hook that overruns is refused like any other trap.
+TEST(PluginHostRuntime, FuelPerCallStopsARunawayHook) {
+    TempTree tree;
+    tree.write("packs/thrifty/plugin.json", manifest_of("thrifty"));
+    tree.write("packs/thrifty/permissions.json", request_of("thrifty", { "log.write" }));
+    tree.write("grants/thrifty.json", grant_with_limits("thrifty", { "log.write" }, 1, 100));
+    tree.write_text("packs/thrifty/plugin.wasm", module_that_logs());
+
+    PluginHost& host = PluginHost::instance();
+    host.load_all(tree.root() / "packs", tree.root() / "grants");
+    if (!host.has_runtime()) {
+        GTEST_SKIP() << "no WebAssembly runtime was found; set TERILA_WASM_RUNTIME";
+    }
+
+    const Plugin* plugin = find_plugin("thrifty");
+    ASSERT_NE(plugin, nullptr);
+    EXPECT_EQ(plugin->fuel_per_call, 1);
+    EXPECT_FALSE(plugin->enabled);
+    EXPECT_EQ(plugin->status, "refused: on_load trapped");
+    EXPECT_EQ(host.live_stores(), 0u);
+}
+
+// The event budget is the grant's too: the second line inside one hook is dropped with the
+// documented -2 instead of being written.
+TEST(PluginHostRuntime, LogBudgetDropsTheExtraLine) {
+    TempTree tree;
+    tree.write("packs/chatty/plugin.json", manifest_of("chatty"));
+    tree.write("packs/chatty/permissions.json", request_of("chatty", { "log.write" }));
+    tree.write("grants/chatty.json", grant_with_limits("chatty", { "log.write" },
+        terila::plugin::kDefaultFuelPerCall, 1));
+    tree.write_text("packs/chatty/plugin.wasm", module_that_logs(2));
+
+    PluginHost& host = PluginHost::instance();
+    host.load_all(tree.root() / "packs", tree.root() / "grants");
+    if (!host.has_runtime()) {
+        GTEST_SKIP() << "no WebAssembly runtime was found; set TERILA_WASM_RUNTIME";
+    }
+
+    const Plugin* plugin = find_plugin("chatty");
+    ASSERT_NE(plugin, nullptr);
+    ASSERT_TRUE(plugin->enabled) << plugin->status;
+    EXPECT_EQ(plugin->events_per_second, 1);
+
+    std::int32_t result = 0;
+    std::string error;
+    EXPECT_TRUE(host.call("chatty", "on_load", 1, 0, result, error)) << error;
+    EXPECT_EQ(result, -2);
 }
 
 // The leak this guards against: an instance registered before on_load ran stayed in the host

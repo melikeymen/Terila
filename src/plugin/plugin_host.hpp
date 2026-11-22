@@ -33,6 +33,10 @@ namespace terila::plugin {
         std::vector<std::string> granted;
         std::vector<std::string> effective;
 
+        // The budgets the grant set, or the defaults when it said nothing.
+        std::int32_t fuel_per_call = kDefaultFuelPerCall;
+        std::int32_t events_per_second = kDefaultEventsPerSecond;
+
         // The package passed every gate. A plugin can be accepted and still not enabled,
         // which is what a missing grant or a build without a runtime looks like.
         bool accepted = false;
