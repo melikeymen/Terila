@@ -32,7 +32,7 @@ namespace terila::world::worldgen {
         std::string target_pool;    // Pool to draw the next piece from
         std::string target_name;    // Name the next piece's jigsaw must have
         std::string final_state;    // What to replace this jigsaw with after connecting
-        std::string joint;          // "aligned" or "rollable" (we only handle aligned)
+        std::string joint;          // "aligned" or "rollable"
         std::string orientation;    // From state properties: "north_up", "south_up", etc.
     };
 
@@ -803,7 +803,6 @@ namespace terila::world::worldgen {
         int depth, std::int32_t centre_x, std::int32_t centre_z, int max_distance,
         bool allow_rotation) {
         if (depth > 50) return false;  // Prevent infinite recursion
-        if (conn.joint != "aligned") return false;  // Only handle aligned joints
         if (conn.target_pool.empty()) return true;
 
         const std::vector<JigsawCandidate>& candidates =
@@ -817,6 +816,11 @@ namespace terila::world::worldgen {
         // tried before the connection is given up, so a street is not lost to a bad draw.
         const std::size_t picked = static_cast<std::size_t>(rng % candidates.size());
         rng = rng * 6364136223846793005ull + 1442695040888963407ull;
+        // Both joint types join here. An aligned joint asks for two blocks that face each
+        // other with the same top, and a rollable one lets the new piece be rolled around
+        // the connector; the roll is a quarter turn of the piece, which is what the turn
+        // search below lays down anyway. A building's `bottom` jigsaws are rollable, and
+        // they are what hangs a well or a villager under the start piece.
         const JigsawOrientation needed_orient = opposite(conn.orientation);
 
         for (std::size_t attempt = 0; attempt < candidates.size(); ++attempt) {

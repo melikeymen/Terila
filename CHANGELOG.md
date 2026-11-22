@@ -42,6 +42,8 @@ All notable changes to Terila, newest first. Format follows
   slope is filled, so no building hangs in the air
 - A ruined portal, a shipwreck or any other single-template structure fills the gap under
   its lowest layer on a slope, so it no longer hangs over the drop
+- A `rollable` jigsaw joint is joined like an aligned one, so the pieces a village hangs
+  under its meeting point (the well, its villagers, its cats) are placed instead of dropped
 - A whole template is laid down with one of the four quarter turns picked from its site, so
   a wreck or a portal is not always built the same way round; the stairs and rails of the
   turned template turn with it

@@ -624,6 +624,29 @@ namespace {
         }
     }
 
+    TEST(JigsawTest, RollableJointsGrowPiecesUnderTheStartPiece) {
+        if (!input_available()) {
+            GTEST_SKIP() << "input/ is not next to the build tree";
+        }
+        using terila::world::worldgen::assemble_jigsaw;
+
+        const auto resolve = [](std::string_view) { return 0; };
+        const auto rotate = [](std::int32_t state, int) { return state; };
+        // A meeting point hangs its well, its villagers and its cats under itself through
+        // `bottom` jigsaws, which are rollable and were dropped before.
+        const auto pieces = assemble_jigsaw("minecraft:village/plains/town_centers",
+            resolve, 0, 70, 0, 1337, 64, 4, 80, rotate);
+        ASSERT_GT(pieces.size(), 0u);
+
+        int below = 0;
+        for (const auto& piece : pieces) {
+            if (piece.origin_y < 70) {
+                ++below;
+            }
+        }
+        EXPECT_GT(below, 0) << "pieces " << pieces.size();
+    }
+
     TEST(JigsawTest, TerrainMatchingPiecesSitOnTheirOwnGroundAndFillBeneath) {
         using terila::world::worldgen::PlacedPiece;
         using terila::world::worldgen::write_jigsaw_pieces;
