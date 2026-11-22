@@ -31,6 +31,11 @@ All notable changes to Terila, newest first. Format follows
 
 ### Fixed
 
+- A chunk worker that generates two dimensions no longer answers one of them with the
+  other's interpolated lattice points: the per-thread lattice cache is cleared when the
+  world it was filled for changes
+- `worldgen_dump` links again: the parity tool needs the device backend unit as well, which
+  the Linux build of the tool was missing
 - The shared world generator no longer holds the connection that happened to initialise a
   dimension: the block, biome and template-state resolvers it keeps for its chunk workers
   now capture the block registry instead of the connection, so a player logging out while

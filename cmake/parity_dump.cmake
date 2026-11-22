@@ -7,6 +7,8 @@ add_executable(worldgen_dump
     "tools/worldgen_dump.cpp"
     "src/data/input_store.cpp"
     "src/log/logger.cpp"
+    # The dump links the generator itself, and its device backend needs its unit here too.
+    "src/world/worldgen/gpu/density_device.cpp"
 )
 
 target_include_directories(worldgen_dump PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")

@@ -210,6 +210,10 @@ namespace terila::world::worldgen {
         // share those corners. Keeping the lattice points of the chunk turns that into one
         // evaluation per grid point instead of eight per block.
         std::vector<std::unordered_map<std::uint64_t, double>>* lattices = nullptr;
+        // The world the lattices were filled for. Their keys are coordinates only, so a
+        // thread that generates two dimensions would otherwise answer one of them with the
+        // field of the other.
+        std::uint64_t lattice_world = 0;
         int recursion = 0;
 
         void reset(int slot_count) {
@@ -846,6 +850,12 @@ namespace terila::world::worldgen {
             }
             if (static_cast<std::size_t>(node.interp_index) >= context.lattices->size()) {
                 return false;
+            }
+            if (context.lattice_world != context.world) {
+                for (auto& stale : *context.lattices) {
+                    stale.clear();
+                }
+                context.lattice_world = context.world;
             }
             auto& lattice = (*context.lattices)[static_cast<std::size_t>(node.interp_index)];
             if (lattice.size() > (1u << 18)) {
