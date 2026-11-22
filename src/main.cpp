@@ -13,6 +13,7 @@
 #include "config/runtime_config.hpp"
 #include "world/worldgen/gpu/density_device.hpp"
 #include "data/input_store.hpp"
+#include "protocol/chat.hpp"
 #include "protocol/packet_ids_loader.hpp"
 #include "entity/mob.hpp"
 #include "entity/population.hpp"
@@ -808,6 +809,16 @@ int main() {
     if (const auto it = data.entity_type_ids.find("minecraft:player"); it != data.entity_type_ids.end()) {
         player_hub->set_player_type_id(it->second);
     }
+
+    // A plugin's chat.send leaves through the server's own system-chat packet, so it reaches
+    // exactly the players a server message reaches. The hub outlives the plugins: unload runs
+    // before it is dropped.
+    plugins.set_chat_sink([player_hub](std::string_view text) {
+        std::vector<std::uint8_t> packet;
+        if (terila::protocol::write_system_chat(packet, text)) {
+            player_hub->broadcast(packet);
+        }
+    });
 
     // Mobs use 1..N, so player entities start well above them.
     std::int32_t next_player_entity_id = 1000;

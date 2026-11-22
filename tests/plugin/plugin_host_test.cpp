@@ -281,13 +281,17 @@ namespace {
         return bytes;
     }
 
-    // A module that uses the ABI: it imports terila.log_write, keeps one page of memory with a
-    // line of text at offset 16, and returns the status of the last call from on_load. Two
-    // calls in one hook are how the event budget is observed within a single call.
-    std::string module_that_logs(int calls = 1) {
+    // A module that uses the ABI: it imports one terila host function, keeps one page of
+    // memory with a line of text at offset 16, and returns the status of the last call from
+    // on_load. Two calls in one hook are how the event budget is observed within a call.
+    std::string module_using(const std::string& function, int calls = 1) {
         std::string bytes("\0asm\1\0\0\0", 8);
         section(bytes, 1, std::string("\x01\x60\x02\x7f\x7f\x01\x7f", 7));  // (i32,i32)->i32
-        section(bytes, 2, std::string("\x01\x06terila\x09log_write\x00\x00", 20));
+        std::string import("\x01\x06terila", 8);
+        import.push_back(static_cast<char>(function.size()));
+        import += function;
+        import += std::string("\x00\x00", 2);
+        section(bytes, 2, import);
         section(bytes, 3, std::string("\x01\x00", 2));                       // one function
         section(bytes, 5, std::string("\x01\x00\x01", 3));                   // one memory
         section(bytes, 7, std::string("\x02\x06memory\x02\x00\x07on_load\x00\x01", 20));
@@ -325,6 +329,37 @@ namespace {
     }
 
 } // namespace
+
+// The second capability on the same surface: chat.send leaves through the host's sink with a
+// folded line, and the sink is what the server points at the player hub.
+TEST(PluginHostRuntime, ChatSendReachesTheHostSink) {
+    TempTree tree;
+    tree.write("packs/talker/plugin.json", manifest_of("talker"));
+    tree.write("packs/talker/permissions.json", request_of("talker", { "chat.send" }));
+    tree.write("grants/talker.json", grant_of("talker", { "chat.send" }));
+    tree.write_text("packs/talker/plugin.wasm", module_using("chat_send"));
+
+    PluginHost& host = PluginHost::instance();
+    std::string heard;
+    host.set_chat_sink([&heard](std::string_view text) { heard = std::string(text); });
+    host.load_all(tree.root() / "packs", tree.root() / "grants");
+    if (!host.has_runtime()) {
+        host.set_chat_sink(nullptr);
+        GTEST_SKIP() << "no WebAssembly runtime was found; set TERILA_WASM_RUNTIME";
+    }
+
+    const Plugin* plugin = find_plugin("talker");
+    ASSERT_NE(plugin, nullptr);
+    EXPECT_TRUE(plugin->enabled) << plugin->status;
+    EXPECT_EQ(heard, "hello from wasm");
+
+    // Without a sink the call reports that the host cannot serve it, and nothing crashes.
+    host.set_chat_sink(nullptr);
+    std::int32_t result = 0;
+    std::string error;
+    EXPECT_TRUE(host.call("talker", "on_load", 1, 0, result, error)) << error;
+    EXPECT_EQ(result, -3);
+}
 
 // A plugin that keeps trapping is released: the call is dropped, the count is kept, and once
 // it reaches kMaxTraps the instance is gone instead of failing on every event.
@@ -371,7 +406,7 @@ TEST(PluginHostRuntime, LogWriteImportIsLinkedAndCallable) {
     tree.write("packs/logging/plugin.json", manifest_of("logging"));
     tree.write("packs/logging/permissions.json", request_of("logging", { "log.write" }));
     tree.write("grants/logging.json", grant_of("logging", { "log.write" }));
-    tree.write_text("packs/logging/plugin.wasm", module_that_logs());
+    tree.write_text("packs/logging/plugin.wasm", module_using("log_write"));
 
     PluginHost& host = PluginHost::instance();
     host.load_all(tree.root() / "packs", tree.root() / "grants");
@@ -397,7 +432,7 @@ TEST(PluginHostRuntime, AnImportThatWasNotGrantedIsRefusedBeforeItRuns) {
     tree.write("packs/asking/plugin.json", manifest_of("asking"));
     tree.write("packs/asking/permissions.json", request_of("asking", { "chat.send" }));
     tree.write("grants/asking.json", grant_of("asking", { "chat.send" }));
-    tree.write_text("packs/asking/plugin.wasm", module_that_logs());
+    tree.write_text("packs/asking/plugin.wasm", module_using("log_write"));
 
     PluginHost& host = PluginHost::instance();
     host.load_all(tree.root() / "packs", tree.root() / "grants");
@@ -419,7 +454,7 @@ TEST(PluginHostRuntime, FuelPerCallStopsARunawayHook) {
     tree.write("packs/thrifty/plugin.json", manifest_of("thrifty"));
     tree.write("packs/thrifty/permissions.json", request_of("thrifty", { "log.write" }));
     tree.write("grants/thrifty.json", grant_with_limits("thrifty", { "log.write" }, 1, 100));
-    tree.write_text("packs/thrifty/plugin.wasm", module_that_logs());
+    tree.write_text("packs/thrifty/plugin.wasm", module_using("log_write"));
 
     PluginHost& host = PluginHost::instance();
     host.load_all(tree.root() / "packs", tree.root() / "grants");
@@ -443,7 +478,7 @@ TEST(PluginHostRuntime, LogBudgetDropsTheExtraLine) {
     tree.write("packs/chatty/permissions.json", request_of("chatty", { "log.write" }));
     tree.write("grants/chatty.json", grant_with_limits("chatty", { "log.write" },
         terila::plugin::kDefaultFuelPerCall, 1));
-    tree.write_text("packs/chatty/plugin.wasm", module_that_logs(2));
+    tree.write_text("packs/chatty/plugin.wasm", module_using("log_write", 2));
 
     PluginHost& host = PluginHost::instance();
     host.load_all(tree.root() / "packs", tree.root() / "grants");

@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -56,6 +57,10 @@ namespace terila::plugin {
         // survived. A missing directory is not an error: plugins are optional.
         void load_all(const std::filesystem::path& packs, const std::filesystem::path& grants);
         void unload_all();
+
+        // The server's one way out to the players. An empty function means nothing is
+        // listening, and chat.send answers "unavailable" instead of failing a call.
+        void set_chat_sink(std::function<void(std::string_view)> sink);
 
         const std::vector<Plugin>& plugins() const noexcept { return plugins_; }
         // Instances the host currently holds: one store per enabled plugin, none for a plugin
