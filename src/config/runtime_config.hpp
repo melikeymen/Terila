@@ -17,6 +17,31 @@ namespace terila::config {
     // The file written inside the configs directory.
     inline constexpr const char* kRuntimeConfigFile = "terila.config";
 
+    // Where the terrain's density field is evaluated. `Auto` asks the device once at start
+    // and keeps the CPU when no OpenCL device can run the kernel; `Gpu` does the same but
+    // also warns, because the operator asked for the device by name.
+    enum class WorldgenBackend {
+        Cpu,
+        Gpu,
+        Auto,
+    };
+
+    inline constexpr const char* worldgen_backend_name(WorldgenBackend backend) noexcept {
+        switch (backend) {
+        case WorldgenBackend::Gpu: return "gpu";
+        case WorldgenBackend::Auto: return "auto";
+        default: return "cpu";
+        }
+    }
+
+    // Unknown spellings answer Cpu, which is also the default: a typo must not silently
+    // turn the device path on.
+    inline WorldgenBackend parse_worldgen_backend(std::string_view text) noexcept {
+        if (text == "gpu") return WorldgenBackend::Gpu;
+        if (text == "auto") return WorldgenBackend::Auto;
+        return WorldgenBackend::Cpu;
+    }
+
     struct RuntimeConfig {
         // Ceiling for the memory the server keeps around, in MiB. 0 disables the ceiling,
         // which leaves the caches on their sizing default.
@@ -30,6 +55,9 @@ namespace terila::config {
         // to generate the whole view distance at once.
         unsigned max_threads = 16;
         unsigned min_threads = 2;
+
+        // Where the chunk density field is evaluated. Cpu keeps everything on the workers.
+        WorldgenBackend worldgen_backend = WorldgenBackend::Cpu;
 
         // What the caches may actually spend: the ceiling minus the reserve.
         std::size_t usable_memory_mb() const noexcept;

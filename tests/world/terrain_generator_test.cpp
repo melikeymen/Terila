@@ -736,3 +736,128 @@ TEST(LightBench, ComputePerChunk) {
               << sample_stats.misses << " misses" << std::endl;
 }
 
+
+// The device path is a second implementation of the same tree, so the only thing worth
+// asserting is that the two produce the same world.
+TEST(TerrainGeneratorGpuTest, FlattensTheOverworldDensityField) {
+    REQUIRE_VANILLA_DATA();
+    worldgen::gpu::set_backend(worldgen::gpu::Backend::Cpu);
+    const auto generator = make_generator(1337);
+
+    const auto& plan = generator.density_plan();
+    EXPECT_TRUE(plan.usable()) << plan.unsupported;
+    EXPECT_GT(plan.nodes.size(), 100u);
+    EXPECT_GT(plan.noises.size(), 10u);
+    EXPECT_FALSE(plan.layers.empty());
+    EXPECT_EQ(plan.permutations.size(), plan.layers.size() * 256);
+    EXPECT_FALSE(generator.device_backed()) << "the cpu backend must not touch the device";
+}
+
+TEST(TerrainGeneratorGpuTest, DeviceFieldProducesTheSameChunkAsTheCpu) {
+    REQUIRE_VANILLA_DATA();
+    worldgen::gpu::set_backend(worldgen::gpu::Backend::Cpu);
+    const auto cpu_generator = make_generator(1337);
+    const Chunk cpu_chunk = cpu_generator.generate(7, -3);
+
+    worldgen::gpu::set_backend(worldgen::gpu::Backend::Gpu);
+    const bool available = worldgen::gpu::DensityDevice::shared().available();
+    const std::string reason = worldgen::gpu::DensityDevice::shared().reason();
+    if (!available) {
+        worldgen::gpu::set_backend(worldgen::gpu::Backend::Cpu);
+        GTEST_SKIP() << "no device can run the density kernel: " << reason;
+    }
+
+    const std::size_t batches_before = worldgen::gpu::DensityDevice::shared().batch_count();
+    const auto device_generator = make_generator(1337);
+    ASSERT_TRUE(device_generator.device_backed());
+    const Chunk device_chunk = device_generator.generate(7, -3);
+    const std::size_t batches_after = worldgen::gpu::DensityDevice::shared().batch_count();
+    worldgen::gpu::set_backend(worldgen::gpu::Backend::Cpu);
+
+    EXPECT_GT(batches_after, batches_before) << "the chunk did not reach the device";
+
+    ASSERT_EQ(cpu_chunk.sections.size(), device_chunk.sections.size());
+    std::size_t mismatched = 0;
+    std::size_t first_section = 0;
+    std::size_t first_index = 0;
+    for (std::size_t section = 0; section < cpu_chunk.sections.size(); ++section) {
+        const auto& cpu_states = cpu_chunk.sections[section].block_states;
+        const auto& device_states = device_chunk.sections[section].block_states;
+        if (cpu_states.size() != device_states.size()) {
+            ++mismatched;
+            continue;
+        }
+        for (std::size_t index = 0; index < cpu_states.size(); ++index) {
+            if (cpu_states[index] != device_states[index]) {
+                if (mismatched == 0) {
+                    first_section = section;
+                    first_index = index;
+                }
+                ++mismatched;
+            }
+        }
+    }
+    EXPECT_EQ(mismatched, 0u) << "the first differing cell is section " << first_section
+                              << " index " << first_index;
+}
+
+TEST(TerrainGeneratorGpuTest, DeviceFieldMatchesTheCpuOverSeveralBiomes) {
+    REQUIRE_VANILLA_DATA();
+    worldgen::gpu::set_backend(worldgen::gpu::Backend::Gpu);
+    const bool available = worldgen::gpu::DensityDevice::shared().available();
+    const std::string reason = worldgen::gpu::DensityDevice::shared().reason();
+    if (!available) {
+        worldgen::gpu::set_backend(worldgen::gpu::Backend::Cpu);
+        GTEST_SKIP() << "no device can run the density kernel: " << reason;
+    }
+
+    const std::pair<std::int32_t, std::int32_t> spots[] = { { 0, 0 }, { 96, -48 } };
+    for (const auto& [cx, cz] : spots) {
+        worldgen::gpu::set_backend(worldgen::gpu::Backend::Cpu);
+        const Chunk from_cpu = make_generator(4242).generate(cx, cz);
+        worldgen::gpu::set_backend(worldgen::gpu::Backend::Gpu);
+        const auto device_generator = make_generator(4242);
+        ASSERT_TRUE(device_generator.device_backed());
+        const Chunk from_device = device_generator.generate(cx, cz);
+
+        ASSERT_EQ(from_cpu.sections.size(), from_device.sections.size());
+        for (std::size_t section = 0; section < from_cpu.sections.size(); ++section) {
+            EXPECT_EQ(from_cpu.sections[section].block_states,
+                from_device.sections[section].block_states)
+                << "chunk " << cx << ',' << cz << " section " << section;
+        }
+    }
+    worldgen::gpu::set_backend(worldgen::gpu::Backend::Cpu);
+}
+
+TEST(TerrainGeneratorGpuTest, DeviceAnswersTheSameValuesAsTheCpu) {
+    REQUIRE_VANILLA_DATA();
+    worldgen::gpu::set_backend(worldgen::gpu::Backend::Gpu);
+    if (!worldgen::gpu::DensityDevice::shared().available()) {
+        worldgen::gpu::set_backend(worldgen::gpu::Backend::Cpu);
+        GTEST_SKIP() << worldgen::gpu::DensityDevice::shared().reason();
+    }
+    const auto generator = make_generator(1337);
+    std::vector<worldgen::gpu::GridPoint> points;
+    for (int iy = 0; iy < 12; ++iy) {
+        for (int iz = 0; iz < 3; ++iz) {
+            for (int ix = 0; ix < 3; ++ix) {
+                points.push_back(worldgen::gpu::GridPoint{ static_cast<double>(ix * 4 + 0),
+                    static_cast<double>(iy * 8 - 64), static_cast<double>(iz * 4) });
+            }
+        }
+    }
+    std::vector<double> values;
+    ASSERT_TRUE(worldgen::gpu::DensityDevice::shared().evaluate(generator.density_plan(),
+        points, values));
+    worldgen::gpu::set_backend(worldgen::gpu::Backend::Cpu);
+
+    std::size_t differing = 0;
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        const double cpu = generator.density_at_point(points[i].x, points[i].y, points[i].z);
+        if (cpu != values[i]) {
+            ++differing;
+        }
+    }
+    EXPECT_EQ(differing, 0u) << "the device and the chunk workers disagree on the field";
+}

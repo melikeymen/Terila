@@ -71,6 +71,7 @@ target_sources(terila PRIVATE
     "src/world/chunk_cache.hpp"
     "src/world/chunk_jobs.cpp"
     "src/world/chunk_jobs.hpp"
+    "src/world/worldgen/gpu/density_device.cpp"
     "src/world/world_context.hpp"
     "src/config/runtime_config.cpp"
     "src/nbt/nbt_budget.hpp"
@@ -459,6 +460,7 @@ terila_copy_runtime(nbt_tests)
 add_executable(chunk_tests
     "src/config/runtime_config.cpp"
     "src/world/chunk_jobs.cpp"
+    "src/world/worldgen/gpu/density_device.cpp"
     "src/data/input_store.cpp"
     "tests/world/block_break_test.cpp"
     "tests/world/falling_blocks_test.cpp"

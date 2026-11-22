@@ -11,6 +11,7 @@
 #include "config/server_config.hpp"
 #include "config/server_files.hpp"
 #include "config/runtime_config.hpp"
+#include "world/worldgen/gpu/density_device.hpp"
 #include "data/input_store.hpp"
 #include "protocol/packet_ids_loader.hpp"
 #include "entity/mob.hpp"
@@ -207,6 +208,15 @@ int main() {
     LOG_INFO(Config, "resources: {} MiB ceiling, {} MiB reserve ({} MiB usable), {} workers",
         resources.max_memory_mb, resources.min_memory_mb, resources.usable_memory_mb(),
         resources.worker_threads());
+    terila::world::worldgen::gpu::set_backend(
+        resources.worldgen_backend == terila::config::WorldgenBackend::Gpu
+            ? terila::world::worldgen::gpu::Backend::Gpu
+            : (resources.worldgen_backend == terila::config::WorldgenBackend::Auto
+                    ? terila::world::worldgen::gpu::Backend::Auto
+                    : terila::world::worldgen::gpu::Backend::Cpu));
+    LOG_INFO(Config, "worldgen backend: {} (density field)",
+        terila::config::worldgen_backend_name(resources.worldgen_backend));
+
     terila::config::apply_memory_limits(resources);
     terila::world::ChunkJobs::set_thread_limit(resources.worker_threads());
 

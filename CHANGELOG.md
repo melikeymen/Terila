@@ -5,6 +5,19 @@ All notable changes to Terila, newest first. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- `configs/terila.config` carries `[worldgen] backend=cpu|gpu|auto` (cpu unless it is
+  changed): the density field of every chunk can be evaluated on an OpenCL device
+- The device path walks the same density graph as the chunk workers, node by node, on an
+  explicit stack, and every pool, template and noise table travels to the device as plain
+  arrays. A graph with a node the kernel does not carry keeps the CPU path
+- The device is opened through the system OpenCL loader at runtime, so no build dependency
+  and no SDK are needed; a machine without a device that computes in doubles keeps the CPU
+  field, and `backend=gpu` says why in the log
+- Round-trip tests build every branch of the tree and whole chunks on both sides and compare
+  them: the density values must match bit for bit, and so must the block array of a chunk
+
 ### Fixed
 
 - A joining player receives the chunks around the spawn instead of an empty world: the

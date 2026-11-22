@@ -87,7 +87,14 @@ namespace terila::config {
             "max=" << config.max_threads << "\n"
             "\n"
             "# Lower bound: the pool never starts fewer than this, even on a small machine.\n"
-            "min=" << config.min_threads << "\n";
+            "min=" << config.min_threads << "\n"
+            "\n"
+            "[worldgen]\n"
+            "# Where the terrain's density field is evaluated. 'cpu' keeps the chunk workers,\n"
+            "# 'gpu' sends the field of each chunk to an OpenCL device, and 'auto' uses the\n"
+            "# device when one can run the kernel and the CPU otherwise. The device and the\n"
+            "# CPU produce the same field; the setting only decides where it is computed.\n"
+            "backend=" << worldgen_backend_name(config.worldgen_backend) << "\n";
         return out.str();
     }
 
@@ -205,6 +212,17 @@ namespace terila::config {
                 else {
                     LOG_WARN(Config, "invalid thread floor '{}', keeping {}", value,
                         out.min_threads);
+                }
+            }
+            else if (key == "worldgen.backend" || key == "backend") {
+                const std::string name = lowered(value);
+                if (name == "cpu" || name == "gpu" || name == "auto") {
+                    out.worldgen_backend = parse_worldgen_backend(name);
+                    saw_value = true;
+                }
+                else {
+                    LOG_WARN(Config, "unknown worldgen backend '{}', keeping {}", value,
+                        worldgen_backend_name(out.worldgen_backend));
                 }
             }
         }

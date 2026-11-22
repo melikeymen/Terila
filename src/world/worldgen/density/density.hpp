@@ -80,13 +80,24 @@ namespace terila::world::worldgen {
             return min_value + (max_value - min_value) * t;
         }
 
-    private:
+        // One octave of one of the three stacks. The device path reads the same layers, so
+        // the shape of the stack is part of the node's public surface.
         struct Layer {
             Perlin perlin;
             double frequency = 1.0;
             double amplitude = 1.0;
             double smear = 1.0;
         };
+
+        const std::vector<Layer>& min_layers() const noexcept { return min_noise_; }
+        const std::vector<Layer>& max_layers() const noexcept { return max_noise_; }
+        const std::vector<Layer>& main_layers() const noexcept { return main_noise_; }
+        double xz_multiplier() const noexcept { return xz_multiplier_; }
+        double y_multiplier() const noexcept { return y_multiplier_; }
+        double xz_factor() const noexcept { return xz_factor_; }
+        double y_factor() const noexcept { return y_factor_; }
+
+    private:
 
         static void build(std::vector<Layer>& out, RandomSource& random, int first_octave,
             double smear_y, double value_factor) {

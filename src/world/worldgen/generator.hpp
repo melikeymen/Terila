@@ -23,6 +23,7 @@
 #include "world/worldgen/column.hpp"
 #include "world/worldgen/density_grid.hpp"
 #include "world/worldgen/dimension.hpp"
+#include "world/worldgen/gpu/density_device.hpp"
 #include "world/worldgen/settings.hpp"
 #include "world/worldgen/surface/material.hpp"
 #include "world/worldgen/structures/structures.hpp"
@@ -98,6 +99,16 @@ namespace terila::world::worldgen {
             world_top_ = min_y_ + section_count_ * 16;
             cache_slots_ = settings_.density().cache_slot_count();
             interp_slots_ = settings_.density().interp_slot_count();
+
+            // The field of one chunk is a few thousand independent lattice points, so the
+            // same tree can be walked on a device. The plan is built either way and the
+            // backend only decides where the batch runs.
+            gpu_plan_ = gpu::build_plan(settings_.final_density());
+            gpu_ready_ = gpu_plan_.usable() && gpu::use_device();
+            if (gpu::use_device() && !gpu_plan_.usable()) {
+                LOG_WARN(Chunk, "worldgen: the device path has no {} node, the chunk workers "
+                    "keep the field", gpu_plan_.unsupported);
+            }
             surface_noise_ = settings_.density().noise("minecraft:surface");
             surface_secondary_noise_ =
                 settings_.density().noise("minecraft:surface_secondary");
@@ -553,6 +564,18 @@ namespace terila::world::worldgen {
             return chunk;
         }
 
+        // The field at one point, evaluated on the CPU: the round-trip tests compare this with
+        // what the device answers for the same point.
+        double density_at_point(double x, double y, double z) const {
+            EvalContext& context = thread_context();
+            context.reset(cache_slots_);
+            return sample_density(x, y, z, context);
+        }
+
+        // True when the density field of this generator is evaluated on a device.
+        bool device_backed() const noexcept { return gpu_ready_; }
+        const gpu::DensityPlan& density_plan() const noexcept { return gpu_plan_; }
+
     private:
         // No column top can reach this height, so it marks a top entry in the sample table.
         static constexpr int kTopMarkerY = 2047;
@@ -667,6 +690,9 @@ namespace terila::world::worldgen {
 
         void build_grid(DensityGrid& grid, std::int32_t wx0, std::int32_t wz0) const {
             grid.init(wx0, wz0, min_y_, (world_top_ - min_y_) / 8 + 1);
+            if (device_grid(grid, wx0, wz0)) {
+                return;
+            }
             EvalContext& context = thread_context();
             context.reset(cache_slots_);
             for (int iy = 0; iy < grid.y_count; ++iy) {
@@ -677,6 +703,33 @@ namespace terila::world::worldgen {
                     }
                 }
             }
+        }
+
+        // The same grid points, handed to the device in one batch. The order is the grid's
+        // own, so the values land in the array the CPU would have filled.
+        bool device_grid(DensityGrid& grid, std::int32_t wx0, std::int32_t wz0) const {
+            if (!gpu_ready_) {
+                return false;
+            }
+            thread_local std::vector<gpu::GridPoint> points;
+            thread_local std::vector<double> values;
+            points.clear();
+            points.reserve(grid.values.size());
+            for (int iy = 0; iy < grid.y_count; ++iy) {
+                for (int iz = 0; iz < DensityGrid::kCellsZ; ++iz) {
+                    for (int ix = 0; ix < DensityGrid::kCellsX; ++ix) {
+                        points.push_back(gpu::GridPoint{ static_cast<double>(wx0 + ix * 4),
+                            static_cast<double>(min_y_ + iy * 8),
+                            static_cast<double>(wz0 + iz * 4) });
+                    }
+                }
+            }
+            if (!gpu::DensityDevice::shared().evaluate(gpu_plan_, points, values) ||
+                values.size() != grid.values.size()) {
+                return false;
+            }
+            grid.values = values;
+            return true;
         }
 
         // The highest solid block of a column, from the real density field.
@@ -1149,6 +1202,8 @@ namespace terila::world::worldgen {
         int world_top_ = 320;
         int cache_slots_ = 0;
         int interp_slots_ = 0;
+        gpu::DensityPlan gpu_plan_;
+        bool gpu_ready_ = false;
         std::uint32_t seed_ = 0x51ED2C3u;
         mutable std::shared_ptr<BlockSampleCache> block_cache_ =
             std::make_shared<BlockSampleCache>();

@@ -301,6 +301,13 @@ namespace terila::world::worldgen {
 
         double sample(double x, double y, double z) const { return get(x, y, z); }
 
+        // The lattice travels to the device as it is: the permutation table and the three
+        // offsets are the whole state of one octave.
+        const std::array<std::uint8_t, 256>& permutations() const noexcept { return perms_; }
+        double offset_x() const noexcept { return offset_x_; }
+        double offset_y() const noexcept { return offset_y_; }
+        double offset_z() const noexcept { return offset_z_; }
+
         // The terrain noise smears the vertical gradient of an octave so a layer stays constant
         // inside a thin slab. The fudge is subtracted from the relative height the gradients
         // see, while the blend still uses the unmodified height.
@@ -518,13 +525,16 @@ namespace terila::world::worldgen {
 
         bool empty() const noexcept { return layers_.empty(); }
 
-    private:
+        // One octave of the stack: the fbm the field is made of.
         struct Layer {
             Perlin noise;
             double frequency = 1.0;
             float amplitude = 1.0f;
         };
 
+        const std::vector<Layer>& layers() const noexcept { return layers_; }
+
+    private:
         std::vector<Layer> layers_;
     };
 

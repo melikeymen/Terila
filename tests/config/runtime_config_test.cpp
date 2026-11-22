@@ -123,3 +123,45 @@ namespace {
     }
 
 } // namespace
+
+namespace {
+
+    TEST_F(RuntimeConfigTest, ReadsTheWorldgenBackend) {
+        fs::create_directories(directory_);
+        const auto path = directory_ / terila::config::kRuntimeConfigFile;
+        {
+            std::ofstream out(path);
+            out << "[worldgen]\nbackend=gpu\n";
+        }
+
+        terila::config::RuntimeConfig loaded;
+        EXPECT_TRUE(terila::config::load_runtime_config(loaded, path));
+        EXPECT_EQ(loaded.worldgen_backend, terila::config::WorldgenBackend::Gpu);
+    }
+
+    TEST_F(RuntimeConfigTest, KeepsTheCpuBackendForAnUnknownName) {
+        fs::create_directories(directory_);
+        const auto path = directory_ / terila::config::kRuntimeConfigFile;
+        {
+            std::ofstream out(path);
+            out << "[worldgen]\nbackend=quantum\n";
+        }
+
+        terila::config::RuntimeConfig loaded;
+        terila::config::load_runtime_config(loaded, path);
+        EXPECT_EQ(loaded.worldgen_backend, terila::config::WorldgenBackend::Cpu);
+    }
+
+    TEST_F(RuntimeConfigTest, WritesAndReadsTheDefaultBackend) {
+        fs::path written;
+        ASSERT_TRUE(terila::config::ensure_runtime_config(directory_, {}, &written));
+        const std::string text = terila::config::default_runtime_config_text({});
+        EXPECT_NE(text.find("[worldgen]"), std::string::npos);
+        EXPECT_NE(text.find("backend=cpu"), std::string::npos);
+
+        terila::config::RuntimeConfig loaded;
+        ASSERT_TRUE(terila::config::load_runtime_config(loaded, written));
+        EXPECT_EQ(loaded.worldgen_backend, terila::config::WorldgenBackend::Cpu);
+    }
+
+} // namespace
