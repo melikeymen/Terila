@@ -3,7 +3,7 @@
 All notable changes to Terila, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [v0.23.0] — 2026-11-22
 
 ### Added
 
