@@ -3,6 +3,17 @@
 All notable changes to Terila, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- A joining player receives the chunks around the spawn instead of an empty world: the
+  template pools, templates, processor lists and jigsaw candidate lists that generation
+  fills in are now shared between the chunk workers safely, so a worker no longer stops
+  while another one was writing the same cache
+- A chunk stream that dies because one of its chunks failed is logged and the batch is
+  closed instead of leaving the client waiting on a batch that never finishes
+
 ## [v0.23.0] — 2026-11-22
 
 ### Added

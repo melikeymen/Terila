@@ -246,6 +246,9 @@ namespace terila::async {
 
         bool finished() const noexcept { return task_.finished(); }
 
+        // The body threw: rethrows what it threw, so the owner can say why it stopped.
+        void rethrow_if_failed() { task_.rethrow_if_failed(); }
+
         void restart(Task<void> task) {
             // Drop the old frame only after the cursor into it is gone.
             current_ = nullptr;

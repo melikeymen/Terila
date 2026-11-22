@@ -18,6 +18,8 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <map>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -228,11 +230,14 @@ namespace terila::world::worldgen {
     // file is large and we may look up the same pool many times during assembly.
     inline std::optional<TemplatePool> load_pool(const std::string& pool_id) {
         static std::unordered_map<std::string, TemplatePool> cache;
-        static bool loaded = false;
-        if (!loaded) {
+        // Several workers may be the first to ask for a pool at the same time, and a map that
+        // is being filled while another thread reads it hangs or crashes. The file is read
+        // once, and the map is only read afterwards.
+        static std::once_flag once;
+        std::call_once(once, [&] {
             std::string text;
             if (!data::input::read_text("worldgen/template_pools.json", text)) {
-                return std::nullopt;
+                return;
             }
             try {
                 const nlohmann::json parsed = nlohmann::json::parse(text);
@@ -248,8 +253,7 @@ namespace terila::world::worldgen {
                 }
             } catch (const std::exception&) {
             }
-            loaded = true;
-        }
+        });
         const auto found = cache.find(pool_id);
         if (found != cache.end()) {
             return found->second;
@@ -407,19 +411,25 @@ namespace terila::world::worldgen {
     // so they are skipped rather than applied everywhere.
     inline std::optional<ProcessorList> load_processor_list(const std::string& id,
         const StateTextResolver& resolve) {
+        // Read once for the whole process, like the pools: generation asks for lists from
+        // several threads.
         static std::optional<nlohmann::json> file;
-        static bool loaded = false;
-        if (!loaded) {
+        static std::once_flag once;
+        static bool failed = false;
+        std::call_once(once, [&] {
             std::string text;
             if (!data::input::read_text("worldgen/processor_lists.json", text)) {
-                return std::nullopt;
+                failed = true;
+                return;
             }
             try {
                 file = nlohmann::json::parse(text);
             } catch (const std::exception&) {
-                return std::nullopt;
+                failed = true;
             }
-            loaded = true;
+        });
+        if (failed) {
+            return std::nullopt;
         }
         if (!file) {
             return std::nullopt;
@@ -583,18 +593,25 @@ namespace terila::world::worldgen {
         std::vector<JigsawBlock>& out_jigsaws) {
         static std::unordered_map<std::string, std::pair<StructureTemplate, std::vector<JigsawBlock>>> cache;
         static std::unordered_map<std::string, bool> negative_cache;
+        // Generation fills this cache from several workers at once, so every read and write
+        // of it is under the lock. A template is parsed outside the lock; the insert keeps
+        // the copy that won.
+        static std::mutex mutex;
 
         // The mounted input root is part of the key: a test that points the store at a
         // different directory must not read the templates of another one.
         const std::string key = data::input::root() + '|' + std::string(id);
-        const auto cached = cache.find(key);
-        if (cached != cache.end()) {
-            out_tmpl = cached->second.first;
-            out_jigsaws = cached->second.second;
-            return true;
-        }
-        if (negative_cache.find(key) != negative_cache.end()) {
-            return false;
+        {
+            const std::lock_guard lock(mutex);
+            const auto cached = cache.find(key);
+            if (cached != cache.end()) {
+                out_tmpl = cached->second.first;
+                out_jigsaws = cached->second.second;
+                return true;
+            }
+            if (negative_cache.find(key) != negative_cache.end()) {
+                return false;
+            }
         }
 
         std::string text;
@@ -631,9 +648,11 @@ namespace terila::world::worldgen {
             std::vector<JigsawBlock> jigsaws = extract_jigsaws(tmpl, parsed);
             out_tmpl = std::move(tmpl);
             out_jigsaws = std::move(jigsaws);
+            const std::lock_guard lock(mutex);
             cache.emplace(key, std::make_pair(out_tmpl, out_jigsaws));
             return true;
         } catch (const std::exception&) {
+            const std::lock_guard lock(mutex);
             negative_cache.emplace(key, true);
             return false;
         }
@@ -766,11 +785,19 @@ namespace terila::world::worldgen {
     // houses for every street it grows.
     inline const std::vector<JigsawCandidate>& candidates_for(const std::string& pool_id,
         const std::string& target_name, const StateTextResolver& resolve) {
-        static std::unordered_map<std::string, std::vector<JigsawCandidate>> cache;
+        // A std::map keeps the address of an entry stable while another worker inserts the
+        // next pool, so the reference handed back stays valid after the lock is dropped. The
+        // scan itself runs outside the lock: two workers that need the same pool may scan it
+        // twice, but neither waits on the other's template loading.
+        static std::map<std::string, std::vector<JigsawCandidate>> cache;
+        static std::mutex mutex;
         const std::string key = pool_id + '\x1f' + target_name;
-        const auto cached = cache.find(key);
-        if (cached != cache.end()) {
-            return cached->second;
+        {
+            const std::lock_guard lock(mutex);
+            const auto cached = cache.find(key);
+            if (cached != cache.end()) {
+                return cached->second;
+            }
         }
 
         std::vector<JigsawCandidate> list;
@@ -791,7 +818,8 @@ namespace terila::world::worldgen {
                 }
             }
         }
-        return cache.emplace(key, std::move(list)).first->second;
+        const std::lock_guard lock(mutex);
+        return cache.try_emplace(key, std::move(list)).first->second;
     }
 
     // Try to connect a pending jigsaw by picking a piece from its target pool.

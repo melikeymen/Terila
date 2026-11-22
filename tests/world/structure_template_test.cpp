@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <future>
 #include <string>
 #include <utility>
 #include <vector>
@@ -621,6 +622,36 @@ namespace {
             resolve, 0, -27, 0, 1337, 64, 4, 116);
         for (const auto& piece : plain) {
             EXPECT_EQ(piece.rotation, 0);
+        }
+    }
+
+    TEST(JigsawTest, ConcurrentAssembliesShareTheirCachesSafely) {
+        if (!input_available()) {
+            GTEST_SKIP() << "input/ is not next to the build tree";
+        }
+        using terila::world::worldgen::assemble_jigsaw;
+
+        const auto resolve = [](std::string_view) { return 0; };
+        const auto rotate = [](std::int32_t state, int) { return state; };
+
+        // The server generates its chunks on several workers, so the pools, templates and
+        // candidate lists are filled from more than one thread. Every assembly below has to
+        // finish: a cache that is written while another thread reads it hangs here.
+        constexpr int kThreads = 8;
+        std::vector<std::future<std::size_t>> work;
+        work.reserve(kThreads);
+        for (int index = 0; index < kThreads; ++index) {
+            work.push_back(std::async(std::launch::async, [=, &resolve, &rotate] {
+                std::size_t pieces = 0;
+                for (int round = 0; round < 4; ++round) {
+                    pieces += assemble_jigsaw("minecraft:village/plains/town_centers",
+                        resolve, 0, 70, 0, 900 + index * 7 + round, 64, 4, 80, rotate).size();
+                }
+                return pieces;
+            }));
+        }
+        for (auto& future : work) {
+            EXPECT_GT(future.get(), 0u);
         }
     }
 

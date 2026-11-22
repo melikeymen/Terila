@@ -263,6 +263,9 @@ namespace terila::network {
         // it instead of losing the batch it was in the middle of.
         terila::async::Task<void> stream_chunks();
         void pump_chunks();
+        // Says why the chunk stream ended, so a failing column does not look like a client
+        // that simply stopped asking for terrain.
+        void report_chunk_stream_failure();
         // Handed to the chunk workers so the stream is resumed on the io thread the moment
         // a chunk is ready. Polling once per tick cost up to 50 ms per chunk, which is what
         // made a whole view distance take forty seconds instead of a couple.

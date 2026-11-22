@@ -506,6 +506,18 @@ namespace terila::network {
         };
     }
 
+    void Connection::report_chunk_stream_failure() {
+        try {
+            chunk_stream_.rethrow_if_failed();
+        }
+        catch (const std::exception& error) {
+            LOG_ERROR(Chunk, "chunk stream stopped: {}", error.what());
+        }
+        catch (...) {
+            LOG_ERROR(Chunk, "chunk stream stopped with an unknown failure");
+        }
+    }
+
     void Connection::pump_chunks() {
         // A running stream owns its batch: the chunks it already took out of the queue are
         // not visible in pending_chunks_, so resuming it must not depend on the queue. This
@@ -513,6 +525,9 @@ namespace terila::network {
         // client showing an endless "Loading terrain".
         if (!chunk_stream_.finished()) {
             chunk_stream_.resume();
+            if (chunk_stream_.finished()) {
+                report_chunk_stream_failure();
+            }
             return;
         }
         // Nothing queued: do not build a coroutine frame only to have it return at once,

@@ -59,13 +59,23 @@ namespace terila::world {
         // per-thread, so several chunks of the same world generate side by side safely.
         std::packaged_task<PreparedChunk()> task(
             [kind, cx, cz, done = std::move(on_done)]() mutable {
-                PreparedChunk prepared;
-                prepared.chunk = WorldContext::shared().generator(kind).generate(cx, cz);
-                prepared.encoded = encode::encode(prepared.chunk);
-                if (done) {
-                    done();
+                try {
+                    PreparedChunk prepared;
+                    prepared.chunk = WorldContext::shared().generator(kind).generate(cx, cz);
+                    prepared.encoded = encode::encode(prepared.chunk);
+                    if (done) {
+                        done();
+                    }
+                    return prepared;
                 }
-                return prepared;
+                catch (...) {
+                    // A column that failed must still wake its stream: a future nobody is
+                    // woken for leaves the player waiting on a batch that never finishes.
+                    if (done) {
+                        done();
+                    }
+                    throw;
+                }
             });
 
         auto done = task.get_future();

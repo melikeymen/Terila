@@ -243,10 +243,13 @@ namespace terila::network {
             return;
         }
 
+        // The count is captured as a value: moving the list into the handler would race the
+        // argument that hands the same list to the write.
+        const std::size_t buffer_count = buffers.size();
         asio::async_write(
             socket_,
             buffers,
-            [self, taken, buffers = std::move(buffers)](
+            [self, taken, buffer_count](
                 const asio::error_code& error, std::size_t bytes_transferred) {
                 if (error) {
                     LOG_DEBUG(Network, "write failed: {} ({})", error.message(), error.value());
@@ -254,7 +257,7 @@ namespace terila::network {
                     return;
                 }
 
-                LOG_TRACE(Network, "wrote {} bytes in {} buffers", bytes_transferred, buffers.size());
+                LOG_TRACE(Network, "wrote {} bytes in {} buffers", bytes_transferred, buffer_count);
                 self->write_queue_.erase(self->write_queue_.begin(),
                     self->write_queue_.begin() + static_cast<std::ptrdiff_t>(taken));
                 self->do_write();
