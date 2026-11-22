@@ -499,6 +499,17 @@ target_include_directories(chunk_tests PRIVATE
 )
 target_link_libraries(chunk_tests PRIVATE GTest::gtest_main nlohmann_json::nlohmann_json terila_asio)
 
+# Spike for the plugin API design (design/plugin-api.md, section 10): what the host
+# dispatch table costs, and what a call into a wasm module would cost. The runtime is found
+# at run time, so this target has no dependencies.
+add_executable(plugin_spike "tools/plugin_spike.cpp")
+if(MSVC)
+    target_compile_options(plugin_spike PRIVATE /utf-8)
+endif()
+if(WIN32)
+    target_compile_definitions(plugin_spike PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+
 include(cmake/parity_dump.cmake)
 
 add_executable(trf_tests
