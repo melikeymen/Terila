@@ -221,18 +221,42 @@ namespace terila::network {
         writing_ = true;
 
         auto self = shared_from_this();
+
+        // The socket takes the first few queued packets as one gathered write, so a burst of
+        // small packets costs one call instead of one per packet. The buffers point into the
+        // queue, which keeps its elements valid while it is appended to.
+        std::vector<asio::const_buffer> buffers;
+        std::size_t taken = 0;
+        while (taken < write_queue_.size() && taken < kMaxWriteQueue) {
+            const std::vector<std::uint8_t>& queued = write_queue_[taken];
+            ++taken;
+            if (!queued.empty()) {
+                buffers.emplace_back(queued.data(), queued.size());
+            }
+        }
+        if (buffers.empty()) {
+            // Nothing but empty buffers: drop them and look at what follows.
+            write_queue_.erase(write_queue_.begin(),
+                write_queue_.begin() + static_cast<std::ptrdiff_t>(taken));
+            writing_ = false;
+            do_write();
+            return;
+        }
+
         asio::async_write(
             socket_,
-            asio::buffer(write_queue_.front()),
-            [self](const asio::error_code& error, std::size_t bytes_transferred) {
+            buffers,
+            [self, taken, buffers = std::move(buffers)](
+                const asio::error_code& error, std::size_t bytes_transferred) {
                 if (error) {
                     LOG_DEBUG(Network, "write failed: {} ({})", error.message(), error.value());
                     self->close();
                     return;
                 }
 
-                LOG_TRACE(Network, "wrote {} bytes", bytes_transferred);
-                self->write_queue_.pop_front();
+                LOG_TRACE(Network, "wrote {} bytes in {} buffers", bytes_transferred, buffers.size());
+                self->write_queue_.erase(self->write_queue_.begin(),
+                    self->write_queue_.begin() + static_cast<std::ptrdiff_t>(taken));
                 self->do_write();
                 self->pump_chunks();
             }

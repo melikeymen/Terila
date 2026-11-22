@@ -29,6 +29,10 @@ All notable changes to Terila, newest first. Format follows
 
 - The block overlay is keyed by dimension: the nether and the overworld share their x/z, so
   a single table put one world's edit on top of the other's column
+- The light engine drains its flood fill from a flat queue it reads forward instead of a
+  deque it pops, which takes about a fifth of the chunk's lighting time off the generator
+- A connection writes the first few packets waiting in its queue as one gathered write
+  instead of one write per packet
 - Players only see each other inside one dimension, both as entities and through selectors
 
 ### Fixed

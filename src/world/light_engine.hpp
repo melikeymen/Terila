@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <deque>
 #include <array>
 #include <unordered_map>
 #include <utility>
@@ -217,9 +216,13 @@ namespace terila::world {
                 return std::max(1, opacity_of(packed));
             };
 
-            std::deque<int> queue_x;
-            std::deque<int> queue_y;
-            std::deque<int> queue_z;
+            // A flood fill visits every cell it lights once, so the queue is read forward and
+            // never popped: a deque frees a block of cells on every pop_front, which costs
+            // more than the lighting work the cells stand for.
+            std::vector<int> queue_x;
+            std::vector<int> queue_y;
+            std::vector<int> queue_z;
+            std::size_t queue_head = 0;
 
             const auto push = [&](int x, int y, int z) {
                 queue_x.push_back(x);
@@ -232,13 +235,11 @@ namespace terila::world {
                 static constexpr int dy[6] = { 0, 0, 1, -1, 0, 0 };
                 static constexpr int dz[6] = { 0, 0, 0, 0, 1, -1 };
 
-                while (!queue_x.empty()) {
-                    const int x = queue_x.front();
-                    const int y = queue_y.front();
-                    const int z = queue_z.front();
-                    queue_x.pop_front();
-                    queue_y.pop_front();
-                    queue_z.pop_front();
+                while (queue_head < queue_x.size()) {
+                    const int x = queue_x[queue_head];
+                    const int y = queue_y[queue_head];
+                    const int z = queue_z[queue_head];
+                    ++queue_head;
 
                     const int level = levels[index_of(x, y, z)];
                     if (level <= 0) {
@@ -264,6 +265,13 @@ namespace terila::world {
                         push(nx, ny, nz);
                     }
                 }
+
+                // The next pass fills its own queue: the sky pass and the block light pass
+                // each drain one.
+                queue_x.clear();
+                queue_y.clear();
+                queue_z.clear();
+                queue_head = 0;
             };
 
             // Sunlight: every cell of a column at or above its source is full daylight. The
