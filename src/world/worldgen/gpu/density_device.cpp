@@ -1,6 +1,8 @@
 #include "world/worldgen/gpu/density_device.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <vector>
 
 namespace terila::world::worldgen::gpu {
 
@@ -257,6 +259,48 @@ namespace terila::world::worldgen::gpu {
         return true;
     }
 
+    bool DensityDevice::forget(std::uint64_t plan_id) {
+        std::lock_guard lock(mutex_);
+        if (state_ != State::Ready) {
+            return false;
+        }
+        const auto found = uploads_.find(plan_id);
+        if (found == uploads_.end()) {
+            return false;
+        }
+        Upload& buffers = found->second;
+        for (void* memory : { buffers.nodes, buffers.data, buffers.children, buffers.numbers,
+                 buffers.points, buffers.point_value, buffers.layer_data,
+                 buffers.layer_amplitude, buffers.layer_perm, buffers.perms, buffers.noises,
+                 buffers.blended_ints, buffers.blended_doubles, buffers.coords, buffers.out }) {
+            if (memory != nullptr) {
+                api_.release_mem_object(memory);
+            }
+        }
+        uploads_.erase(found);
+        return true;
+    }
+
+    bool DensityDevice::park(const std::string& why) {
+        parked_ = true;
+        LOG_WARN(Chunk, "worldgen device stopped answering ({}); the chunk workers keep the "
+            "field for the rest of the run", why);
+        return false;
+    }
+
+    bool DensityDevice::bind_arguments(Upload& buffers) {
+        void* arguments[15] = { buffers.nodes, buffers.data, buffers.children, buffers.numbers,
+            buffers.points, buffers.point_value, buffers.layer_data, buffers.layer_amplitude,
+            buffers.layer_perm, buffers.perms, buffers.noises, buffers.blended_ints,
+            buffers.blended_doubles, buffers.coords, buffers.out };
+        for (cl_uint index = 0; index < 15; ++index) {
+            if (api_.set_kernel_arg(kernel_, index, sizeof(void*), &arguments[index]) != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     bool DensityDevice::evaluate(const DensityPlan& plan, const std::vector<GridPoint>& points,
         std::vector<double>& out) {
         if (!available() || !plan.usable() || points.empty()) {
@@ -266,7 +310,7 @@ namespace terila::world::worldgen::gpu {
         // One queue, one kernel: two workers would otherwise interleave their buffers. The
         // device is a single resource, so the lock is held for the whole batch.
         std::lock_guard lock(mutex_);
-        if (state_ != State::Ready) {
+        if (state_ != State::Ready || parked_) {
             return false;
         }
 
@@ -289,6 +333,7 @@ namespace terila::world::worldgen::gpu {
             buffers.coords = api_.create_buffer(context_, detail::kMemReadOnly, coords_bytes,
                 nullptr, nullptr);
             buffers.coords_bytes = coords_bytes;
+            bound_plan_ = 0;
         }
         if (buffers.out_capacity < count) {
             if (buffers.out != nullptr) {
@@ -297,10 +342,16 @@ namespace terila::world::worldgen::gpu {
             buffers.out = api_.create_buffer(context_, detail::kMemReadWrite,
                 count * sizeof(double), nullptr, nullptr);
             buffers.out_capacity = count;
+            bound_plan_ = 0;
         }
         if (buffers.coords == nullptr || buffers.out == nullptr) {
-            LOG_WARN(Chunk, "worldgen device could not hold the chunk grid");
-            return false;
+            return park("the grid buffers could not be created");
+        }
+        if (bound_plan_ != plan.id) {
+            if (!bind_arguments(buffers)) {
+                return park("the kernel arguments were rejected");
+            }
+            bound_plan_ = plan.id;
         }
 
         std::vector<double> flat(count * 3);
@@ -312,48 +363,96 @@ namespace terila::world::worldgen::gpu {
         const cl_int written = api_.enqueue_write_buffer(queue_, buffers.coords, 1, 0,
             coords_bytes, flat.data(), 0, nullptr, nullptr);
         if (written != 0) {
-            LOG_WARN(Chunk, "worldgen device rejected the grid points (error {})", written);
-            return false;
+            return park("the grid points were rejected");
         }
 
-        const std::size_t argument_count = 17;
-        void* arguments[argument_count] = { &buffers.nodes, &buffers.data, &buffers.children,
-            &buffers.numbers, &buffers.points, &buffers.point_value, &buffers.layer_data,
-            &buffers.layer_amplitude, &buffers.layer_perm, &buffers.perms, &buffers.noises,
-            &buffers.blended_ints, &buffers.blended_doubles, &buffers.coords, &buffers.out };
-        for (cl_uint index = 0; index < 15; ++index) {
-            if (api_.set_kernel_arg(kernel_, index, sizeof(void*), arguments[index]) != 0) {
-                LOG_WARN(Chunk, "worldgen device rejected the kernel argument {}", index);
-                return false;
-            }
-        }
+        // The count and the root are the only arguments that change per batch; the buffers
+        // were bound once when the plan was uploaded.
         const cl_int items = static_cast<cl_int>(count);
-        if (api_.set_kernel_arg(kernel_, 15, sizeof(items), &items) != 0) {
-            return false;
-        }
         const cl_int root = plan.root;
-        if (api_.set_kernel_arg(kernel_, 16, sizeof(root), &root) != 0) {
-            return false;
+        if (api_.set_kernel_arg(kernel_, 15, sizeof(items), &items) != 0 ||
+            api_.set_kernel_arg(kernel_, 16, sizeof(root), &root) != 0) {
+            return park("the batch size was rejected");
         }
 
         const std::size_t global[1] = { count };
         const cl_int launched = api_.enqueue_nd_range_kernel(queue_, kernel_, 1, nullptr, global,
             nullptr, 0, nullptr, nullptr);
         if (launched != 0) {
-            LOG_WARN(Chunk, "worldgen device refused the grid batch (error {})", launched);
-            return false;
+            return park("the grid batch was refused");
         }
         out.assign(count, 0.0);
         const cl_int read = api_.enqueue_read_buffer(queue_, buffers.out, 1, 0,
             count * sizeof(double), out.data(), 0, nullptr, nullptr);
         const cl_int finished = api_.finish(queue_);
         if (read != 0 || finished != 0) {
-            LOG_WARN(Chunk, "worldgen device did not return the grid (read {}, finish {})",
-                read, finished);
-            return false;
+            return park("the grid was not returned");
         }
         ++batches_;
         return true;
+    }
+
+} // namespace terila::world::worldgen::gpu
+
+namespace terila::world::worldgen::gpu {
+
+    bool prefer_device_for(const DensityPlan& plan,
+        const std::function<double(double, double, double)>& cpu_sample) {
+        static std::mutex mutex;
+        static int decision = 0;
+
+        std::lock_guard lock(mutex);
+        if (decision != 0) {
+            return decision == 1;
+        }
+        DensityDevice& device = DensityDevice::shared();
+        if (!device.available() || !plan.usable()) {
+            decision = 2;
+            return false;
+        }
+
+        std::vector<GridPoint> points;
+        points.reserve(600);
+        for (int iy = 0; iy < 24; ++iy) {
+            for (int iz = 0; iz < 5; ++iz) {
+                for (int ix = 0; ix < 5; ++ix) {
+                    points.push_back(GridPoint{ static_cast<double>(ix * 4),
+                        static_cast<double>(-64 + iy * 8), static_cast<double>(iz * 4) });
+                }
+            }
+        }
+
+        std::vector<double> values;
+        // The first dispatch pays for the upload, so it is not part of the measurement.
+        if (!device.evaluate(plan, points, values)) {
+            decision = 2;
+            return false;
+        }
+        const auto device_start = std::chrono::steady_clock::now();
+        for (int round = 0; round < 4; ++round) {
+            if (!device.evaluate(plan, points, values)) {
+                decision = 2;
+                return false;
+            }
+        }
+        const double device_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - device_start).count() / 4.0;
+
+        const auto cpu_start = std::chrono::steady_clock::now();
+        double checksum = 0.0;
+        for (const auto& point : points) {
+            checksum += cpu_sample(point.x, point.y, point.z);
+        }
+        const double cpu_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - cpu_start).count();
+
+        // A device that answers the same field but draws the same power for it is not worth
+        // the transfer, and `checksum` keeps the compiler from dropping the CPU pass.
+        decision = (device_ms < cpu_ms && checksum != 1.23456789e300) ? 1 : 2;
+        LOG_INFO(Chunk, "worldgen backend 'auto': the device takes {:.2f} ms for one field, the "
+            "chunk workers {:.2f} ms; using {}", device_ms, cpu_ms,
+            decision == 1 ? "the device" : "the chunk workers");
+        return decision == 1;
     }
 
 } // namespace terila::world::worldgen::gpu

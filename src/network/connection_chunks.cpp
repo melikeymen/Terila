@@ -37,10 +37,30 @@ namespace terila::network {
             return;
         }
 
-        const auto resolve_block = [this](std::string_view name) { return block_state(name); };
-        const auto resolve_biome = [this](std::string_view name) { return biome_state(name); };
-        const auto resolve_state_text = [this](std::string_view text) {
-            return world::worldgen::template_state_id(text, data_.block_states, data_.block_state_ids);
+        // The generator outlives every connection and its chunk workers keep calling these
+        // while other players stream, so they hold the registry itself. Capturing the
+        // connection would leave the generator reading a destroyed object the moment the
+        // player who happened to initialise the dimension logs out.
+        const terila::data::RegistryData* registry = &data_;
+        const auto resolve_block = [registry](std::string_view name)
+            -> std::optional<std::int32_t> {
+            const auto found = registry->block_state_ids.find(std::string(name));
+            if (found == registry->block_state_ids.end()) {
+                return std::nullopt;
+            }
+            return found->second;
+        };
+        const auto resolve_biome = [registry](std::string_view name)
+            -> std::optional<std::int32_t> {
+            const auto found = registry->biome_ids.find(std::string(name));
+            if (found == registry->biome_ids.end()) {
+                return std::nullopt;
+            }
+            return found->second;
+        };
+        const auto resolve_state_text = [registry](std::string_view text) {
+            return world::worldgen::template_state_id(text, registry->block_states,
+                registry->block_state_ids);
         };
         const auto rotate_state = world::worldgen::template_rotator(data_);
 

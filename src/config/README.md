@@ -8,8 +8,8 @@ so the server can read its settings before anything else is initialised.
 - `server_files.hpp` — the default `server.properties` and `eula.txt` contents,
   plus the helpers that create them on first run.
 - `runtime_config.hpp/.cpp` — the resource limits kept in `configs/terila.config`
-  (memory ceiling and reserve, worker thread floor and ceiling), their file
-  helpers and the working-set cap.
+  (memory ceiling and reserve, worker thread floor and ceiling, worldgen
+  backend), their file helpers and the working-set cap.
 
 ## `configs/terila.config`
 
@@ -24,6 +24,13 @@ from it.
 | `memory`  | `min-megabytes` | `256`   | Memory left free for the rest of the machine; `0` disables the reserve |
 | `threads` | `max`           | `16`    | Upper bound for the chunk generation workers               |
 | `threads` | `min`           | `2`     | Lower bound for the chunk generation workers               |
+| `worldgen`| `backend`       | `cpu`   | Where the chunk density field is evaluated: `cpu`, `gpu` or `auto` |
+
+`backend=gpu` sends the density field of each chunk to the first OpenCL device that
+can compute in doubles; `auto` uses that device when one can run the kernel and
+keeps the CPU otherwise. Both fall back to the chunk workers on a machine without
+a usable device, and the device answers the same field the CPU does, so the
+setting only decides where the work happens.
 
 The pool derives its count from the machine (one core stays with the io thread)
 and clamps it between `min` and `max`. The chunk cache gets a third of

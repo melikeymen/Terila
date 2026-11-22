@@ -103,11 +103,28 @@ namespace terila::world::worldgen {
             // The field of one chunk is a few thousand independent lattice points, so the
             // same tree can be walked on a device. The plan is built either way and the
             // backend only decides where the batch runs.
-            gpu_plan_ = gpu::build_plan(settings_.final_density());
-            gpu_ready_ = gpu_plan_.usable() && gpu::use_device();
-            if (gpu::use_device() && !gpu_plan_.usable()) {
+            // The plan owns the tables the device holds, so the last copy of this generator
+            // gives them back instead of leaving them on the device for the rest of the run.
+            gpu_plan_ = std::shared_ptr<gpu::DensityPlan>(
+                new gpu::DensityPlan(gpu::build_plan(settings_.final_density())),
+                [](gpu::DensityPlan* plan) {
+                    gpu::DensityDevice::shared().forget(plan->id);
+                    delete plan;
+                });
+            gpu_ready_ = gpu_plan_->usable() && gpu::use_device();
+            if (gpu::use_device() && !gpu_plan_->usable()) {
                 LOG_WARN(Chunk, "worldgen: the device path has no {} node, the chunk workers "
-                    "keep the field", gpu_plan_.unsupported);
+                    "keep the field", gpu_plan_->unsupported);
+            }
+            if (gpu_ready_ && gpu::backend() == gpu::Backend::Auto) {
+                // The first generator on the process decides for all of them: the same tree
+                // shape is measured once, on both sides, and the faster side keeps the work.
+                gpu_ready_ = gpu::prefer_device_for(*gpu_plan_,
+                    [this](double x, double y, double z) {
+                        EvalContext& context = thread_context();
+                        context.reset(cache_slots_);
+                        return sample_density(x, y, z, context);
+                    });
             }
             surface_noise_ = settings_.density().noise("minecraft:surface");
             surface_secondary_noise_ =
@@ -574,7 +591,10 @@ namespace terila::world::worldgen {
 
         // True when the density field of this generator is evaluated on a device.
         bool device_backed() const noexcept { return gpu_ready_; }
-        const gpu::DensityPlan& density_plan() const noexcept { return gpu_plan_; }
+        const gpu::DensityPlan& density_plan() const noexcept {
+            static const gpu::DensityPlan empty;
+            return gpu_plan_ ? *gpu_plan_ : empty;
+        }
 
     private:
         // No column top can reach this height, so it marks a top entry in the sample table.
@@ -724,7 +744,7 @@ namespace terila::world::worldgen {
                     }
                 }
             }
-            if (!gpu::DensityDevice::shared().evaluate(gpu_plan_, points, values) ||
+            if (!gpu::DensityDevice::shared().evaluate(*gpu_plan_, points, values) ||
                 values.size() != grid.values.size()) {
                 return false;
             }
@@ -1202,7 +1222,7 @@ namespace terila::world::worldgen {
         int world_top_ = 320;
         int cache_slots_ = 0;
         int interp_slots_ = 0;
-        gpu::DensityPlan gpu_plan_;
+        std::shared_ptr<gpu::DensityPlan> gpu_plan_;
         bool gpu_ready_ = false;
         std::uint32_t seed_ = 0x51ED2C3u;
         mutable std::shared_ptr<BlockSampleCache> block_cache_ =

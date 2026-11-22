@@ -17,9 +17,28 @@ All notable changes to Terila, newest first. Format follows
   field, and `backend=gpu` says why in the log
 - Round-trip tests build every branch of the tree and whole chunks on both sides and compare
   them: the density values must match bit for bit, and so must the block array of a chunk
+- `backend=auto` is a measurement instead of a guess: the first generator samples one chunk
+  of field through both paths and the faster side keeps the work for the rest of the process
+- The device binds its buffers once per graph instead of once per chunk, hands its tables
+  back when the last generator that holds them goes away, and parks itself after a batch it
+  cannot complete instead of retrying every chunk
+
+### Changed
+
+- Measured on an RTX 3050 Ti: one chunk's density field takes 2.35 ms on the device against
+  roughly 28 ms on a worker, which makes a chunk 85.0 → 59.4 ms with one generator and
+  24.6 → 18.1 ms with eight (`TERILA_BENCH=1 chunk_tests --gtest_filter='TerrainGeneratorGpuBench.*'`)
 
 ### Fixed
 
+- The shared world generator no longer holds the connection that happened to initialise a
+  dimension: the block, biome and template-state resolvers it keeps for its chunk workers
+  now capture the block registry instead of the connection, so a player logging out while
+  those workers are placing structures no longer leaves them reading a destroyed object
+- The device binds the kernel arguments whenever the density graph changes, so an overworld
+  and a nether generator alternating on the same kernel no longer evaluate one dimension's
+  field with the other's tables, and the device object is never destroyed while a plan can
+  still hand its tables back
 - A joining player receives the chunks around the spawn instead of an empty world: the
   template pools, templates, processor lists and jigsaw candidate lists that generation
   fills in are now shared between the chunk workers safely, so a worker no longer stops

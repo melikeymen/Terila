@@ -15,6 +15,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -691,6 +692,12 @@ __kernel void density_field(__global const int* nodes, __global const double* da
 )CL";
     }
 
+    // `auto` is a measurement rather than a guess: one chunk of field is sampled through both
+    // paths once per process, and the device keeps the work only when it is the faster side.
+    // The CPU side is handed in, because the tree walk lives with the generator.
+    bool prefer_device_for(const DensityPlan& plan,
+        const std::function<double(double, double, double)>& cpu_sample);
+
     namespace detail {
 
         using cl_int = std::int32_t;
@@ -819,8 +826,11 @@ __kernel void density_field(__global const int* nodes, __global const double* da
     class DensityDevice {
     public:
         static DensityDevice& shared() {
-            static DensityDevice device;
-            return device;
+            // Never destroyed: a generator hands its tables back from the plan's destructor,
+            // which can run during static teardown long after a plain static device would
+            // have gone away. The loader and the device objects outlive everything instead.
+            static DensityDevice* device = new DensityDevice();
+            return *device;
         }
 
         // True once a device has been found. The first call opens the device; a second call
@@ -844,6 +854,10 @@ __kernel void density_field(__global const int* nodes, __global const double* da
         // How many batches the device has answered. A caller that wants to know whether the
         // field really ran on the device compares this before and after a chunk.
         std::size_t batch_count() const noexcept { return batches_; }
+
+        // Drops the buffers of a plan whose owner is gone. A generator that is destroyed must
+        // not leave its tables on the device for the rest of the run.
+        bool forget(std::uint64_t plan_id);
 
     private:
         enum class State {
@@ -874,7 +888,10 @@ __kernel void density_field(__global const int* nodes, __global const double* da
 
         void open();
         bool upload(const DensityPlan& plan, Upload& target);
-        bool fail(const std::string& why);
+        bool bind_arguments(Upload& buffers);
+        // A device that stops answering (a reset, an out of resources) is parked for the rest
+        // of the run: retrying every chunk would stall the workers and fill the log.
+        bool park(const std::string& why);
 
         detail::OpenClApi api_;
         State state_ = State::Unknown;
@@ -887,6 +904,10 @@ __kernel void density_field(__global const int* nodes, __global const double* da
         void* kernel_ = nullptr;
         std::unordered_map<std::uint64_t, Upload> uploads_;
         std::size_t batches_ = 0;
+        bool parked_ = false;
+        // The kernel holds the buffers of the plan that was bound last, and two dimensions
+        // share one kernel, so the binding is tracked by plan and refreshed when it changes.
+        std::uint64_t bound_plan_ = 0;
     };
 
 } // namespace terila::world::worldgen::gpu

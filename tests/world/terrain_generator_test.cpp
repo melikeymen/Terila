@@ -861,3 +861,177 @@ TEST(TerrainGeneratorGpuTest, DeviceAnswersTheSameValuesAsTheCpu) {
     }
     EXPECT_EQ(differing, 0u) << "the device and the chunk workers disagree on the field";
 }
+
+TEST(TerrainGeneratorGpuBench, BackendThroughput) {
+    REQUIRE_VANILLA_DATA();
+    if (std::getenv("TERILA_BENCH") == nullptr) {
+        GTEST_SKIP() << "set TERILA_BENCH=1 to run the backend benchmark";
+    }
+    constexpr int kChunks = 16;
+    std::vector<std::pair<std::int32_t, std::int32_t>> coords;
+    for (int i = 0; i < kChunks; ++i) {
+        coords.emplace_back(-400 + i * 3, 600 + i * 5);
+    }
+
+    const auto time_of = [&](worldgen::gpu::Backend backend, const char* label) {
+        worldgen::gpu::set_backend(backend);
+        const auto generator = make_generator(20260101);
+        const auto start = std::chrono::steady_clock::now();
+        for (const auto& [cx, cz] : coords) {
+            generator.generate(cx, cz);
+        }
+        const double elapsed = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+        std::cout << label << ": " << elapsed << " ms for " << kChunks << " chunks, "
+                  << elapsed / kChunks << " ms/chunk" << std::endl;
+        return elapsed;
+    };
+
+    const double cpu_ms = time_of(worldgen::gpu::Backend::Cpu, "cpu");
+    if (!worldgen::gpu::DensityDevice::shared().available()) {
+        worldgen::gpu::set_backend(worldgen::gpu::Backend::Cpu);
+        GTEST_SKIP() << worldgen::gpu::DensityDevice::shared().reason();
+    }
+    const double device_ms = time_of(worldgen::gpu::Backend::Gpu, "gpu");
+    worldgen::gpu::set_backend(worldgen::gpu::Backend::Cpu);
+    std::cout << "gpu/cpu ratio: " << device_ms / cpu_ms << std::endl;
+}
+
+TEST(TerrainGeneratorGpuBench, ParallelThroughput) {
+    REQUIRE_VANILLA_DATA();
+    if (std::getenv("TERILA_BENCH") == nullptr) {
+        GTEST_SKIP() << "set TERILA_BENCH=1 to run the backend benchmark";
+    }
+    constexpr int kChunks = 16;
+    constexpr int kWorkers = 8;
+    std::vector<std::pair<std::int32_t, std::int32_t>> coords;
+    for (int i = 0; i < kChunks; ++i) {
+        coords.emplace_back(-400 + i * 3, 600 + i * 5);
+    }
+
+    const auto parallel_time = [&](worldgen::gpu::Backend backend, const char* label) {
+        worldgen::gpu::set_backend(backend);
+        const auto generator = make_generator(20260101);
+        const auto start = std::chrono::steady_clock::now();
+        std::vector<std::future<void>> work;
+        std::atomic<std::size_t> next{ 0 };
+        for (int worker = 0; worker < kWorkers; ++worker) {
+            work.push_back(std::async(std::launch::async, [&] {
+                for (;;) {
+                    const std::size_t index = next.fetch_add(1);
+                    if (index >= coords.size()) {
+                        return;
+                    }
+                    generator.generate(coords[index].first, coords[index].second);
+                }
+            }));
+        }
+        for (auto& future : work) {
+            future.get();
+        }
+        const double elapsed = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+        std::cout << label << " x" << kWorkers << ": " << elapsed << " ms for " << kChunks
+                  << " chunks, " << elapsed / kChunks << " ms/chunk" << std::endl;
+        return elapsed;
+    };
+
+    parallel_time(worldgen::gpu::Backend::Cpu, "cpu");
+    if (!worldgen::gpu::DensityDevice::shared().available()) {
+        worldgen::gpu::set_backend(worldgen::gpu::Backend::Cpu);
+        GTEST_SKIP() << worldgen::gpu::DensityDevice::shared().reason();
+    }
+    parallel_time(worldgen::gpu::Backend::Gpu, "gpu");
+    worldgen::gpu::set_backend(worldgen::gpu::Backend::Cpu);
+}
+
+TEST(TerrainGeneratorGpuBench, FieldBatchCost) {
+    REQUIRE_VANILLA_DATA();
+    if (std::getenv("TERILA_BENCH") == nullptr) {
+        GTEST_SKIP() << "set TERILA_BENCH=1 to run the backend benchmark";
+    }
+    worldgen::gpu::set_backend(worldgen::gpu::Backend::Gpu);
+    if (!worldgen::gpu::DensityDevice::shared().available()) {
+        worldgen::gpu::set_backend(worldgen::gpu::Backend::Cpu);
+        GTEST_SKIP() << worldgen::gpu::DensityDevice::shared().reason();
+    }
+    const auto generator = make_generator(20260101);
+    constexpr int kChunks = 16;
+    std::vector<worldgen::gpu::GridPoint> points;
+    std::vector<double> values;
+    std::size_t batch_bytes = 0;
+    const auto start = std::chrono::steady_clock::now();
+    for (int chunk = 0; chunk < kChunks; ++chunk) {
+        points.clear();
+        const int wx0 = -400 + chunk * 16;
+        const int wz0 = 600;
+        for (int iy = 0; iy < 48; ++iy) {
+            for (int iz = 0; iz < 5; ++iz) {
+                for (int ix = 0; ix < 5; ++ix) {
+                    points.push_back(worldgen::gpu::GridPoint{ static_cast<double>(wx0 + ix * 4),
+                        static_cast<double>(-64 + iy * 8),
+                        static_cast<double>(wz0 + iz * 4) });
+                }
+            }
+        }
+        batch_bytes += points.size();
+        ASSERT_TRUE(worldgen::gpu::DensityDevice::shared().evaluate(generator.density_plan(),
+            points, values));
+    }
+    const double elapsed = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - start).count();
+    std::cout << "device field: " << elapsed << " ms for " << kChunks << " chunks, "
+              << elapsed / kChunks << " ms/chunk (" << batch_bytes / kChunks
+              << " points/chunk)" << std::endl;
+    worldgen::gpu::set_backend(worldgen::gpu::Backend::Cpu);
+}
+
+TEST(TerrainGeneratorGpuTest, DeviceFieldMatchesTheCpuInEveryDimension) {
+    REQUIRE_VANILLA_DATA();
+    const DimensionKind kinds[] = { DimensionKind::Nether, DimensionKind::End };
+    for (const DimensionKind kind : kinds) {
+        worldgen::gpu::set_backend(worldgen::gpu::Backend::Cpu);
+        terrain::Generator cpu_generator;
+        if (!cpu_generator.init(-64, 16, 1337, mock_block, mock_biome, {}, kind)) {
+            continue;
+        }
+        const Chunk from_cpu = cpu_generator.generate(3, -2);
+
+        worldgen::gpu::set_backend(worldgen::gpu::Backend::Gpu);
+        if (!worldgen::gpu::DensityDevice::shared().available()) {
+            worldgen::gpu::set_backend(worldgen::gpu::Backend::Cpu);
+            GTEST_SKIP() << worldgen::gpu::DensityDevice::shared().reason();
+        }
+        terrain::Generator device_generator;
+        ASSERT_TRUE(device_generator.init(-64, 16, 1337, mock_block, mock_biome, {}, kind));
+        const bool backed = device_generator.device_backed();
+        const Chunk from_device = device_generator.generate(3, -2);
+        worldgen::gpu::set_backend(worldgen::gpu::Backend::Cpu);
+
+        if (!backed) {
+            continue;
+        }
+        ASSERT_EQ(from_cpu.sections.size(), from_device.sections.size());
+        for (std::size_t section = 0; section < from_cpu.sections.size(); ++section) {
+            EXPECT_EQ(from_cpu.sections[section].block_states,
+                from_device.sections[section].block_states) << "section " << section;
+        }
+    }
+}
+
+TEST(TerrainGeneratorGpuTest, AutoBackendKeepsTheSameChunk) {
+    REQUIRE_VANILLA_DATA();
+    worldgen::gpu::set_backend(worldgen::gpu::Backend::Cpu);
+    const Chunk from_cpu = make_generator(777).generate(-5, 12);
+
+    worldgen::gpu::set_backend(worldgen::gpu::Backend::Auto);
+    const auto auto_generator = make_generator(777);
+    const Chunk from_auto = auto_generator.generate(-5, 12);
+    worldgen::gpu::set_backend(worldgen::gpu::Backend::Cpu);
+
+    ASSERT_EQ(from_cpu.sections.size(), from_auto.sections.size());
+    for (std::size_t section = 0; section < from_cpu.sections.size(); ++section) {
+        EXPECT_EQ(from_cpu.sections[section].block_states, from_auto.sections[section].block_states)
+            << "section " << section;
+    }
+}
