@@ -42,8 +42,11 @@ namespace terila::world {
         // cost of one chunk divided by the number of workers. `on_done` runs on the worker
         // the moment the task finishes, which is what lets a waiting stream wake up instead
         // of polling its future once a tick.
+        // `cancelled` is asked once, on the worker, before the column is generated: a player
+        // who logs out leaves a whole view distance queued, and generating it would only
+        // hold up the next player's chunks.
         std::future<PreparedChunk> prepare(DimensionKind kind, std::int32_t cx, std::int32_t cz,
-            std::function<void()> on_done = {});
+            std::function<void()> on_done = {}, std::function<bool()> cancelled = {});
 
         ChunkJobs(const ChunkJobs&) = delete;
         ChunkJobs& operator=(const ChunkJobs&) = delete;

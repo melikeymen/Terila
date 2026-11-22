@@ -422,6 +422,10 @@ namespace terila::network {
         // Bumped whenever the dimension changes, so a batch of the old world that is still
         // in flight can tell it is stale and stop instead of streaming over the new one.
         std::uint32_t chunk_epoch_ = 0;
+        // Shared with the chunk jobs this connection queued: it is cleared when the
+        // connection closes, so the workers stop generating a view distance nobody will see.
+        std::shared_ptr<std::atomic<bool>> chunk_work_alive_ =
+            std::make_shared<std::atomic<bool>>(true);
         std::deque<ChunkPos> pending_chunks_;
         // Keeps the coroutine frame of the chunk stream, so an unfinished batch survives a
         // full write queue.

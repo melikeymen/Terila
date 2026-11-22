@@ -25,6 +25,9 @@ All notable changes to Terila, newest first. Format follows
 
 ### Changed
 
+- A player who disconnects stops the chunk jobs still queued for him instead of leaving the
+  workers generating a whole view distance nobody will stream, so the next player's columns
+  no longer wait behind the queue of the player who left
 - Measured on an RTX 3050 Ti: one chunk's density field takes 2.35 ms on the device against
   roughly 28 ms on a worker, which makes a chunk 85.0 → 59.4 ms with one generator and
   24.6 → 18.1 ms with eight (`TERILA_BENCH=1 chunk_tests --gtest_filter='TerrainGeneratorGpuBench.*'`)

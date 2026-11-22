@@ -161,6 +161,9 @@ namespace terila::network {
             return;
         }
         closed_ = true;
+        // Whatever is still queued for this player is never streamed, so the workers stop
+        // before generating it.
+        chunk_work_alive_->store(false, std::memory_order_relaxed);
 
         if (menu_open_) {
             close_menu();

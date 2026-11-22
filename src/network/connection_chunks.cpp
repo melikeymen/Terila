@@ -455,7 +455,10 @@ namespace terila::network {
             std::vector<std::future<terila::world::PreparedChunk>> prepared;
             prepared.reserve(batch.size());
             for (const auto& pos : batch) {
-                prepared.push_back(jobs.prepare(dimension_, pos.x, pos.z, wake));
+                prepared.push_back(jobs.prepare(dimension_, pos.x, pos.z, wake,
+                    [alive = chunk_work_alive_] {
+                        return !alive->load(std::memory_order_relaxed);
+                    }));
             }
 
             std::vector<std::uint8_t> out;

@@ -54,12 +54,21 @@ namespace terila::world {
     }
 
     std::future<PreparedChunk> ChunkJobs::prepare(DimensionKind kind, std::int32_t cx,
-        std::int32_t cz, std::function<void()> on_done) {
+        std::int32_t cz, std::function<void()> on_done, std::function<bool()> cancelled) {
         // The shared generator is read-only after its init(), and the noise caches are
         // per-thread, so several chunks of the same world generate side by side safely.
         std::packaged_task<PreparedChunk()> task(
-            [kind, cx, cz, done = std::move(on_done)]() mutable {
+            [kind, cx, cz, done = std::move(on_done), cancel = std::move(cancelled)]() mutable {
                 try {
+                    if (cancel && cancel()) {
+                        // The stream that asked for this column is gone; the caller drops the
+                        // result, so the work is skipped instead of spent. A task still wakes
+                        // its stream, which keeps the one-call-per-task rule intact.
+                        if (done) {
+                            done();
+                        }
+                        return PreparedChunk{};
+                    }
                     PreparedChunk prepared;
                     prepared.chunk = WorldContext::shared().generator(kind).generate(cx, cz);
                     prepared.encoded = encode::encode(prepared.chunk);
