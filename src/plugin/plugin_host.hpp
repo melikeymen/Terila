@@ -15,6 +15,7 @@
 // A refusal is reported, never silently dropped, so an operator can see why a package did
 // not start.
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -49,6 +50,9 @@ namespace terila::plugin {
         void unload_all();
 
         const std::vector<Plugin>& plugins() const noexcept { return plugins_; }
+        // Instances the host currently holds: one store per enabled plugin, none for a plugin
+        // that was refused or unloaded.
+        std::size_t live_stores() const noexcept;
         bool has_runtime() const noexcept { return library_ != nullptr; }
         const std::string& runtime_name() const noexcept { return runtime_; }
 

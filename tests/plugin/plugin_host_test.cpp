@@ -1,6 +1,7 @@
 // The plugin gate is what decides whether unknown code runs, so it is tested without a
 // WebAssembly runtime: every case below is about documents and directories only.
 
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -220,3 +221,92 @@ TEST(PluginHost, MissingPacksDirectoryIsNotAnError) {
     PluginHost::instance().load_all(tree.root() / "packs", tree.root() / "grants");
     EXPECT_TRUE(PluginHost::instance().plugins().empty());
 }
+
+#if defined(TERILA_HAVE_WASMTIME)
+
+namespace {
+
+    void section(std::string& out, unsigned char id, const std::string& payload) {
+        out.push_back(static_cast<char>(id));
+        out.push_back(static_cast<char>(payload.size()));
+        out += payload;
+    }
+
+    // The smallest module that exercises the lifecycle hook: one (i32, i32) -> i32 function
+    // exported as on_load, the shape the host calls it with. `traps` makes it execute
+    // `unreachable`, which is how a plugin refuses to start; otherwise it returns 0. Hand
+    // encoded so the test needs no toolchain.
+    std::string module_with_on_load(bool traps) {
+        std::string bytes("\0asm\1\0\0\0", 8);
+        section(bytes, 1, std::string("\1\x60\2\x7f\x7f\1\x7f", 7));  // (i32, i32) -> i32
+        section(bytes, 3, std::string("\1\0", 2));                // one function, type 0
+        section(bytes, 7, std::string("\1\7on_load\0\0", 11));    // export "on_load"
+        if (traps) {
+            section(bytes, 10, std::string("\1\3\0\0\xb", 5));    // unreachable
+        } else {
+            section(bytes, 10, std::string("\1\4\0\x41\0\xb", 6)); // i32.const 0
+        }
+        return bytes;
+    }
+
+} // namespace
+
+// The leak this guards against: an instance registered before on_load ran stayed in the host
+// after the hook was refused, so it kept its store and was still reachable through call().
+TEST(PluginHostRuntime, RefusedLifecycleHookLeavesNoStoreOrInstance) {
+    TempTree tree;
+    tree.write("packs/refusing/plugin.json", manifest_of("refusing"));
+    tree.write("packs/refusing/permissions.json", request_of("refusing", { "log.write" }));
+    tree.write("grants/refusing.json", grant_of("refusing", { "log.write" }));
+    tree.write_text("packs/refusing/plugin.wasm", module_with_on_load(true));
+
+    PluginHost& host = PluginHost::instance();
+    host.load_all(tree.root() / "packs", tree.root() / "grants");
+    if (!host.has_runtime()) {
+        GTEST_SKIP() << "no WebAssembly runtime was found; set TERILA_WASM_RUNTIME";
+    }
+
+    const Plugin* plugin = find_plugin("refusing");
+    ASSERT_NE(plugin, nullptr);
+    EXPECT_FALSE(plugin->enabled);
+    EXPECT_EQ(plugin->status, "refused: on_load trapped");
+
+    // Reachable would mean the refused instance is still alive in the host.
+    std::int32_t result = 0;
+    std::string error;
+    EXPECT_FALSE(host.call("refusing", "on_load", 1, 0, result, error));
+    EXPECT_EQ(error, "not loaded");
+    EXPECT_EQ(host.live_stores(), 0u);
+}
+
+// The other half of the proof: an accepted plugin really does hold one store, so a count of
+// zero above is not the counter being blind.
+TEST(PluginHostRuntime, EnabledPluginHoldsOneStoreUntilUnload) {
+    TempTree tree;
+    tree.write("packs/working/plugin.json", manifest_of("working"));
+    tree.write("packs/working/permissions.json", request_of("working", { "log.write" }));
+    tree.write("grants/working.json", grant_of("working", { "log.write" }));
+    tree.write_text("packs/working/plugin.wasm", module_with_on_load(false));
+
+    PluginHost& host = PluginHost::instance();
+    host.load_all(tree.root() / "packs", tree.root() / "grants");
+    if (!host.has_runtime()) {
+        GTEST_SKIP() << "no WebAssembly runtime was found; set TERILA_WASM_RUNTIME";
+    }
+
+    const Plugin* plugin = find_plugin("working");
+    ASSERT_NE(plugin, nullptr);
+    ASSERT_TRUE(plugin->enabled) << plugin->status;
+    EXPECT_EQ(host.live_stores(), 1u);
+
+    std::int32_t result = 1;
+    std::string error;
+    EXPECT_TRUE(host.call("working", "on_load", 1, 0, result, error));
+    EXPECT_EQ(result, 0);
+
+    host.unload_all();
+    EXPECT_EQ(host.live_stores(), 0u);
+    EXPECT_TRUE(host.plugins().empty());
+}
+
+#endif // TERILA_HAVE_WASMTIME

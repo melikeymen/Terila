@@ -56,11 +56,12 @@ namespace terila::plugin {
 
         struct Slot {
             wasmtime_store_t* store = nullptr;
-            wasmtime_instance_t* instance = nullptr;
+            wasmtime_instance_t instance{};
         };
 
         // Loaded plugins own one store each, so a runaway plugin cannot disturb another one's
-        // fuel or state.
+        // fuel or state. The instance is a handle and is kept by value, so there is no
+        // allocation of its own that could be lost.
         std::map<std::string, Slot>& slots() {
             static std::map<std::string, Slot> store;
             return store;
@@ -128,8 +129,29 @@ namespace terila::plugin {
             return api;
         }
 
-        // One call into a plugin. Fuel bounds the work: a hook that never returns is stopped
-        // by the runtime instead of holding the thread.
+        // Stores the host currently owns. Every open is paired with a close, so a plugin that
+        // cannot start and an unload both bring this back to where it was.
+        std::size_t opened_stores = 0;
+
+        wasmtime_store_t* open_store(wasm_engine_t* engine) {
+            wasmtime_store_t* store = wasm().store_new(engine, nullptr, nullptr);
+            if (store != nullptr) ++opened_stores;
+            return store;
+        }
+
+        void close_store(wasmtime_store_t* store) {
+            wasm().store_delete(store);
+            --opened_stores;
+        }
+
+        // Fuel bounds the work of one call: a hook that never returns is stopped by the
+        // runtime instead of holding the thread.
+        void set_fuel(wasmtime_context_t* context) {
+            if (wasmtime_error_t* failure = wasm().context_set_fuel(context, 10'000'000)) {
+                wasm().error_delete(failure);
+            }
+        }
+
         bool call_export(wasmtime_context_t* context, const wasmtime_instance_t& instance,
             const char* function, std::int32_t first, std::int32_t second,
             std::int32_t& result, std::string& error) {
@@ -181,10 +203,8 @@ namespace terila::plugin {
 
     void PluginHost::unload_all() {
 #if defined(TERILA_HAVE_WASMTIME)
-        for (auto& [id, slot] : slots()) {
-            (void)id;
-            delete slot.instance;
-            wasm().store_delete(slot.store);
+        for (auto& entry : slots()) {
+            close_store(entry.second.store);
         }
         slots().clear();
         if (engine_ != nullptr) {
@@ -266,50 +286,49 @@ namespace terila::plugin {
         Plugin plugin;
         plugin.directory = directory;
 
+        // Every path below either enables the plugin or records one printable line saying why
+        // it did not: a package is never silently dropped.
+        const auto stop = [&](std::string status) {
+            plugin.status = std::move(status);
+            plugins_.push_back(std::move(plugin));
+        };
+
         nlohmann::json manifest_json;
         std::string error;
         const auto manifest_path = directory / kManifestFile;
         if (!std::filesystem::is_regular_file(manifest_path, ec)) {
-            plugin.status = "refused: plugin.json is missing";
-            plugins_.push_back(std::move(plugin));
+            stop("refused: plugin.json is missing");
             return;
         }
         if (!read_json(manifest_path, manifest_json, error)) {
-            plugin.status = "refused: plugin.json " + error;
-            plugins_.push_back(std::move(plugin));
+            stop("refused: plugin.json " + error);
             return;
         }
         ManifestResult manifest = parse_manifest(manifest_json);
         if (!manifest) {
-            plugin.status = refused(*manifest.problem);
-            plugins_.push_back(std::move(plugin));
+            stop(refused(*manifest.problem));
             return;
         }
         plugin.manifest = manifest.manifest;
         // The folder names the grant file and the log lines, so it must agree with the id.
         if (directory.filename().string() != plugin.manifest.id) {
-            plugin.status = "refused: folder name does not match id '" +
-                plugin.manifest.id + "'";
-            plugins_.push_back(std::move(plugin));
+            stop("refused: folder name does not match id '" + plugin.manifest.id + "'");
             return;
         }
 
         nlohmann::json request_json;
         if (!read_json(request_path, request_json, error)) {
-            plugin.status = "refused: permissions.json " + error;
-            plugins_.push_back(std::move(plugin));
+            stop("refused: permissions.json " + error);
             return;
         }
         RequestResult request = parse_request(request_json);
         if (!request) {
-            plugin.status = refused(*request.problem);
-            plugins_.push_back(std::move(plugin));
+            stop(refused(*request.problem));
             return;
         }
         if (request.id != plugin.manifest.id) {
-            plugin.status = "refused: permissions.json id '" + request.id +
-                "' does not match plugin.json id '" + plugin.manifest.id + "'";
-            plugins_.push_back(std::move(plugin));
+            stop("refused: permissions.json id '" + request.id +
+                "' does not match plugin.json id '" + plugin.manifest.id + "'");
             return;
         }
         plugin.requested = std::move(request.requested);
@@ -320,47 +339,40 @@ namespace terila::plugin {
         nlohmann::json grant_json;
         if (!std::filesystem::is_regular_file(grant_path, ec)) {
             plugin.accepted = true;
-            plugin.status = "disabled: no grant file at " + grant_path.string();
-            plugins_.push_back(std::move(plugin));
+            stop("disabled: no grant file at " + grant_path.string());
             return;
         }
         if (!read_json(grant_path, grant_json, error)) {
-            plugin.status = "disabled: grant " + error;
-            plugins_.push_back(std::move(plugin));
+            stop("disabled: grant " + error);
             return;
         }
         GrantResult grant = parse_grant(grant_json);
         if (!grant) {
-            plugin.status = "disabled: grant " + grant.problem->text();
-            plugins_.push_back(std::move(plugin));
+            stop("disabled: grant " + grant.problem->text());
             return;
         }
         if (grant.id != plugin.manifest.id) {
-            plugin.status = "disabled: the grant names '" + grant.id + "'";
-            plugins_.push_back(std::move(plugin));
+            stop("disabled: the grant names '" + grant.id + "'");
             return;
         }
         plugin.granted = std::move(grant.granted);
         plugin.effective = effective_capabilities(plugin.requested, plugin.granted);
         plugin.accepted = true;
         if (plugin.effective.empty()) {
-            plugin.status = "disabled: the grant allows none of the requested capabilities";
-            plugins_.push_back(std::move(plugin));
+            stop("disabled: the grant allows none of the requested capabilities");
             return;
         }
 
 #if defined(TERILA_HAVE_WASMTIME)
         if (library_ == nullptr || engine_ == nullptr) {
-            plugin.status = "disabled: no WebAssembly runtime was found";
-            plugins_.push_back(std::move(plugin));
+            stop("disabled: no WebAssembly runtime was found");
             return;
         }
 
         const auto module_path = directory / plugin.manifest.module;
         std::ifstream module_file(module_path, std::ios::binary);
         if (!module_file) {
-            plugin.status = "refused: module '" + plugin.manifest.module + "' is missing";
-            plugins_.push_back(std::move(plugin));
+            stop("refused: module '" + plugin.manifest.module + "' is missing");
             return;
         }
         const std::vector<char> bytes{ std::istreambuf_iterator<char>(module_file),
@@ -370,52 +382,46 @@ namespace terila::plugin {
         if (wasmtime_error_t* failure = wasm().module_new(static_cast<wasm_engine_t*>(engine_),
                 reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size(), &module)) {
             wasm().error_delete(failure);
-            plugin.status = "refused: the module is not valid WebAssembly";
-            plugins_.push_back(std::move(plugin));
+            stop("refused: the module is not valid WebAssembly");
             return;
         }
 
+        // The store is opened once and closed on every failure below, so a plugin that cannot
+        // start leaves no store behind.
+        wasmtime_store_t* store = open_store(static_cast<wasm_engine_t*>(engine_));
+        wasmtime_context_t* context = wasm().store_context(store);
         Slot slot;
-        slot.store = wasm().store_new(static_cast<wasm_engine_t*>(engine_), nullptr, nullptr);
-        wasmtime_context_t* context = wasm().store_context(slot.store);
-        wasmtime_instance_t instance{};
+        slot.store = store;
         wasm_trap_t* trap = nullptr;
-        wasmtime_error_t* failure = wasm().instance_new(context, module, nullptr, 0, &instance,
-            &trap);
+        wasmtime_error_t* failure = wasm().instance_new(context, module, nullptr, 0,
+            &slot.instance, &trap);
         wasm().module_delete(module);
         if (failure != nullptr) {
             wasm().error_delete(failure);
             if (trap != nullptr) wasm().trap_delete(trap);
-            wasm().store_delete(slot.store);
+            close_store(store);
             // This version serves no host imports, so a module that wants any cannot start.
-            plugin.status = "refused: it needs host imports this version does not serve";
-            plugins_.push_back(std::move(plugin));
+            stop("refused: it needs host imports this version does not serve");
             return;
         }
         if (trap != nullptr) {
             wasm().trap_delete(trap);
-            wasm().store_delete(slot.store);
-            plugin.status = "refused: instantiation trapped";
-            plugins_.push_back(std::move(plugin));
+            close_store(store);
+            stop("refused: instantiation trapped");
             return;
         }
 
         // The lifecycle hook is optional: a plugin without on_load is still a plugin. It runs
-        // before the instance is registered, so a plugin that fails it leaves no store and
-        // no instance behind.
-        slot.instance = new wasmtime_instance_t(instance);
+        // before the instance is registered, so a plugin that fails it never becomes callable
+        // and holds no store.
+        set_fuel(context);
         std::int32_t result = 0;
         std::string hook_error;
-        if (wasmtime_error_t* fuel = wasm().context_set_fuel(context, 10'000'000)) {
-            wasm().error_delete(fuel);
-        }
-        const bool hooked = call_export(context, instance, "on_load", kApiVersion,
+        const bool hooked = call_export(context, slot.instance, "on_load", kApiVersion,
             static_cast<std::int32_t>(plugin.manifest.memory_pages), result, hook_error);
         if (!hooked && hook_error != "no export named on_load") {
-            delete slot.instance;
-            wasm().store_delete(slot.store);
-            plugin.status = "refused: on_load " + hook_error;
-            plugins_.push_back(std::move(plugin));
+            close_store(store);
+            stop("refused: on_load " + hook_error);
             return;
         }
 
@@ -424,8 +430,15 @@ namespace terila::plugin {
         plugin.status = "enabled";
         plugins_.push_back(std::move(plugin));
 #else
-        plugin.status = "disabled: this build has no WebAssembly runtime support";
-        plugins_.push_back(std::move(plugin));
+        stop("disabled: this build has no WebAssembly runtime support");
+#endif
+    }
+
+    std::size_t PluginHost::live_stores() const noexcept {
+#if defined(TERILA_HAVE_WASMTIME)
+        return opened_stores;
+#else
+        return 0;
 #endif
     }
 
@@ -438,10 +451,8 @@ namespace terila::plugin {
             return false;
         }
         wasmtime_context_t* context = wasm().store_context(found->second.store);
-        if (wasmtime_error_t* fuel = wasm().context_set_fuel(context, 10'000'000)) {
-            wasm().error_delete(fuel);
-        }
-        return call_export(context, *found->second.instance, std::string(function).c_str(),
+        set_fuel(context);
+        return call_export(context, found->second.instance, std::string(function).c_str(),
             first, second, result, error);
 #else
         (void)id;
