@@ -31,6 +31,10 @@ All notable changes to Terila, newest first. Format follows
 - Measured on an RTX 3050 Ti: one chunk's density field takes 2.35 ms on the device against
   roughly 28 ms on a worker, which makes a chunk 85.0 → 59.4 ms with one generator and
   24.6 → 18.1 ms with eight (`TERILA_BENCH=1 chunk_tests --gtest_filter='TerrainGeneratorGpuBench.*'`)
+- The benchmark also times sixteen chunks in a single dispatch: 3.8 ms/chunk one after
+  another against 0.4 ms/chunk together, so the device's per-dispatch cost is most of what
+  a single chunk pays. Batching the chunk workers' requests was measured and does not pay
+  at eight workers, where the device is busy about an eighth of the time
 
 ### Fixed
 

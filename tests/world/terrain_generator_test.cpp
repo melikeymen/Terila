@@ -902,7 +902,7 @@ TEST(TerrainGeneratorGpuBench, ParallelThroughput) {
     if (std::getenv("TERILA_BENCH") == nullptr) {
         GTEST_SKIP() << "set TERILA_BENCH=1 to run the backend benchmark";
     }
-    constexpr int kChunks = 16;
+    constexpr int kChunks = 64;
     constexpr int kWorkers = 8;
     std::vector<std::pair<std::int32_t, std::int32_t>> coords;
     for (int i = 0; i < kChunks; ++i) {
@@ -957,32 +957,55 @@ TEST(TerrainGeneratorGpuBench, FieldBatchCost) {
     }
     const auto generator = make_generator(20260101);
     constexpr int kChunks = 16;
-    std::vector<worldgen::gpu::GridPoint> points;
-    std::vector<double> values;
-    std::size_t batch_bytes = 0;
-    const auto start = std::chrono::steady_clock::now();
-    for (int chunk = 0; chunk < kChunks; ++chunk) {
-        points.clear();
+    const auto points_of = [](int chunk) {
+        std::vector<worldgen::gpu::GridPoint> out;
+        out.reserve(48 * 5 * 5);
         const int wx0 = -400 + chunk * 16;
         const int wz0 = 600;
         for (int iy = 0; iy < 48; ++iy) {
             for (int iz = 0; iz < 5; ++iz) {
                 for (int ix = 0; ix < 5; ++ix) {
-                    points.push_back(worldgen::gpu::GridPoint{ static_cast<double>(wx0 + ix * 4),
+                    out.push_back(worldgen::gpu::GridPoint{ static_cast<double>(wx0 + ix * 4),
                         static_cast<double>(-64 + iy * 8),
                         static_cast<double>(wz0 + iz * 4) });
                 }
             }
         }
-        batch_bytes += points.size();
+        return out;
+    };
+
+    std::vector<double> values;
+    std::size_t points_per_chunk = 0;
+    const auto start = std::chrono::steady_clock::now();
+    for (int chunk = 0; chunk < kChunks; ++chunk) {
+        const auto points = points_of(chunk);
+        points_per_chunk = points.size();
         ASSERT_TRUE(worldgen::gpu::DensityDevice::shared().evaluate(generator.density_plan(),
             points, values));
     }
     const double elapsed = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - start).count();
     std::cout << "device field: " << elapsed << " ms for " << kChunks << " chunks, "
-              << elapsed / kChunks << " ms/chunk (" << batch_bytes / kChunks
+              << elapsed / kChunks << " ms/chunk (" << points_per_chunk
               << " points/chunk)" << std::endl;
+
+    // The same sixteen chunks in a single dispatch: the shape a batched device path would
+    // have. If the per-chunk cost barely moves, the dispatch itself is not what costs, and
+    // batching would buy nothing.
+    std::vector<worldgen::gpu::GridPoint> merged;
+    merged.reserve(points_per_chunk * kChunks);
+    for (int chunk = 0; chunk < kChunks; ++chunk) {
+        const auto points = points_of(chunk);
+        merged.insert(merged.end(), points.begin(), points.end());
+    }
+    std::vector<double> merged_values;
+    const auto merged_start = std::chrono::steady_clock::now();
+    ASSERT_TRUE(worldgen::gpu::DensityDevice::shared().evaluate(generator.density_plan(),
+        merged, merged_values));
+    const double merged_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - merged_start).count();
+    std::cout << "device field, one dispatch: " << merged_ms << " ms for " << kChunks
+              << " chunks, " << merged_ms / kChunks << " ms/chunk" << std::endl;
     worldgen::gpu::set_backend(worldgen::gpu::Backend::Cpu);
 }
 
