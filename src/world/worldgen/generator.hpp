@@ -256,11 +256,8 @@ namespace terila::world::worldgen {
             if (state == blocks_.air) {
                 state = plants_.apply(x, y, z, state, get_column);
             }
-            if (state == blocks_.air && std::abs(y - col.height) <= 16) {
-                const GroundPlant ground = ground_plant(x, z, col);
-                if (ground.state != blocks_.air && ground.y == y) {
-                    state = ground.state;
-                }
+            if (state == blocks_.air) {
+                state = ground_plant(x, y, z, col);
             }
             return state;
         }
@@ -492,9 +489,9 @@ namespace terila::world::worldgen {
                     if (plant.height <= sea_level_ || plant.height > sea_level_ + 40) {
                         continue;
                     }
-                    const GroundPlant ground = ground_plant(tx, tz, plant);
-                    if (ground.state != blocks_.air) {
-                        put_if_air(tx, ground.y, tz, ground.state);
+                    const std::int32_t ground = ground_plant(tx, plant.height + 1, tz, plant);
+                    if (ground != blocks_.air) {
+                        put_if_air(tx, plant.height + 1, tz, ground);
                     }
                 }
             }
@@ -869,45 +866,47 @@ namespace terila::world::worldgen {
                         return cached_column(cx, cz, cache);
                     });
             }
-            if (state == blocks_.air && std::abs(y - col.height) <= 16) {
-                const GroundPlant ground = ground_plant(x, z, col);
-                if (ground.state != blocks_.air && ground.y == y) {
-                    state = ground.state;
-                }
+            if (state == blocks_.air) {
+                state = ground_plant(x, y, z, col);
             }
             return state;
         }
 
-        // The ground plant of a column and the cell it stands in. The chunk fill and a single
-        // block read both ask this, so the two cannot disagree about a tuft. A plant goes in the
-        // cell above the column's surface only when the density field agrees about that cell:
-        // the surface the column carries is a blend of four cells and can sit a cell away from
-        // the ground, and a plant that trusted it would end up buried or hanging in the air.
-        // Where the blend is off the column simply grows nothing, which is what a cliff face
-        // looks like anyway.
-        struct GroundPlant {
-            std::int32_t state = 0;
-            int y = 0;
-        };
-
-        GroundPlant ground_plant(std::int32_t x, std::int32_t z, const Column& col) const {
-            if (col.height <= sea_level_ || col.height > sea_level_ + 40) {
-                return GroundPlant{ blocks_.air, 0 };
+        // The ground plant of a column, in the cell above its surface. The chunk fill and a
+        // single block read both ask this, so the two cannot disagree about a tuft. The gates
+        // are in the order that rejects the most first: a cell that is not the one right above
+        // the surface needs no work at all, and most columns grow nothing.
+        //
+        // The plant has to stand on a block it can grow in, the way the game's would_survive
+        // test does: a surface rule can paint stone inside a forest, and a tuft on that stone
+        // would be a block nothing in the game would place.
+        std::int32_t ground_plant(std::int32_t x, std::int32_t y, std::int32_t z,
+            const Column& col) const {
+            if (col.height <= sea_level_ || col.height > sea_level_ + 40 || y != col.height + 1) {
+                return blocks_.air;
             }
             const auto& biome = biomes_[static_cast<std::size_t>(col.biome)];
             if (plants_.has_tree(biome, x, z) || plants_.has_cactus(biome, x, z)) {
-                return GroundPlant{ blocks_.air, 0 };
+                return blocks_.air;
             }
-            // Most columns grow nothing, and the two density samples below are worth avoiding.
             const std::int32_t plant = plants_.cover(biome, x, z);
             if (plant == blocks_.air) {
-                return GroundPlant{ blocks_.air, 0 };
+                return blocks_.air;
             }
-            const int y = col.height + 1;
-            if (density_at(x, y, z) > 0.0 || density_at(x, col.height, z) <= 0.0) {
-                return GroundPlant{ blocks_.air, 0 };
+            // The cell itself has to be air, and the one under it a block a plant grows in. A
+            // blended column height can sit a cell above the ground, and without this the tuft
+            // would hang over a pit.
+            if (density_at(x, y, z) > 0.0) {
+                return blocks_.air;
             }
-            return GroundPlant{ plant, y };
+            const std::int32_t below = block_at(x, col.height, z, col);
+            if (below != blocks_.grass && below != blocks_.dirt &&
+                below != blocks_.coarse_dirt && below != blocks_.podzol &&
+                below != blocks_.mycelium && below != blocks_.sand &&
+                below != blocks_.red_sand) {
+                return blocks_.air;
+            }
+            return plant;
         }
 
         std::int32_t block_at(std::int32_t x, std::int32_t y, std::int32_t z,

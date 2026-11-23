@@ -421,11 +421,10 @@ TEST(TerrainGeneratorTest, GroundCoverStandsOnTheSurface) {
                 const std::int32_t y = base_y + k / 256;
                 // A plant stands in the block right above the column's surface, and the
                 // convention has to hold for a single block read too, not only for the chunk.
-                // The plant stands on the solid ground of its own column, never on air, water
-                // or a leaf: a tuft floating over a pit is the failure this guards against.
+                // The plant stands on a block it can grow in, like the game's would_survive:
+                // grass, dirt, coarse dirt, sand or red sand. Never air, water, a leaf or stone.
                 const std::int32_t below = section_block(chunk, x, y - 1, z);
-                if (below == 0 || below == 89 || below == 294 || below == 295 || below == 296 ||
-                    below == 300) {
+                if (below != 42 && below != 13 && below != 14 && below != 121 && below != 122) {
                     if (not_on_the_surface < 5) {
                         std::printf("   cover %d at (%d,%d,%d) sits on %d, surface %d, biome %d\n",
                             state, x, y, z, below, generator.surface_height(x, z),
