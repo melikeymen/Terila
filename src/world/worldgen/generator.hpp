@@ -256,8 +256,11 @@ namespace terila::world::worldgen {
             if (state == blocks_.air) {
                 state = plants_.apply(x, y, z, state, get_column);
             }
-            if (state == blocks_.air) {
-                state = ground_cover_at(x, y, z, col);
+            if (state == blocks_.air && std::abs(y - col.height) <= 16) {
+                const GroundPlant ground = ground_plant(x, z, col);
+                if (ground.state != blocks_.air && ground.y == y) {
+                    state = ground.state;
+                }
             }
             return state;
         }
@@ -480,16 +483,18 @@ namespace terila::world::worldgen {
             }
 
             // Ground cover, one block above the surface, and only on a column no tree or cactus
-            // owns. It needs no margin: unlike a canopy it never reaches a neighbour.
+            // owns. It needs no margin: unlike a canopy it never reaches a neighbour. The
+            // surface comes from the same place a single block read takes it, so the two land
+            // on the same cell.
             for (std::int32_t tz = wz0; tz <= wz0 + 15; ++tz) {
                 for (std::int32_t tx = wx0; tx <= wx0 + 15; ++tx) {
                     const Column plant = column(tx, tz, cache);
                     if (plant.height <= sea_level_ || plant.height > sea_level_ + 40) {
                         continue;
                     }
-                    const std::int32_t ground = ground_cover_at(tx, plant.height + 1, tz, plant);
-                    if (ground != blocks_.air) {
-                        put_if_air(tx, plant.height + 1, tz, ground);
+                    const GroundPlant ground = ground_plant(tx, tz, plant);
+                    if (ground.state != blocks_.air) {
+                        put_if_air(tx, ground.y, tz, ground.state);
                     }
                 }
             }
@@ -864,31 +869,45 @@ namespace terila::world::worldgen {
                         return cached_column(cx, cz, cache);
                     });
             }
-            if (state == blocks_.air) {
-                state = ground_cover_at(x, y, z, col);
+            if (state == blocks_.air && std::abs(y - col.height) <= 16) {
+                const GroundPlant ground = ground_plant(x, z, col);
+                if (ground.state != blocks_.air && ground.y == y) {
+                    state = ground.state;
+                }
             }
             return state;
         }
 
-        // The ground plant of a column, in the cell right above its surface, or nothing. The
-        // chunk fill and a single block read both come through here, so they cannot disagree
-        // about where a tuft stands: the cell has to be air in the density field, and the cell
-        // under it has to carry ground. A blended column height can sit above the surface the
-        // chunk painted, and without that second test the plant would hang in the air.
-        std::int32_t ground_cover_at(std::int32_t x, std::int32_t y, std::int32_t z,
-            const Column& col) const {
-            if (col.height <= sea_level_ || col.height > sea_level_ + 40 ||
-                y != col.height + 1) {
-                return blocks_.air;
+        // The ground plant of a column and the cell it stands in. The chunk fill and a single
+        // block read both ask this, so the two cannot disagree about a tuft. A plant goes in the
+        // cell above the column's surface only when the density field agrees about that cell:
+        // the surface the column carries is a blend of four cells and can sit a cell away from
+        // the ground, and a plant that trusted it would end up buried or hanging in the air.
+        // Where the blend is off the column simply grows nothing, which is what a cliff face
+        // looks like anyway.
+        struct GroundPlant {
+            std::int32_t state = 0;
+            int y = 0;
+        };
+
+        GroundPlant ground_plant(std::int32_t x, std::int32_t z, const Column& col) const {
+            if (col.height <= sea_level_ || col.height > sea_level_ + 40) {
+                return GroundPlant{ blocks_.air, 0 };
             }
             const auto& biome = biomes_[static_cast<std::size_t>(col.biome)];
             if (plants_.has_tree(biome, x, z) || plants_.has_cactus(biome, x, z)) {
-                return blocks_.air;
+                return GroundPlant{ blocks_.air, 0 };
             }
-            if (density_at(x, y, z) > 0.0 || density_at(x, y - 1, z) <= 0.0) {
-                return blocks_.air;
+            // Most columns grow nothing, and the two density samples below are worth avoiding.
+            const std::int32_t plant = plants_.cover(biome, x, z);
+            if (plant == blocks_.air) {
+                return GroundPlant{ blocks_.air, 0 };
             }
-            return plants_.cover(biome, x, z);
+            const int y = col.height + 1;
+            if (density_at(x, y, z) > 0.0 || density_at(x, col.height, z) <= 0.0) {
+                return GroundPlant{ blocks_.air, 0 };
+            }
+            return GroundPlant{ plant, y };
         }
 
         std::int32_t block_at(std::int32_t x, std::int32_t y, std::int32_t z,
@@ -1204,7 +1223,11 @@ namespace terila::world::worldgen {
             result.biome = nearest.biome;
             result.surface_depth = nearest.surface_depth;
             result.surface_secondary = nearest.surface_secondary;
-            result.preliminary = nearest.preliminary;
+            // The level the surface rules call ground has to be the height this column actually
+            // has. Taking the nearest cell's preliminary instead left a blended column whose
+            // height sat more than a surface window away from it with no surface rules at all,
+            // so plains and forests came out as bare stone a cell above their own surface.
+            result.preliminary = result.height;
             return result;
         }
 
