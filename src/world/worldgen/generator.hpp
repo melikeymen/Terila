@@ -324,9 +324,8 @@ namespace terila::world::worldgen {
 
             // The density field of this chunk on the grid the game interpolates over: four
             // blocks horizontally, eight vertically.
-            DensityGrid grid;
             thread_context().begin_chunk(interp_slots_);
-            build_grid(grid, wx0, wz0);
+            const DensityGrid& grid = chunk_grid(cx, cz);
             mark("grid");
 
             const auto solid_of = [&](std::int32_t x, std::int32_t y, std::int32_t z) {
@@ -672,12 +671,9 @@ namespace terila::world::worldgen {
             return density_at(x, y, z);
         }
 
-        // The eight corner values of one interpolation cell. A block read walks up and down
-        // a column, so five of these slots keep the light pass from resampling the corners of
-        // the cell it is standing in. The slots outlive the generator, so a slot carries the
-        // world it was filled from: a second generator on this thread stands on the same cell
-        // with a different seed, and reusing the first world's corners there would make the
-        // terrain depend on what was generated before it.
+        // The eight corner values of one interpolation cell. A block read walks a column, so a
+        // few slots keep the walk from resampling the corners of the cell it stands in. The
+        // slots outlive the generator, so each one carries the world it was filled from.
         struct DensityCells {
             static constexpr int kSlots = 5;
 
@@ -699,8 +695,80 @@ namespace terila::world::worldgen {
             return cells;
         }
 
-        // The density of one block, interpolated from the same 4x8 grid the chunk fill uses.
+        // The interpolated field of a chunk, kept per thread. Only a chunk that is being
+        // generated (or was just generated) has one: a lone block read samples its own cell
+        // instead of paying for a whole chunk, which is what the game does as well.
+        struct GridCache {
+            static constexpr int kSlots = 9;
+
+            struct Slot {
+                std::uint64_t world = 0;
+                int cx = 0;
+                int cz = 0;
+                bool valid = false;
+                DensityGrid grid;
+            };
+
+            Slot slots[kSlots]{};
+            int next = 0;
+        };
+
+        static GridCache& thread_grids() {
+            static thread_local GridCache cache;
+            return cache;
+        }
+
+        // A grid reference dies with the next build, so callers finish with one before asking
+        // for another chunk.
+        const DensityGrid& chunk_grid(int cx, int cz) const {
+            GridCache& cache = thread_grids();
+            for (const auto& slot : cache.slots) {
+                if (slot.valid && slot.world == world_id_ && slot.cx == cx && slot.cz == cz) {
+                    return slot.grid;
+                }
+            }
+            GridCache::Slot& slot = cache.slots[cache.next];
+            cache.next = (cache.next + 1) % GridCache::kSlots;
+            slot.world = world_id_;
+            slot.cx = cx;
+            slot.cz = cz;
+            slot.valid = true;
+            build_grid(slot.grid, cx * 16, cz * 16);
+            // Columns of this chunk computed before its field existed carry heights from the
+            // bare noise, which can sit a block away from the interpolated field the fill
+            // paints from. They are dropped here and asked again.
+            ColumnCache& columns = thread_cache();
+            for (int dz = 0; dz < 16; ++dz) {
+                for (int dx = 0; dx < 16; ++dx) {
+                    columns.erase(cx * 16 + dx, cz * 16 + dz);
+                }
+            }
+            for (int dz = 0; dz <= 4; ++dz) {
+                for (int dx = 0; dx <= 4; ++dx) {
+                    columns.erase_cell(cx * 16 + dx * 4, cz * 16 + dz * 4);
+                }
+            }
+            return slot.grid;
+        }
+
+        const DensityGrid* cached_grid(std::int32_t x, std::int32_t z) const {
+            GridCache& cache = thread_grids();
+            for (const auto& slot : cache.slots) {
+                if (slot.valid && slot.world == world_id_ && slot.cx == (x >> 4) &&
+                    slot.cz == (z >> 4)) {
+                    return &slot.grid;
+                }
+            }
+            return nullptr;
+        }
+
+        // The density of one block. A chunk that is being generated answers from its own grid,
+        // the way the fill sees it; anywhere else the eight corners of this block's cell are
+        // sampled and blended with the same arithmetic, so the two can never disagree.
         double density_at(std::int32_t x, std::int32_t y, std::int32_t z) const {
+            if (const DensityGrid* grid = cached_grid(x, z)) {
+                return grid->at(x, y, z);
+            }
             const std::int32_t x0 = (x >> 2) << 2;
             const std::int32_t z0 = (z >> 2) << 2;
             const std::int32_t y0 = min_y_ + (((y - min_y_) >> 3) << 3);
@@ -736,9 +804,6 @@ namespace terila::world::worldgen {
                 slot->corners[6] = sample_density(x0, y0 + 8, z0 + 4, context);
                 slot->corners[7] = sample_density(x0 + 4, y0 + 8, z0 + 4, context);
             }
-
-            // The chunk's grid blends the same eight corners, and both go through one
-            // implementation so the two can never drift apart.
             return blend_cell(slot->corners, tx, ty, tz);
         }
 
@@ -750,8 +815,8 @@ namespace terila::world::worldgen {
             EvalContext& context = thread_context();
             context.reset(cache_slots_);
             for (int iy = 0; iy < grid.y_count; ++iy) {
-                for (int iz = 0; iz < DensityGrid::kCellsZ; ++iz) {
-                    for (int ix = 0; ix < DensityGrid::kCellsX; ++ix) {
+                for (int iz = 0; iz < grid.cells_z; ++iz) {
+                    for (int ix = 0; ix < grid.cells_x; ++ix) {
                         grid.values[grid.index(ix, iy, iz)] = sample_density(
                             wx0 + ix * 4, min_y_ + iy * 8, wz0 + iz * 4, context);
                     }
@@ -770,8 +835,8 @@ namespace terila::world::worldgen {
             points.clear();
             points.reserve(grid.values.size());
             for (int iy = 0; iy < grid.y_count; ++iy) {
-                for (int iz = 0; iz < DensityGrid::kCellsZ; ++iz) {
-                    for (int ix = 0; ix < DensityGrid::kCellsX; ++ix) {
+                for (int iz = 0; iz < grid.cells_z; ++iz) {
+                    for (int ix = 0; ix < grid.cells_x; ++ix) {
                         points.push_back(gpu::GridPoint{ static_cast<double>(wx0 + ix * 4),
                             static_cast<double>(min_y_ + iy * 8),
                             static_cast<double>(wz0 + iz * 4) });
@@ -787,17 +852,57 @@ namespace terila::world::worldgen {
         }
 
         // The highest solid block of a column, from the real density field.
+        // The top of a column: walk down the interpolated field from the world roof and return
+        // the first block the field calls solid, exactly the walk the game makes over a
+        // column's density volume. Reading the grid keeps this arithmetic only, where sampling
+        // the noise per block would cost a graph evaluation for every eight blocks of height.
         int density_top(std::int32_t x, std::int32_t z) const {
+            // A chunk that was generated on this thread keeps its interpolated field around, so
+            // its columns are answered from it, the same values the fill painted. Anywhere else
+            // the field is sampled once per eight blocks of height, which is a single graph
+            // evaluation per step instead of the eight corners a cell would cost.
+            if (const DensityGrid* grid = cached_grid(x, z)) {
+                for (int y = world_top_ - 1; y >= min_y_; y -= 8) {
+                    if (grid->at(x, y, z) > 0.0) {
+                        for (int cell = std::min(y + 7, world_top_ - 1); cell > y; --cell) {
+                            if (grid->at(x, cell, z) > 0.0) {
+                                return cell;
+                            }
+                        }
+                        return y;
+                    }
+                }
+                return min_y_;
+            }
             EvalContext& context = thread_context();
             context.reset(cache_slots_);
-            for (int y = world_top_ - 1; y >= min_y_; y -= 8) {
-                if (sample_density(x, y, z, context) > 0.0) {
-                    for (int cell = std::min(y + 7, world_top_ - 1); cell > y; --cell) {
-                        if (sample_density(x, cell, z, context) > 0.0) {
-                            return cell;
+            int start = world_top_ - 1;
+            const DfPtr bounds = settings_.root("preliminary_surface_level");
+            if (bounds) {
+                // The router carries a cheap top surface estimate: the same field without the
+                // jaggedness, walked by the graph itself. Only the field just above it has to be
+                // walked here, and a column that turns out solid that high still falls back to
+                // the full walk.
+                const double level = settings_.density().sample(bounds, x, 0.0, z, context);
+                const int ceiling = static_cast<int>(std::floor(level)) + 32;
+                if (ceiling < start) {
+                    start = std::max(ceiling, min_y_);
+                }
+            }
+            for (int pass = 0; pass < 2; ++pass) {
+                const int from = pass == 0 ? start : world_top_ - 1;
+                for (int y = from; y >= min_y_; y -= 8) {
+                    if (sample_density(x, y, z, context) > 0.0) {
+                        for (int cell = std::min(y + 7, world_top_ - 1); cell > y; --cell) {
+                            if (sample_density(x, cell, z, context) > 0.0) {
+                                return cell;
+                            }
                         }
+                        return y;
                     }
-                    return y;
+                }
+                if (start == world_top_ - 1) {
+                    break;
                 }
             }
             return min_y_;
@@ -1306,8 +1411,16 @@ namespace terila::world::worldgen {
             if (fx == 0.0f && fz == 0.0f) {
                 return a;
             }
-            return blend(a, cached_cell(nx + 1, nz, cache), cached_cell(nx, nz + 1, cache),
-                cached_cell(nx + 1, nz + 1, cache), fx, fz);
+            Column mixed = blend(a, cached_cell(nx + 1, nz, cache),
+                cached_cell(nx, nz + 1, cache), cached_cell(nx + 1, nz + 1, cache), fx, fz);
+            // The blend smooths four cells into one column, which is what keeps a biome edge
+            // from jumping, but the height is not something the game smooths: it walks this
+            // column's own density. A blended height sits up to a cell away from the blocks
+            // the chunk paints, and a plant or a surface rule that trusted it lands in the
+            // wrong block.
+            mixed.height = density_top(x, z);
+            mixed.preliminary = mixed.height;
+            return mixed;
         }
 
         static Column blend(const Column& a, const Column& b, const Column& c,

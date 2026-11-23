@@ -65,6 +65,22 @@ namespace terila::world::worldgen {
             cells_[slot] = column;
         }
 
+        // A height asked before the chunk's field existed came from the bare noise and can sit
+        // a block away from what was painted, so the entry has to go once the field arrives.
+        void erase(std::int32_t x, std::int32_t z) {
+            const std::size_t slot = slot_of(key(x, z));
+            if (keys_[slot] == key(x, z)) {
+                keys_[slot] = kEmpty;
+            }
+        }
+
+        void erase_cell(std::int32_t cell_x, std::int32_t cell_z) {
+            const std::size_t slot = slot_of(key(cell_x, cell_z));
+            if (cell_keys_[slot] == key(cell_x, cell_z)) {
+                cell_keys_[slot] = kEmpty;
+            }
+        }
+
     private:
         static constexpr std::uint64_t kEmpty = ~0ull;
         // The light pass asks for the sky of a fifteen block halo, so the table holds a few

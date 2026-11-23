@@ -33,30 +33,36 @@ namespace terila::world::worldgen {
     }
 
     struct DensityGrid {
-        static constexpr int kCellsX = 5;
-        static constexpr int kCellsZ = 5;
+        // A chunk's field is five by five cells so that its sixteen blocks are covered; a grid
+        // with a margin carries more and serves the neighbours of a chunk as well.
+        int cells_x = 5;
+        int cells_z = 5;
         int y_count = 0;
         int origin_x = 0;
         int origin_z = 0;
         int origin_y = 0;
         std::vector<double> values;
 
-        void init(std::int32_t wx0, std::int32_t wz0, int min_y, int y_count_in) {
+        void init(std::int32_t wx0, std::int32_t wz0, int min_y, int y_count_in,
+            int cells_x_in = 5, int cells_z_in = 5) {
             origin_x = wx0;
             origin_z = wz0;
             origin_y = min_y;
             y_count = y_count_in;
-            values.assign(static_cast<std::size_t>(kCellsX * kCellsZ * y_count), 0.0);
+            cells_x = cells_x_in;
+            cells_z = cells_z_in;
+            values.assign(static_cast<std::size_t>(cells_x * cells_z * y_count), 0.0);
         }
 
         std::size_t index(int ix, int iy, int iz) const {
-            return (static_cast<std::size_t>(iy) * kCellsZ + static_cast<std::size_t>(iz)) *
-                kCellsX + static_cast<std::size_t>(ix);
+            return (static_cast<std::size_t>(iy) * static_cast<std::size_t>(cells_z) +
+                static_cast<std::size_t>(iz)) * static_cast<std::size_t>(cells_x) +
+                static_cast<std::size_t>(ix);
         }
 
         double at(std::int32_t x, std::int32_t y, std::int32_t z) const {
-            const int ix = std::clamp((x - origin_x) >> 2, 0, kCellsX - 2);
-            const int iz = std::clamp((z - origin_z) >> 2, 0, kCellsZ - 2);
+            const int ix = std::clamp((x - origin_x) >> 2, 0, cells_x - 2);
+            const int iz = std::clamp((z - origin_z) >> 2, 0, cells_z - 2);
             const int iy = std::clamp((y - origin_y) >> 3, 0, y_count - 2);
             const double tx = static_cast<double>(x - (origin_x + ix * 4)) / 4.0;
             const double tz = static_cast<double>(z - (origin_z + iz * 4)) / 4.0;
