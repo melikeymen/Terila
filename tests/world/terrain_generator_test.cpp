@@ -56,6 +56,9 @@ namespace {
         if (name == "minecraft:dandelion")     return 8602;
         if (name == "minecraft:poppy")         return 8603;
         if (name == "minecraft:dead_bush")     return 8604;
+        if (name == "minecraft:seagrass")      return 8605;
+        if (name == "minecraft:kelp")          return 8606;
+        if (name == "minecraft:kelp_plant")    return 8607;
         if (name == "minecraft:coarse_dirt")   return 14;
         if (name == "minecraft:red_sand")      return 122;
         if (name == "minecraft:terracotta")    return 678;
@@ -352,6 +355,32 @@ namespace {
         return LandColumn{};
     }
 
+    // An ocean floor: a column with at least two blocks of water over it.
+    LandColumn find_ocean_column(const terrain::Generator& generator) {
+        // A coarse walk: every column costs a full column evaluation, and an ocean is never
+        // less than a few dozen columns across.
+        for (std::int32_t radius = 0; radius <= 8192; radius += 32) {
+            for (std::int32_t z = -radius; z <= radius; z += 32) {
+                for (std::int32_t x = -radius; x <= radius; x += 32) {
+                    if (radius > 0 && std::abs(x) != radius && std::abs(z) != radius) {
+                        continue;
+                    }
+                    const int height = generator.surface_height(x, z);
+                    if (height + 2 > generator.sea_level()) {
+                        continue;
+                    }
+                    // The generator's biome table is in BiomeIndex order, so the three oceans
+                    // come first: deep ocean, ocean, frozen ocean.
+                    const int biome = generator.biome_at(x, z);
+                    if (biome == 0 || biome == 1 || biome == 2) {
+                        return LandColumn{ x, z, height, 0, biome };
+                    }
+                }
+            }
+        }
+        return LandColumn{};
+    }
+
     bool is_plant(std::int32_t state) {
         return state == 140 || state == 294 || state == 143 || state == 295 ||
             state == 152 || state == 300 || state == 8599 || state == 141 ||
@@ -454,6 +483,73 @@ TEST(TerrainGeneratorTest, GroundCoverStandsOnTheSurface) {
     EXPECT_EQ(not_on_the_surface, 0);
     EXPECT_GT(on_the_surface, 0) << "no plant landed on a column the lookup agrees about";
     EXPECT_EQ(disagreements, 0);
+}
+
+TEST(TerrainGeneratorTest, OceanFloorGrowsSeagrassAndKelp) {
+    REQUIRE_VANILLA_DATA();
+    const auto generator = make_generator();
+    const LandColumn water = find_ocean_column(generator);
+    ASSERT_NE(water.biome, -1) << "no ocean column within 4096 blocks";
+
+    const auto chunk_of = [](std::int32_t v) { return v >= 0 ? v / 16 : -((-v + 15) / 16); };
+    int sea_plants = 0;
+    int stalks = 0;
+    int above_the_sea = 0;
+    int water_cells = 0;
+    int looked_up = 0;
+    int disagreements = 0;
+    for (int i = 0; i < 9; ++i) {
+        const std::int32_t cx = chunk_of(water.x) + (i % 3) - 1;
+        const std::int32_t cz = chunk_of(water.z) + (i / 3) - 1;
+        const auto chunk = generator.generate(cx, cz);
+        for (int s = 0; s < chunk.section_count; ++s) {
+            const auto& section = chunk.sections[static_cast<std::size_t>(s)];
+            const std::int32_t base_y = chunk.min_y + s * 16;
+            for (int k = 0; k < 4096; ++k) {
+                const std::int32_t state = section_state(section, k);
+                if (state == 89) {
+                    ++water_cells;
+                }
+                if (state != 8605 && state != 8606 && state != 8607) {
+                    continue;
+                }
+                ++sea_plants;
+                if (state == 8607) {
+                    ++stalks;
+                }
+                const std::int32_t x = cx * 16 + (k % 16);
+                const std::int32_t z = cz * 16 + ((k / 16) % 16);
+                const std::int32_t y = base_y + k / 256;
+                // Sea plants live in the water, never at or above its surface.
+                if (y >= generator.sea_level()) {
+                    ++above_the_sea;
+                }
+                // A kelp stalk is a column of body blocks with one tip on top, so a plant
+                // with a plant above it is a body block, never the tip.
+                if (state == 8606 && section_block(chunk, x, y + 1, z) == 8606) {
+                    ++above_the_sea;
+                }
+                // A block read costs a full column, so only a sample of the plants is read
+                // back. A disagreement is a bug wherever it is, sampling or not.
+                if (looked_up < 120) {
+                    ++looked_up;
+                    if (generator.state_at(x, y, z) != state) {
+                        if (disagreements < 5) {
+                            std::printf("   sea plant at (%d,%d,%d) is %d, chunk holds %d\n", x, y,
+                                z, generator.state_at(x, y, z), state);
+                        }
+                        ++disagreements;
+                    }
+                }
+            }
+        }
+    }
+    EXPECT_GT(sea_plants, 0) << "nine ocean chunks grew nothing under the water";
+    EXPECT_GT(stalks, 0) << "no kelp stalk was more than one block tall";
+    EXPECT_EQ(above_the_sea, 0);
+    EXPECT_GT(looked_up, 0);
+    EXPECT_EQ(disagreements, 0);
+    EXPECT_GT(water_cells, 0) << "the scan found no water at all, the probe is wrong";
 }
 
 TEST(TerrainGeneratorTest, CarvesCavesUnderTheSurface) {

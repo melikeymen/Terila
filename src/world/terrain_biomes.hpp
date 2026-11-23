@@ -66,6 +66,11 @@ namespace terila::world::terrain {
         std::int32_t dandelion = 0;
         std::int32_t poppy = 0;
         std::int32_t dead_bush = 0;
+        // What grows under the sea, on the floor of an ocean column. Zero means the block is
+        // not in this checkout's registry and the ocean stays bare.
+        std::int32_t seagrass = 0;
+        std::int32_t kelp = 0;
+        std::int32_t kelp_plant = 0;
         // Ores, deepest first; a missing id falls back to stone so the vein never appears.
         std::int32_t coal_ore = 0;
         std::int32_t copper_ore = 0;
@@ -239,6 +244,9 @@ namespace terila::world::terrain {
         blocks.dandelion = soft_id("minecraft:dandelion", 0);
         blocks.poppy = soft_id("minecraft:poppy", 0);
         blocks.dead_bush = soft_id("minecraft:dead_bush", 0);
+        blocks.seagrass = soft_id("minecraft:seagrass", 0);
+        blocks.kelp = soft_id("minecraft:kelp", 0);
+        blocks.kelp_plant = soft_id("minecraft:kelp_plant", 0);
 
         if (!complete) {
             return std::nullopt;

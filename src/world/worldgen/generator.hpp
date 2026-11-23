@@ -259,6 +259,9 @@ namespace terila::world::worldgen {
             if (state == blocks_.air) {
                 state = ground_plant(x, y, z, col);
             }
+            if (state == fluid_) {
+                state = underwater_plant(x, y, z, col);
+            }
             return state;
         }
 
@@ -397,6 +400,12 @@ namespace terila::world::worldgen {
                             const auto& biome = biome_of(col);
                             state = (y == sea_level_ - 1 && biome.ice_top)
                                 ? blocks_.ice : fluid_;
+                            if (state == fluid_) {
+                                const std::int32_t plant = underwater_plant(wx, y, wz, col);
+                                if (plant != blocks_.air) {
+                                    state = plant;
+                                }
+                            }
                         }
                         else {
                             stone_above = 0;
@@ -869,7 +878,50 @@ namespace terila::world::worldgen {
             if (state == blocks_.air) {
                 state = ground_plant(x, y, z, col);
             }
+            if (state == fluid_) {
+                state = underwater_plant(x, y, z, col);
+            }
             return state;
+        }
+
+        // What grows under the sea: a patch of seagrass on the floor, or a kelp stalk that
+        // climbs towards the surface. Which one, and how tall, comes from the column's own
+        // coordinates, and the chunk fill and a single block read both ask this, so the ocean
+        // looks the same whether it is streamed or read block by block.
+        std::int32_t underwater_plant(std::int32_t x, std::int32_t y, std::int32_t z,
+            const Column& col) const {
+            if (kind_ != DimensionKind::Overworld || blocks_.seagrass == blocks_.air) {
+                return blocks_.air;
+            }
+            if (col.biome != static_cast<int>(terrain::kDeepOcean) &&
+                col.biome != static_cast<int>(terrain::kOcean) &&
+                col.biome != static_cast<int>(terrain::kFrozenOcean)) {
+                return blocks_.air;
+            }
+            // The floor has to be under the surface with at least one block of water over it.
+            const int bottom = col.height + 1;
+            if (bottom >= sea_level_ || y < bottom || y >= sea_level_) {
+                return blocks_.air;
+            }
+            // Some columns carry a kelp stalk, most simply stand in a patch of seagrass.
+            constexpr std::uint32_t kKelpSeed = 0x0CE1A9u;
+            constexpr std::uint32_t kGrassSeed = 0x5EA6A55u;
+            const std::uint32_t kelp = terrain::detail::hash3(x, z, kKelpSeed);
+            if (kelp % 12 == 0 && blocks_.kelp != blocks_.air &&
+                blocks_.kelp_plant != blocks_.air) {
+                const int room = sea_level_ - bottom;
+                const int height = 1 + static_cast<int>(kelp / 12 % static_cast<std::uint32_t>(room));
+                const int top = bottom + height - 1;
+                if (y > top) {
+                    return blocks_.air;
+                }
+                // The last block of the stalk is the tip the client draws differently.
+                return y == top ? blocks_.kelp : blocks_.kelp_plant;
+            }
+            if (y == bottom && terrain::detail::hash3(x, z, kGrassSeed) % 6 == 0) {
+                return blocks_.seagrass;
+            }
+            return blocks_.air;
         }
 
         // The ground plant of a column, in the cell above its surface. The chunk fill and a
