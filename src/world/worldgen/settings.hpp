@@ -6,6 +6,7 @@
 // own JSON instead of being written into the code.
 
 #include "data/input_store.hpp"
+#include "world/worldgen/aquifer.hpp"
 #include "world/worldgen/density/climate.hpp"
 #include "world/worldgen/density/density.hpp"
 #include "log/logger.hpp"
@@ -96,6 +97,25 @@ namespace terila::world::worldgen {
                 LOG_WARN(Chunk, "worldgen: the density router has no final_density");
                 return false;
             }
+
+            // The aquifer names six fields of its own, spelled inline in the preset rather
+            // than in the router. A preset that has none (a superflat) keeps the plain sea.
+            if (data.contains("aquifers") && data["aquifers"].is_object()) {
+                const nlohmann::json& aquifers = data["aquifers"];
+                const auto field = [this, &aquifers](const char* name) -> DfPtr {
+                    return aquifers.contains(name) ? density_.compile(aquifers[name]) : nullptr;
+                };
+                aquifer_functions_.barrier = field("barrier");
+                aquifer_functions_.floodedness = field("fluid_level_floodedness");
+                aquifer_functions_.spread = field("fluid_level_spread");
+                aquifer_functions_.lava = field("lava");
+                aquifer_functions_.exclusion = field("exclusion");
+                aquifer_functions_.surface = field("surface_level");
+                if (!aquifer_functions_.ready()) {
+                    LOG_WARN(Chunk, "worldgen: the aquifer of {} names a field that cannot be "
+                        "read, the dimension keeps its plain sea", preset);
+                }
+            }
             ready_ = true;
             return true;
         }
@@ -126,6 +146,7 @@ namespace terila::world::worldgen {
         }
 
         DfPtr final_density() const noexcept { return final_density_; }
+        const AquiferFunctions& aquifers() const noexcept { return aquifer_functions_; }
 
     private:
         static const nlohmann::json* find_preset(const nlohmann::json& root,
@@ -189,6 +210,7 @@ namespace terila::world::worldgen {
         nlohmann::json material_conditions_;
         std::unordered_map<std::string, DfPtr> router_;
         DfPtr final_density_;
+        AquiferFunctions aquifer_functions_;
         std::string default_block_ = "minecraft:stone";
         std::string default_fluid_ = "minecraft:water";
         std::string material_rule_id_ = "minecraft:overworld";

@@ -10,9 +10,8 @@
 // same cell corners, so a streamed chunk and a block read always agree.
 //
 // Deliberate simplifications, all of them documented where they matter: no structure blending
-// or beardifier, no aquifers (water fills the ocean and the caves below it, not local fluid
-// levels), no carvers (caves are the negative space of the density field) and no features
-// beyond the tree and cactus pass here.
+// or beardifier, no carvers (caves are the negative space of the density field) and no
+// features beyond the tree and cactus pass here.
 
 #include "world/block_cache.hpp"
 #include "world/chunk.hpp"
@@ -20,6 +19,7 @@
 #include "world/terrain_biomes.hpp"
 #include "world/terrain_noise.hpp"
 #include "world/worldgen/chunk_sections.hpp"
+#include "world/worldgen/aquifer.hpp"
 #include "world/worldgen/column.hpp"
 #include "world/worldgen/density_grid.hpp"
 #include "world/worldgen/dimension.hpp"
@@ -325,7 +325,8 @@ namespace terila::world::worldgen {
             // The density field of this chunk on the grid the game interpolates over: four
             // blocks horizontally, eight vertically.
             thread_context().begin_chunk(interp_slots_);
-            const DensityGrid& grid = chunk_grid(cx, cz);
+            GridCache::Slot& field = chunk_field(cx, cz);
+            const DensityGrid& grid = field.grid;
             mark("grid");
 
             const auto solid_of = [&](std::int32_t x, std::int32_t y, std::int32_t z) {
@@ -341,6 +342,7 @@ namespace terila::world::worldgen {
             }
 
             std::array<unsigned char, 512> solid{};
+            std::array<unsigned char, 512> matter{};
             int height_sum = 0;
             int height_min = world_top_;
             int height_max = min_y_;
@@ -354,30 +356,30 @@ namespace terila::world::worldgen {
                     height_max = std::max(height_max, col.height);
                     const int height_count = world_height;
 
+                    // Rock, air or a fluid: the aquifer decides what the density leaves open,
+                    // so a cave deep under the sea can hold water and one inside a mountain
+                    // stays dry. A block the density fills never reaches the fluids.
                     for (int index = 0; index < height_count; ++index) {
+                        const int y = min_y_ + index;
+                        const Substance kind = field.aquifer.substance(wx, y, wz,
+                            grid.at(wx, y, wz));
+                        matter[static_cast<std::size_t>(index)] =
+                            static_cast<unsigned char>(kind);
                         solid[static_cast<std::size_t>(index)] =
-                            solid_of(wx, min_y_ + index, wz) ? 1 : 0;
+                            kind == Substance::Solid ? 1 : 0;
                     }
 
-                    // Water is the flooded aquifer state of the ocean: every empty block
-                    // below sea level in a column whose floor is under the sea. The nether
-                    // has a roof above its sea, so its column top says nothing about the
-                    // lava level: every empty block below it is lava.
-                    const bool flooded = col.height < sea_level_ ||
-                        kind_ == DimensionKind::Nether;
                     int stone_above = 0;
                     int water_height = std::numeric_limits<int>::min();
                     int next_ceiling = kWayBelow;
 
                     for (int y = world_top_ - 1; y >= min_y_; --y) {
                         const int index = y - min_y_;
-                        const bool is_solid = solid[static_cast<std::size_t>(index)] != 0;
-                        // Sea level is the first air block above the ocean: water ends one
-                        // below it, exactly like the fluid level the game fills to.
-                        const bool under_sea = y < sea_level_;
+                        const Substance kind =
+                            static_cast<Substance>(matter[static_cast<std::size_t>(index)]);
 
                         std::int32_t state = blocks_.air;
-                        if (is_solid) {
+                        if (kind == Substance::Solid) {
                             if (next_ceiling >= y) {
                                 next_ceiling = kWayBelow;
                                 for (int below = y - 1; below >= min_y_; --below) {
@@ -392,13 +394,17 @@ namespace terila::world::worldgen {
                             state = painted_at(wx, y, wz, col, stone_above, stone_below,
                                 water_height);
                         }
-                        else if (under_sea && flooded) {
+                        else if (kind == Substance::Water || kind == Substance::Lava) {
                             if (water_height == std::numeric_limits<int>::min()) {
                                 water_height = y + 1;
                             }
-                            const auto& biome = biome_of(col);
-                            state = (y == sea_level_ - 1 && biome.ice_top)
-                                ? blocks_.ice : fluid_;
+                            // A frozen sea keeps its lid at the water line, on the first
+                            // open block of the column.
+                            state = kind == Substance::Water ? fluid_ : blocks_.lava;
+                            if (kind == Substance::Water && y == sea_level_ - 1 &&
+                                biome_of(col).ice_top) {
+                                state = blocks_.ice;
+                            }
                             if (state == fluid_) {
                                 const std::int32_t plant = underwater_plant(wx, y, wz, col);
                                 if (plant != blocks_.air) {
@@ -639,6 +645,8 @@ namespace terila::world::worldgen {
         static constexpr int kTopMarkerY = 2047;
         // A solid run that reaches the world floor reports a depth this far from the top.
         static constexpr int kWayBelow = -1000000;
+        // The nether's own fluid level: below it the rock holds lava, above it nothing.
+        static constexpr int kNetherLavaLevel = 32;
         // How far below the preliminary surface the material chain still paints blocks.
         static constexpr int kSurfaceWindow = 8;
 
@@ -707,6 +715,7 @@ namespace terila::world::worldgen {
                 int cz = 0;
                 bool valid = false;
                 DensityGrid grid;
+                Aquifer aquifer;
             };
 
             Slot slots[kSlots]{};
@@ -720,11 +729,11 @@ namespace terila::world::worldgen {
 
         // A grid reference dies with the next build, so callers finish with one before asking
         // for another chunk.
-        const DensityGrid& chunk_grid(int cx, int cz) const {
+        GridCache::Slot& chunk_field(int cx, int cz) const {
             GridCache& cache = thread_grids();
-            for (const auto& slot : cache.slots) {
+            for (auto& slot : cache.slots) {
                 if (slot.valid && slot.world == world_id_ && slot.cx == cx && slot.cz == cz) {
-                    return slot.grid;
+                    return slot;
                 }
             }
             GridCache::Slot& slot = cache.slots[cache.next];
@@ -734,6 +743,14 @@ namespace terila::world::worldgen {
             slot.cz = cz;
             slot.valid = true;
             build_grid(slot.grid, cx * 16, cz * 16);
+            // The fluids of this chunk: the lattice is sized from the same volume the fill
+            // walks, so the water a block read reports is the water the chunk holds.
+            const FluidStatus bubble = kind_ == DimensionKind::Nether
+                ? FluidStatus{ kNetherLavaLevel, Substance::Lava }
+                : FluidStatus{ sea_level_, Substance::Water };
+            slot.aquifer.init(&settings_.density(), settings_.aquifers(), seed_, cache_slots_,
+                min_y_, world_top_ - 1, bubble);
+            slot.aquifer.begin_chunk(cx * 16, cz * 16);
             // Columns of this chunk computed before its field existed carry heights from the
             // bare noise, which can sit a block away from the interpolated field the fill
             // paints from. They are dropped here and asked again.
@@ -748,7 +765,18 @@ namespace terila::world::worldgen {
                     columns.erase_cell(cx * 16 + dx * 4, cz * 16 + dz * 4);
                 }
             }
-            return slot.grid;
+            return slot;
+        }
+
+        GridCache::Slot* cached_field(std::int32_t x, std::int32_t z) const {
+            GridCache& cache = thread_grids();
+            for (auto& slot : cache.slots) {
+                if (slot.valid && slot.world == world_id_ && slot.cx == (x >> 4) &&
+                    slot.cz == (z >> 4)) {
+                    return &slot;
+                }
+            }
+            return nullptr;
         }
 
         const DensityGrid* cached_grid(std::int32_t x, std::int32_t z) const {
@@ -973,7 +1001,7 @@ namespace terila::world::worldgen {
             const Column col = cached_column(x, z, cache);
             std::int32_t state = blocks_.air;
             if (y > col.height) {
-                state = fluid_at(y, col);
+                state = fluid_at(x, y, z, col);
             }
             else if (y + kSurfaceWindow >= col.preliminary) {
                 state = painted_at(x, y, z, col, 1, 1, water_height_of(col));
@@ -1127,7 +1155,12 @@ namespace terila::world::worldgen {
                 return blocks_.air;
             }
             if (density(x, y, z) <= 0.0) {
-                return fluid_at(y, col);
+                // The aquifer can also push rock back over a body, so an open field value is
+                // not yet an open block.
+                const std::int32_t fluid = fluid_at(x, y, z, col);
+                if (fluid != blocks_.air || matter_at(x, y, z) != Substance::Solid) {
+                    return fluid;
+                }
             }
             // Surface rules stop eight blocks below the preliminary surface, so a block deep
             // under it needs neither neighbour scan: the chain would answer stone or deepslate
@@ -1156,11 +1189,41 @@ namespace terila::world::worldgen {
                 : std::numeric_limits<int>::min();
         }
 
-        std::int32_t fluid_at(std::int32_t y, const Column& col) const {
-            if (y >= sea_level_ || col.height >= sea_level_) {
+        // What stands in a block the density leaves open. A chunk that was generated on this
+        // thread answers from its own aquifer, so the water a lookup reports is the water the
+        // chunk holds; anywhere else the sea level rule stands in, which only differs in a
+        // cave that the aquifer would have flooded.
+        // Rock, air or a fluid, the same answer the fill of that chunk reached. A chunk that
+        // was generated on this thread keeps its aquifer around; anywhere else the sea rule
+        // stands in, which only differs inside a cave the aquifer would have flooded.
+        Substance matter_at(std::int32_t x, std::int32_t y, std::int32_t z) const {
+            const double density = density_at(x, y, z);
+            if (density > 0.0) {
+                return Substance::Solid;
+            }
+            if (GridCache::Slot* field = cached_field(x, z)) {
+                if (field->aquifer.ready()) {
+                    return field->aquifer.substance(x, y, z, density);
+                }
+            }
+            if (kind_ == DimensionKind::Nether) {
+                return y < kNetherLavaLevel ? Substance::Lava : Substance::Air;
+            }
+            return y < sea_level_ ? Substance::Water : Substance::Air;
+        }
+
+        std::int32_t fluid_at(std::int32_t x, std::int32_t y, std::int32_t z,
+            const Column& col) const {
+            switch (matter_at(x, y, z)) {
+            case Substance::Water:
+                return (y == sea_level_ - 1 && biome_of(col).ice_top) ? blocks_.ice : fluid_;
+            case Substance::Lava:
+                return blocks_.lava;
+            case Substance::Solid:
+            case Substance::Air:
                 return blocks_.air;
             }
-            return (y == sea_level_ - 1 && biome_of(col).ice_top) ? blocks_.ice : fluid_;
+            return blocks_.air;
         }
 
         const terrain::Biome& biome_of(const Column& col) const {
