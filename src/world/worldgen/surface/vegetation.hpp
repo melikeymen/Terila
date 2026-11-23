@@ -187,6 +187,23 @@ namespace terila::world::worldgen {
             return 1 + static_cast<int>(terrain::detail::hash3(x, z, kFeatureSeed + 3) % 3);
         }
 
+        // The ground plant that stands on an undisturbed surface column, or 0 for none. A
+        // flower takes the grass's place where the flower hash fires, and the two hashes are
+        // independent so a meadow mixes both.
+        std::int32_t cover(const terrain::Biome& biome, std::int32_t x, std::int32_t z) const {
+            if (biome.flower != 0 && biome.flower_chance > 0 &&
+                terrain::detail::hash3(x, z, kFeatureSeed + 11) %
+                    static_cast<std::uint32_t>(biome.flower_chance) == 0) {
+                return biome.flower;
+            }
+            if (biome.cover != 0 && biome.cover_chance > 0 &&
+                terrain::detail::hash3(x, z, kFeatureSeed + 7) %
+                    static_cast<std::uint32_t>(biome.cover_chance) == 0) {
+                return biome.cover;
+            }
+            return 0;
+        }
+
         bool has_tree(const terrain::Biome& biome, std::int32_t x, std::int32_t z) const {
             return biome.tree_chance > 0 &&
                 terrain::detail::hash3(x, z, kFeatureSeed) %

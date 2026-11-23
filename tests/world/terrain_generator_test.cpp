@@ -51,6 +51,11 @@ namespace {
         if (name == "minecraft:acacia_log")    return 152;
         if (name == "minecraft:acacia_leaves") return 300;
         if (name == "minecraft:cactus")        return 8599;
+        if (name == "minecraft:short_grass")   return 8600;
+        if (name == "minecraft:fern")          return 8601;
+        if (name == "minecraft:dandelion")     return 8602;
+        if (name == "minecraft:poppy")         return 8603;
+        if (name == "minecraft:dead_bush")     return 8604;
         if (name == "minecraft:coarse_dirt")   return 14;
         if (name == "minecraft:red_sand")      return 122;
         if (name == "minecraft:terracotta")    return 678;
@@ -381,6 +386,72 @@ TEST(TerrainGeneratorTest, GeneratesVegetationSomewhere) {
         }
     }
     EXPECT_GT(plants, 0);
+}
+
+TEST(TerrainGeneratorTest, GroundCoverStandsOnTheSurface) {
+    REQUIRE_VANILLA_DATA();
+    const auto generator = make_generator();
+    const LandColumn land = find_column(generator, true);
+    ASSERT_NE(land.biome, -1) << "no grassy column within 4096 blocks";
+
+    const auto is_cover = [](std::int32_t state) { return state >= 8600 && state <= 8604; };
+
+    int found = 0;
+    int not_on_the_surface = 0;
+    int on_the_surface = 0;
+    int disagreements = 0;
+    for (int i = 0; i < 9; ++i) {
+        // A chunk holds the columns whose world coordinate divided by sixteen rounds down, so
+        // the origin of a chunk west or north of zero must floor, not truncate.
+        const auto chunk_of = [](std::int32_t v) { return v >= 0 ? v / 16 : -((-v + 15) / 16); };
+        const std::int32_t cx = chunk_of(land.x) + (i % 3) - 1;
+        const std::int32_t cz = chunk_of(land.z) + (i / 3) - 1;
+        const auto chunk = generator.generate(cx, cz);
+        for (int s = 0; s < chunk.section_count; ++s) {
+            const auto& section = chunk.sections[static_cast<std::size_t>(s)];
+            const std::int32_t base_y = chunk.min_y + s * 16;
+            for (int k = 0; k < 4096; ++k) {
+                const std::int32_t state = section_state(section, k);
+                if (!is_cover(state)) {
+                    continue;
+                }
+                ++found;
+                const std::int32_t x = cx * 16 + (k % 16);
+                const std::int32_t z = cz * 16 + ((k / 16) % 16);
+                const std::int32_t y = base_y + k / 256;
+                // A plant stands in the block right above the column's surface, and the
+                // convention has to hold for a single block read too, not only for the chunk.
+                // The plant stands on ground of its own column: the block below it is a
+                // surface block, never air, water or a leaf.
+                const std::int32_t below = section_block(chunk, x, y - 1, z);
+                if (below == 0 || below == 89 || below == 294 || below == 295 || below == 296 ||
+                    below == 300) {
+                    if (not_on_the_surface < 5) {
+                        std::printf("   cover %d at (%d,%d,%d) sits on %d\n", state, x, y, z,
+                            below);
+                    }
+                    ++not_on_the_surface;
+                }
+                // Where the column's blended height happens to be the surface the chunk
+                // painted, a single block read has to answer the plant as well.
+                if (generator.surface_height(x, z) + 1 == y) {
+                    ++on_the_surface;
+                    if (generator.state_at(x, y, z) != state) {
+                        if (disagreements < 5) {
+                            std::printf(
+                                "   lookup at (%d,%d,%d) is %d, chunk holds %d\n", x, y, z,
+                                generator.state_at(x, y, z), state);
+                        }
+                        ++disagreements;
+                    }
+                }
+            }
+        }
+    }
+    EXPECT_GT(found, 0) << "nine chunks around a grassland grew no ground cover";
+    EXPECT_EQ(not_on_the_surface, 0);
+    EXPECT_GT(on_the_surface, 0) << "no plant landed on a column the lookup agrees about";
+    EXPECT_EQ(disagreements, 0);
 }
 
 TEST(TerrainGeneratorTest, CarvesCavesUnderTheSurface) {

@@ -256,6 +256,9 @@ namespace terila::world::worldgen {
             if (state == blocks_.air) {
                 state = plants_.apply(x, y, z, state, get_column);
             }
+            if (state == blocks_.air) {
+                state = ground_cover_at(x, y, z, col);
+            }
             return state;
         }
 
@@ -433,7 +436,10 @@ namespace terila::world::worldgen {
                     });
             }
 
-            // Trees and cacti: the margin lets plants from neighbouring columns lean in.
+            // Trees and cacti first, so a canopy that leans into a neighbouring column keeps
+            // its leaves; the ground cover below only fills what is still air. Placing the
+            // cover first would leave a grass tuft inside another column's canopy, which a
+            // single block read of that column (it asks the tree first) would deny.
             int tree_columns = 0;
             for (std::int32_t tz = wz0 - 2; tz <= wz0 + 17; ++tz) {
                 for (std::int32_t tx = wx0 - 2; tx <= wx0 + 17; ++tx) {
@@ -469,6 +475,21 @@ namespace terila::world::worldgen {
                         for (int i = 1; i <= height; ++i) {
                             put_if_air(tx, plant.height + i, tz, blocks_.cactus);
                         }
+                    }
+                }
+            }
+
+            // Ground cover, one block above the surface, and only on a column no tree or cactus
+            // owns. It needs no margin: unlike a canopy it never reaches a neighbour.
+            for (std::int32_t tz = wz0; tz <= wz0 + 15; ++tz) {
+                for (std::int32_t tx = wx0; tx <= wx0 + 15; ++tx) {
+                    const Column plant = column(tx, tz, cache);
+                    if (plant.height <= sea_level_ || plant.height > sea_level_ + 40) {
+                        continue;
+                    }
+                    const std::int32_t ground = ground_cover_at(tx, plant.height + 1, tz, plant);
+                    if (ground != blocks_.air) {
+                        put_if_air(tx, plant.height + 1, tz, ground);
                     }
                 }
             }
@@ -635,11 +656,15 @@ namespace terila::world::worldgen {
 
         // The eight corner values of one interpolation cell. A block read walks up and down
         // a column, so five of these slots keep the light pass from resampling the corners of
-        // the cell it is standing in.
+        // the cell it is standing in. The slots outlive the generator, so a slot carries the
+        // world it was filled from: a second generator on this thread stands on the same cell
+        // with a different seed, and reusing the first world's corners there would make the
+        // terrain depend on what was generated before it.
         struct DensityCells {
             static constexpr int kSlots = 5;
 
             struct Slot {
+                std::uint64_t world = 0;
                 std::int32_t x = 0;
                 std::int32_t y = 0;
                 std::int32_t z = 0;
@@ -668,8 +693,8 @@ namespace terila::world::worldgen {
             DensityCells& cells = thread_cells();
             DensityCells::Slot* slot = nullptr;
             for (auto& candidate : cells.slots) {
-                if (candidate.valid && candidate.x == x0 && candidate.y == y0 &&
-                    candidate.z == z0) {
+                if (candidate.valid && candidate.world == world_id_ && candidate.x == x0 &&
+                    candidate.y == y0 && candidate.z == z0) {
                     slot = &candidate;
                     break;
                 }
@@ -679,6 +704,7 @@ namespace terila::world::worldgen {
                 cells.next = (cells.next + 1) % DensityCells::kSlots;
                 EvalContext& context = thread_context();
                 context.reset(cache_slots_);
+                slot->world = world_id_;
                 slot->x = x0;
                 slot->y = y0;
                 slot->z = z0;
@@ -838,7 +864,31 @@ namespace terila::world::worldgen {
                         return cached_column(cx, cz, cache);
                     });
             }
+            if (state == blocks_.air) {
+                state = ground_cover_at(x, y, z, col);
+            }
             return state;
+        }
+
+        // The ground plant of a column, in the cell right above its surface, or nothing. The
+        // chunk fill and a single block read both come through here, so they cannot disagree
+        // about where a tuft stands: the cell has to be air in the density field, and the cell
+        // under it has to carry ground. A blended column height can sit above the surface the
+        // chunk painted, and without that second test the plant would hang in the air.
+        std::int32_t ground_cover_at(std::int32_t x, std::int32_t y, std::int32_t z,
+            const Column& col) const {
+            if (col.height <= sea_level_ || col.height > sea_level_ + 40 ||
+                y != col.height + 1) {
+                return blocks_.air;
+            }
+            const auto& biome = biomes_[static_cast<std::size_t>(col.biome)];
+            if (plants_.has_tree(biome, x, z) || plants_.has_cactus(biome, x, z)) {
+                return blocks_.air;
+            }
+            if (density_at(x, y, z) > 0.0 || density_at(x, y - 1, z) <= 0.0) {
+                return blocks_.air;
+            }
+            return plants_.cover(biome, x, z);
         }
 
         std::int32_t block_at(std::int32_t x, std::int32_t y, std::int32_t z,

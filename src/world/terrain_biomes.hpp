@@ -59,6 +59,13 @@ namespace terila::world::terrain {
         std::int32_t acacia_log = 0;
         std::int32_t acacia_leaves = 0;
         std::int32_t cactus = 0;
+        // Ground cover: one block tall plants that decorate a surface. Zero means the block
+        // is not in this checkout's registry, and the biome then grows nothing there.
+        std::int32_t short_grass = 0;
+        std::int32_t fern = 0;
+        std::int32_t dandelion = 0;
+        std::int32_t poppy = 0;
+        std::int32_t dead_bush = 0;
         // Ores, deepest first; a missing id falls back to stone so the vein never appears.
         std::int32_t coal_ore = 0;
         std::int32_t copper_ore = 0;
@@ -92,6 +99,14 @@ namespace terila::world::terrain {
         bool snow_cap = false;        // a snow layer on top of the surface
         int snow_above = 0;           // snow above this surface height, 0 disables
         bool ice_top = false;         // a frozen surface at sea level
+        // The ground plant that stands on the surface block when the column's hash picks it:
+        // one plant per cover_chance columns, and one flower per flower_chance columns that
+        // takes the grass's place. Decided from the column's own coordinates so the chunk and
+        // a single block read cannot disagree about it.
+        int cover_chance = 0;
+        std::int32_t cover = 0;
+        int flower_chance = 0;
+        std::int32_t flower = 0;
     };
 
     // The biome table order the climate indexes into: water first, then the shores, then the
@@ -212,6 +227,18 @@ namespace terila::world::terrain {
         blocks.redstone_ore = soft_id("minecraft:redstone_ore", blocks.stone);
         blocks.lapis_ore = soft_id("minecraft:lapis_ore", blocks.stone);
         blocks.diamond_ore = soft_id("minecraft:diamond_ore", blocks.stone);
+        // Short grass was called "minecraft:grass" before the block was renamed, and a
+        // checkout that old should still grow grass instead of leaving the ground bare.
+        const auto grass_plant = block("minecraft:short_grass");
+        if (grass_plant) {
+            blocks.short_grass = *grass_plant;
+        } else {
+            blocks.short_grass = soft_id("minecraft:grass", 0);
+        }
+        blocks.fern = soft_id("minecraft:fern", 0);
+        blocks.dandelion = soft_id("minecraft:dandelion", 0);
+        blocks.poppy = soft_id("minecraft:poppy", 0);
+        blocks.dead_bush = soft_id("minecraft:dead_bush", 0);
 
         if (!complete) {
             return std::nullopt;
@@ -278,6 +305,39 @@ namespace terila::world::terrain {
             0, 0, 0, 60, false);
         add("minecraft:desert", blocks.sand, blocks.sand, blocks.sandstone,
             0, 0, 0, 40, false);
+
+        // The ground cover, in the same BiomeIndex order as the table above. Vanilla grows it
+        // from the biome's placed features; the counts here follow those features closely
+        // enough that a plains reads as a plains and a desert stays bare.
+        const auto covers = [&](std::size_t index, int chance, std::int32_t plant, int flowers,
+            std::int32_t flower) {
+            if (index >= out.size()) {
+                return;
+            }
+            out[index].cover_chance = chance;
+            out[index].cover = plant;
+            out[index].flower_chance = flowers;
+            out[index].flower = flower;
+        };
+        covers(kDeepOcean, 0, 0, 0, 0);
+        covers(kOcean, 0, 0, 0, 0);
+        covers(kFrozenOcean, 0, 0, 0, 0);
+        covers(kBeach, 0, 0, 0, 0);
+        covers(kStonyShore, 0, 0, 0, 0);
+        covers(kSnowyPlains, 0, 0, 0, 0);
+        covers(kSnowyTaiga, 0, 0, 0, 0);
+        covers(kTaiga, 5, blocks.fern, 0, 0);
+        covers(kWindsweptHills, 8, blocks.short_grass, 0, 0);
+        covers(kStonyPeaks, 0, 0, 0, 0);
+        covers(kMeadow, 2, blocks.short_grass, 7, blocks.dandelion);
+        covers(kPlains, 5, blocks.short_grass, 28, blocks.dandelion);
+        covers(kForest, 4, blocks.short_grass, 28, blocks.poppy);
+        covers(kBirchForest, 5, blocks.short_grass, 30, blocks.dandelion);
+        covers(kSwamp, 4, blocks.short_grass, 0, 0);
+        covers(kJungle, 3, blocks.fern, 0, 0);
+        covers(kSavanna, 4, blocks.short_grass, 40, blocks.dandelion);
+        covers(kBadlands, 45, blocks.dead_bush, 0, 0);
+        covers(kDesert, 28, blocks.dead_bush, 0, 0);
 
         // The other dimensions' biomes: nothing grows on them through this table, and a
         // checkout whose registry predates them keeps working with a placeholder id.
