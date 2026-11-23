@@ -47,6 +47,9 @@ All notable changes to Terila, newest first. Format follows
   leaves no store or reachable instance, and the `log.write` import on both sides of the gate
 - `configs/terila.config` carries `[worldgen] backend=cpu|gpu|auto` (cpu unless it is
   changed): the density field of every chunk can be evaluated on an OpenCL device
+- The chunk grid and a single block read blend the eight corners of a density cell through
+  one shared function, so the interpolation cannot drift between the streamed chunk and the
+  block an edit reads
 - The device path walks the same density graph as the chunk workers, node by node, on an
   explicit stack, and every pool, template and noise table travels to the device as plain
   arrays. A graph with a node the kernel does not carry keeps the CPU path

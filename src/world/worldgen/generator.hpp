@@ -693,19 +693,9 @@ namespace terila::world::worldgen {
                 slot->corners[7] = sample_density(x0 + 4, y0 + 8, z0 + 4, context);
             }
 
-            const double c000 = slot->corners[0];
-            const double c100 = slot->corners[1];
-            const double c010 = slot->corners[2];
-            const double c110 = slot->corners[3];
-            const double c001 = slot->corners[4];
-            const double c101 = slot->corners[5];
-            const double c011 = slot->corners[6];
-            const double c111 = slot->corners[7];
-            const double bottom = (c000 + (c100 - c000) * tx) +
-                ((c010 + (c110 - c010) * tx) - (c000 + (c100 - c000) * tx)) * tz;
-            const double top = (c001 + (c101 - c001) * tx) +
-                ((c011 + (c111 - c011) * tx) - (c001 + (c101 - c001) * tx)) * tz;
-            return bottom + (top - bottom) * ty;
+            // The chunk's grid blends the same eight corners, and both go through one
+            // implementation so the two can never drift apart.
+            return blend_cell(slot->corners, tx, ty, tz);
         }
 
         void build_grid(DensityGrid& grid, std::int32_t wx0, std::int32_t wz0) const {

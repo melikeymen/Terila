@@ -12,6 +12,26 @@
 
 namespace terila::world::worldgen {
 
+    // One interpolation for the whole field. The chunk's grid and a single block read sample
+    // the same eight corners of the same 4x8 cell, so both must blend them with the same
+    // arithmetic: two copies of the formula can disagree in the last bit, and a value that
+    // sits on zero would then be air to one path and stone to the other.
+    inline double blend_cell(const double corners[8], double tx, double ty, double tz) {
+        const double c000 = corners[0];
+        const double c100 = corners[1];
+        const double c010 = corners[2];
+        const double c110 = corners[3];
+        const double c001 = corners[4];
+        const double c101 = corners[5];
+        const double c011 = corners[6];
+        const double c111 = corners[7];
+        const double bottom = (c000 + (c100 - c000) * tx) +
+            ((c010 + (c110 - c010) * tx) - (c000 + (c100 - c000) * tx)) * tz;
+        const double top = (c001 + (c101 - c001) * tx) +
+            ((c011 + (c111 - c011) * tx) - (c001 + (c101 - c001) * tx)) * tz;
+        return bottom + (top - bottom) * ty;
+    }
+
     struct DensityGrid {
         static constexpr int kCellsX = 5;
         static constexpr int kCellsZ = 5;
@@ -42,20 +62,17 @@ namespace terila::world::worldgen {
             const double tz = static_cast<double>(z - (origin_z + iz * 4)) / 4.0;
             const double ty = static_cast<double>(y - (origin_y + iy * 8)) / 8.0;
 
-            const double c000 = values[index(ix, iy, iz)];
-            const double c100 = values[index(ix + 1, iy, iz)];
-            const double c010 = values[index(ix, iy, iz + 1)];
-            const double c110 = values[index(ix + 1, iy, iz + 1)];
-            const double c001 = values[index(ix, iy + 1, iz)];
-            const double c101 = values[index(ix + 1, iy + 1, iz)];
-            const double c011 = values[index(ix, iy + 1, iz + 1)];
-            const double c111 = values[index(ix + 1, iy + 1, iz + 1)];
-
-            const double bottom = (c000 + (c100 - c000) * tx) +
-                ((c010 + (c110 - c010) * tx) - (c000 + (c100 - c000) * tx)) * tz;
-            const double top = (c001 + (c101 - c001) * tx) +
-                ((c011 + (c111 - c011) * tx) - (c001 + (c101 - c001) * tx)) * tz;
-            return bottom + (top - bottom) * ty;
+            const double corners[8] = {
+                values[index(ix, iy, iz)],
+                values[index(ix + 1, iy, iz)],
+                values[index(ix, iy, iz + 1)],
+                values[index(ix + 1, iy, iz + 1)],
+                values[index(ix, iy + 1, iz)],
+                values[index(ix + 1, iy + 1, iz)],
+                values[index(ix, iy + 1, iz + 1)],
+                values[index(ix + 1, iy + 1, iz + 1)],
+            };
+            return blend_cell(corners, tx, ty, tz);
         }
     };
 
