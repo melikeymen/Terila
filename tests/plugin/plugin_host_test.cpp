@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -343,7 +344,162 @@ namespace {
         return bytes;
     }
 
+    // Signed LEB128, because a constant like 64 does not fit in one byte (0xc0 0x00).
+    std::string i32_const(std::int32_t value) {
+        std::string out("\x41", 1);
+        std::uint32_t rest = static_cast<std::uint32_t>(value);
+        while (true) {
+            const auto byte = static_cast<unsigned char>(rest & 0x7f);
+            rest >>= 7;
+            const bool done = (rest == 0 && (byte & 0x40) == 0) ||
+                (rest == 0x1ffffffu && (byte & 0x40) != 0);
+            out.push_back(static_cast<char>(done ? byte : (byte | 0x80)));
+            if (done) return out;
+        }
+    }
+
+    // A module that reads the player list: it imports terila.player_count and
+    // terila.player_read, and on_load asks for one record at offset 16. read_back returns the
+    // entity id the host wrote there, which is how the test sees the guest's own memory.
+    std::string module_reading_players(std::int32_t capacity, std::int32_t index) {
+        std::string bytes("\0asm\1\0\0\0", 8);
+        // type 0: the hook, type 1: player_count, type 2: player_read
+        section(bytes, 1,
+            std::string("\x03\x60\x02\x7f\x7f\x01\x7f\x60\x00\x01\x7f"
+                        "\x60\x03\x7f\x7f\x7f\x01\x7f",
+                18));
+        // kind 0 (a function) then the type index
+        std::string import("\x02\x06terila\x0c" "player_count\x00\x01", 23);
+        import += std::string("\x06terila\x0b" "player_read\x00\x02", 21);
+        section(bytes, 2, import);
+        section(bytes, 3, std::string("\x02\x00\x00", 3));  // on_load and read_back
+        section(bytes, 5, std::string("\x01\x00\x01", 3));  // one memory
+        section(bytes, 7, std::string("\x03\x06memory\x02\x00\x07on_load\x00\x02", 20) +
+                std::string("\x09" "read_back\x00\x03", 12));
+
+        std::string hook("\x00", 1);  // no locals
+        hook += i32_const(16) + i32_const(capacity) + i32_const(index);
+        hook += std::string("\x10\x01\x0b", 3);  // call player_read
+        std::string back("\x00", 1);
+        back += i32_const(16) + std::string("\x28\x02\x00\x0b", 4);  // i32.load 16
+        std::string code("\x02", 1);
+        for (const std::string& body : { hook, back }) {
+            code.push_back(static_cast<char>(body.size()));
+            code += body;
+        }
+        section(bytes, 10, code);
+        return bytes;
+    }
+
 } // namespace
+
+// The third capability: player.read writes one fixed-size record into the guest's own
+// memory, and the guest sees the fields where the ABI says they are.
+TEST(PluginHostRuntime, PlayerReadWritesARecordIntoGuestMemory) {
+    TempTree tree;
+    tree.write("packs/reader/plugin.json", manifest_of("reader"));
+    tree.write("packs/reader/permissions.json", request_of("reader", { "player.read" }));
+    tree.write("grants/reader.json", grant_of("reader", { "player.read" }));
+    tree.write_text("packs/reader/plugin.wasm",
+        module_reading_players(terila::plugin::kPlayerRecordSize, 0));
+
+    PluginHost& host = PluginHost::instance();
+    std::vector<terila::plugin::PlayerRow> online{
+        { 9, "Steve", 1, 10.5, 64.0, -2.0 },
+        { 5, "Alex", 0, 1.5, 65.25, 3.5 },
+    };
+    host.set_player_source({ [&online] { return online.size(); },
+        [&online](std::size_t index, terila::plugin::PlayerRow& row) {
+            if (index >= online.size()) return false;
+            row = online[index];
+            return true;
+        } });
+    host.load_all(tree.root() / "packs", tree.root() / "grants");
+    if (!host.has_runtime()) {
+        host.set_player_source({});
+        GTEST_SKIP() << "no WebAssembly runtime was found; set TERILA_WASM_RUNTIME";
+    }
+
+    const Plugin* plugin = find_plugin("reader");
+    ASSERT_NE(plugin, nullptr);
+    EXPECT_TRUE(plugin->enabled) << plugin->status;
+
+    std::int32_t result = 0;
+    std::string error;
+    EXPECT_TRUE(host.call("reader", "on_load", 1, 0, result, error)) << error;
+    EXPECT_EQ(result, terila::plugin::kPlayerRecordSize);  // the record went in
+    EXPECT_TRUE(host.call("reader", "read_back", 1, 0, result, error)) << error;
+    EXPECT_EQ(result, 9);  // index 0 of the source, at offset 0 of the record
+
+    host.set_player_source({});
+}
+
+// An index the source does not have is a bad argument, not a player.
+TEST(PluginHostRuntime, PlayerReadRejectsAnIndexThatIsNotOnline) {
+    TempTree tree;
+    tree.write("packs/late/plugin.json", manifest_of("late"));
+    tree.write("packs/late/permissions.json", request_of("late", { "player.read" }));
+    tree.write("grants/late.json", grant_of("late", { "player.read" }));
+    tree.write_text("packs/late/plugin.wasm",
+        module_reading_players(terila::plugin::kPlayerRecordSize, 3));
+
+    PluginHost& host = PluginHost::instance();
+    host.set_player_source(
+        { [] { return std::size_t{ 1 }; },
+            [](std::size_t index, terila::plugin::PlayerRow& row) {
+                if (index != 0) return false;
+                row = terila::plugin::PlayerRow{ 5, "Alex", 0, 0.0, 0.0, 0.0 };
+                return true;
+            } });
+    host.load_all(tree.root() / "packs", tree.root() / "grants");
+    if (!host.has_runtime()) {
+        host.set_player_source({});
+        GTEST_SKIP() << "no WebAssembly runtime was found; set TERILA_WASM_RUNTIME";
+    }
+
+    const Plugin* plugin = find_plugin("late");
+    ASSERT_NE(plugin, nullptr);
+    EXPECT_TRUE(plugin->enabled) << plugin->status;
+
+    std::int32_t result = 0;
+    std::string error;
+    EXPECT_TRUE(host.call("late", "on_load", 1, 0, result, error)) << error;
+    EXPECT_EQ(result, -1);
+
+    host.set_player_source({});
+}
+
+// A buffer that cannot hold one record is refused before the host reads anything.
+TEST(PluginHostRuntime, PlayerReadRefusesACapacityThatCannotHoldARecord) {
+    TempTree tree;
+    tree.write("packs/tiny/plugin.json", manifest_of("tiny"));
+    tree.write("packs/tiny/permissions.json", request_of("tiny", { "player.read" }));
+    tree.write("grants/tiny.json", grant_of("tiny", { "player.read" }));
+    tree.write_text("packs/tiny/plugin.wasm", module_reading_players(8, 0));
+
+    PluginHost& host = PluginHost::instance();
+    host.set_player_source({ [] { return std::size_t{ 1 }; },
+        [](std::size_t, terila::plugin::PlayerRow& row) {
+            row = terila::plugin::PlayerRow{ 5, "Alex", 0, 0.0, 0.0, 0.0 };
+            return true;
+        } });
+    host.load_all(tree.root() / "packs", tree.root() / "grants");
+    if (!host.has_runtime()) {
+        host.set_player_source({});
+        GTEST_SKIP() << "no WebAssembly runtime was found; set TERILA_WASM_RUNTIME";
+    }
+
+    const Plugin* plugin = find_plugin("tiny");
+    ASSERT_NE(plugin, nullptr);
+    EXPECT_TRUE(plugin->enabled) << plugin->status;
+
+    std::int32_t result = 0;
+    std::string error;
+    EXPECT_TRUE(host.call("tiny", "on_load", 1, 0, result, error)) << error;
+    EXPECT_EQ(result, -4);
+
+    host.set_player_source({});
+}
 
 // The second capability on the same surface: chat.send leaves through the host's sink with a
 // folded line, and the sink is what the server points at the player hub.

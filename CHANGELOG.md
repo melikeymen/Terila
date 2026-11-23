@@ -25,6 +25,14 @@ All notable changes to Terila, newest first. Format follows
   plugin, and `events_per_second` (default 100) throttles `log.write`, which drops the extra
   lines and hands the guest the documented `-2`. A grant without `limits` gets the defaults,
   and a value outside the ceiling is a refusal, not a silent clamp
+- A module the runtime cannot compile now reports the runtime's own reason (opcode and
+  offset) instead of only "not valid WebAssembly".
+- `player.read` adds `terila.player_count()` and
+  `terila.player_read(pointer, capacity, index)`: the host writes one fixed 64-byte record
+  (entity id, 32-byte NUL-padded name, dimension, x, y, z) into the guest's own memory and
+  answers with its size. A bad index is -1, a capacity below one record is -4, a range
+  outside guest memory is -5. The server supplies the list through `set_player_source`, in
+  ascending entity id order, so an index stays valid across joins and leaves.
 - The second host function, `terila.chat_send(pointer, length, target)`, linked only for
   `chat.send`: target 0 reaches every joined player and a positive id reaches one of them,
   through the server's own system-chat packet. A target that names no online player is a bad

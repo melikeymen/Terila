@@ -31,6 +31,32 @@ namespace terila::plugin {
     // many traps the instance is released and the run continues without it.
     inline constexpr std::int32_t kMaxTraps = 32;
 
+    // One online player as player.read reports it. The record is a fixed size so the
+    // guest can size its own buffer, little-endian throughout:
+    //
+    //   0  i32  entity id
+    //   4  name, 32 bytes, NUL padded (a longer name is truncated to 31 bytes)
+    //   36 i32  dimension
+    //   40 f64  x, 48 f64 y, 56 f64 z
+    inline constexpr std::int32_t kPlayerRecordSize = 64;
+    inline constexpr std::int32_t kPlayerNameSize = 32;
+
+    struct PlayerRow {
+        std::int32_t entity = 0;
+        std::string name;
+        std::int32_t dimension = 0;
+        double x = 0.0;
+        double y = 0.0;
+        double z = 0.0;
+    };
+
+    // The server's answer to "who is online". Both halves must agree on one order (the server
+    // sorts by entity id), so an index that count returned stays valid for read.
+    struct PlayerSource {
+        std::function<std::size_t()> count;
+        std::function<bool(std::size_t index, PlayerRow& row)> read;
+    };
+
     struct Plugin {
         std::filesystem::path directory;
         Manifest manifest;
@@ -62,6 +88,10 @@ namespace terila::plugin {
         // player, and the sink answers false when no such player is online. An empty function
         // means nothing is listening, and chat.send answers "unavailable".
         void set_chat_sink(std::function<bool(std::int32_t, std::string_view)> sink);
+
+        // The server's view of who is online, for player.read. A missing source makes
+        // the two player functions answer "unavailable" instead of failing a call.
+        void set_player_source(PlayerSource source);
 
         const std::vector<Plugin>& plugins() const noexcept { return plugins_; }
         // Instances the host currently holds: one store per enabled plugin, none for a plugin

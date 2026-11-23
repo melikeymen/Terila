@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -66,6 +67,13 @@ namespace terila::plugin {
         std::function<bool(std::int32_t, std::string_view)>& chat_sink() {
             static std::function<bool(std::int32_t, std::string_view)> sink;
             return sink;
+        }
+
+        // Same for the player list: the host knows only that somebody can enumerate the online
+        // players and read one of them by index.
+        PlayerSource& player_source() {
+            static PlayerSource source;
+            return source;
         }
 
 #if defined(TERILA_HAVE_WASMTIME)
@@ -243,24 +251,32 @@ namespace terila::plugin {
         constexpr std::int32_t kMaxLogLine = 1024;
         constexpr std::int32_t kMaxChatLine = 256;
 
-        // Reads a (pointer, length) pair out of the guest's own memory and folds it to a
-        // single line. The guest is never handed a host pointer and the host never aliases
-        // guest memory past the call.
-        bool read_guest_line(wasmtime_caller_t* caller, std::int32_t pointer, std::int32_t length,
-            std::int32_t limit, std::string& out) {
-            if (pointer < 0 || length <= 0 || length > limit) return false;
+        // The guest's own window into its memory for this call, or nullptr when the range does
+        // not fit or the module exports no memory. The guest is never handed a host pointer
+        // and the host never aliases guest memory past the call.
+        std::uint8_t* guest_buffer(wasmtime_caller_t* caller, std::int32_t pointer,
+            std::int32_t length) {
+            if (pointer < 0 || length < 0) return nullptr;
             wasmtime_extern_t item{};
             if (!wasm().caller_export_get(caller, "memory", 6, &item) ||
                 item.kind != WASMTIME_EXTERN_MEMORY) {
-                return false;
+                return nullptr;
             }
             wasmtime_context_t* context = wasm().caller_context(caller);
             const std::size_t start = static_cast<std::size_t>(pointer);
             const std::size_t size = wasm().memory_data_size(context, &item.of.memory);
-            if (start + static_cast<std::size_t>(length) > size) return false;
-            const std::uint8_t* data = wasm().memory_data(context, &item.of.memory);
-            out.assign(reinterpret_cast<const char*>(data) + start,
-                static_cast<std::size_t>(length));
+            if (start + static_cast<std::size_t>(length) > size) return nullptr;
+            return wasm().memory_data(context, &item.of.memory) + start;
+        }
+
+        // Reads a (pointer, length) pair out of the guest's memory and folds it to a single
+        // line.
+        bool read_guest_line(wasmtime_caller_t* caller, std::int32_t pointer, std::int32_t length,
+            std::int32_t limit, std::string& out) {
+            if (length <= 0 || length > limit) return false;
+            const std::uint8_t* data = guest_buffer(caller, pointer, length);
+            if (data == nullptr) return false;
+            out.assign(reinterpret_cast<const char*>(data), static_cast<std::size_t>(length));
             // A line is what gets logged or shown: anything that could forge or split one is
             // replaced, and the padding at both ends is dropped.
             for (char& c : out) {
@@ -320,6 +336,77 @@ namespace terila::plugin {
             return nullptr;
         }
 
+        void put_i32(std::uint8_t* out, std::int32_t value) {
+            const auto bits = static_cast<std::uint32_t>(value);
+            for (int i = 0; i < 4; ++i) out[i] = static_cast<std::uint8_t>(bits >> (8 * i));
+        }
+
+        void put_f64(std::uint8_t* out, double value) {
+            std::uint64_t bits = 0;
+            std::memcpy(&bits, &value, sizeof bits);
+            for (int i = 0; i < 8; ++i) out[i] = static_cast<std::uint8_t>(bits >> (8 * i));
+        }
+
+        // terila.player_count() -> the number of online players, or -2 over budget and -3 when
+        // the host has no player source. Zero players is a valid answer, not an error.
+        wasm_trap_t* player_count(void* env, wasmtime_caller_t*, const wasmtime_val_t*,
+            std::size_t nargs, wasmtime_val_t* results, std::size_t nresults) {
+            if (nargs != 0 || nresults != 1) return nullptr;
+            auto* call = static_cast<HostCall*>(env);
+            results[0].kind = WASMTIME_I32;
+            if (!call->take()) {
+                results[0].of.i32 = -2;
+            } else if (!player_source().count) {
+                results[0].of.i32 = -3;
+            } else {
+                results[0].of.i32 = static_cast<std::int32_t>(player_source().count());
+            }
+            return nullptr;
+        }
+
+        // terila.player_read(pointer, capacity, index) -> kPlayerRecordSize on success, or -1
+        // for an index that is not online, -2 over budget, -3 no player source, -4 a capacity
+        // that cannot hold one record, -5 a range outside the guest's memory.
+        wasm_trap_t* player_read(void* env, wasmtime_caller_t* caller, const wasmtime_val_t* args,
+            std::size_t nargs, wasmtime_val_t* results, std::size_t nresults) {
+            if (nargs != 3 || nresults != 1) return nullptr;
+            auto* call = static_cast<HostCall*>(env);
+            results[0].kind = WASMTIME_I32;
+            if (args[1].of.i32 < kPlayerRecordSize) {
+                results[0].of.i32 = -4;
+                return nullptr;
+            }
+            if (!call->take()) {
+                results[0].of.i32 = -2;
+                return nullptr;
+            }
+            if (!player_source().read) {
+                results[0].of.i32 = -3;
+                return nullptr;
+            }
+            std::uint8_t* out = guest_buffer(caller, args[0].of.i32, kPlayerRecordSize);
+            if (out == nullptr) {
+                results[0].of.i32 = -5;
+                return nullptr;
+            }
+            PlayerRow row;
+            if (args[2].of.i32 < 0 ||
+                !player_source().read(static_cast<std::size_t>(args[2].of.i32), row)) {
+                results[0].of.i32 = -1;
+                return nullptr;
+            }
+            put_i32(out, row.entity);
+            std::fill(out + 4, out + 4 + kPlayerNameSize, 0);
+            const std::size_t name = std::min<std::size_t>(row.name.size(), kPlayerNameSize - 1);
+            std::memcpy(out + 4, row.name.data(), name);
+            put_i32(out + 36, row.dimension);
+            put_f64(out + 40, row.x);
+            put_f64(out + 48, row.y);
+            put_f64(out + 56, row.z);
+            results[0].of.i32 = kPlayerRecordSize;
+            return nullptr;
+        }
+
         // The only function shape the host serves: i32 parameters in, one i32 status out.
         wasm_functype_t* i32_function(std::size_t parameters) {
             std::vector<wasm_valtype_t*> params(parameters);
@@ -367,7 +454,8 @@ namespace terila::plugin {
             };
             const bool logs = holds("log.write");
             const bool chats = holds("chat.send");
-            if (!logs && !chats) return true;
+            const bool players = holds("player.read");
+            if (!logs && !chats && !players) return true;
 
             call = std::make_unique<HostCall>();
             call->id = plugin.manifest.id;
@@ -376,6 +464,11 @@ namespace terila::plugin {
                 return false;
             }
             if (chats && !define_function(linker, "chat_send", 3, &chat_send, call.get(), error)) {
+                return false;
+            }
+            if (players &&
+                (!define_function(linker, "player_count", 0, &player_count, call.get(), error) ||
+                    !define_function(linker, "player_read", 3, &player_read, call.get(), error))) {
                 return false;
             }
             return true;
@@ -445,6 +538,10 @@ namespace terila::plugin {
 
     void PluginHost::set_chat_sink(std::function<bool(std::int32_t, std::string_view)> sink) {
         chat_sink() = std::move(sink);
+    }
+
+    void PluginHost::set_player_source(PlayerSource source) {
+        player_source() = std::move(source);
     }
 
     void PluginHost::disable(std::string_view id, std::int32_t traps) {
@@ -645,8 +742,11 @@ namespace terila::plugin {
         wasmtime_module_t* module = nullptr;
         if (wasmtime_error_t* failure = wasm().module_new(static_cast<wasm_engine_t*>(engine_),
                 reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size(), &module)) {
+            const std::string detail = error_text(failure);
             wasm().error_delete(failure);
-            stop("refused: the module is not valid WebAssembly");
+            // The runtime names the offset and the opcode, which is what an author needs.
+            stop(detail.empty() ? "refused: the module is not valid WebAssembly"
+                                : "refused: the module is not valid WebAssembly: " + detail);
             return;
         }
 

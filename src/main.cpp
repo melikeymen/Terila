@@ -812,6 +812,29 @@ int main() {
     // A plugin's chat.send leaves through the server's own system-chat packet, so it reaches
     // exactly the players a server message reaches. The hub outlives the plugins: unload runs
     // before it is dropped.
+    // The plugin host asks by index, so the answer needs a stable order: ascending entity id.
+    // Both halves read that same order, which keeps an index valid across join and leave.
+    const auto online_rows = [player_hub] {
+        auto members = player_hub->member_info();
+        std::sort(members.begin(), members.end(), [](const auto& left, const auto& right) {
+            return left.entity < right.entity;
+        });
+        std::vector<terila::plugin::PlayerRow> rows;
+        rows.reserve(members.size());
+        for (const auto& member : members) {
+            rows.push_back(terila::plugin::PlayerRow{ member.entity, member.name,
+                static_cast<std::int32_t>(member.dimension), member.x, member.y, member.z });
+        }
+        return rows;
+    };
+    plugins.set_player_source({ [player_hub] { return player_hub->count(); },
+        [online_rows](std::size_t index, terila::plugin::PlayerRow& row) {
+            const auto all = online_rows();
+            if (index >= all.size()) return false;
+            row = all[index];
+            return true;
+        } });
+
     plugins.set_chat_sink([player_hub](std::int32_t target, std::string_view text) {
         // Target 0 is everyone; the hub answers false when a named player is not online, which
         // is what turns chat.send's bad target into -1.
