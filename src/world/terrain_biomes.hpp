@@ -71,6 +71,8 @@ namespace terila::world::terrain {
         std::int32_t seagrass = 0;
         std::int32_t kelp = 0;
         std::int32_t kelp_plant = 0;
+        // The reed that grows on a bank next to open water.
+        std::int32_t sugar_cane = 0;
         // Ores, deepest first; a missing id falls back to stone so the vein never appears.
         std::int32_t coal_ore = 0;
         std::int32_t copper_ore = 0;
@@ -247,6 +249,7 @@ namespace terila::world::terrain {
         blocks.seagrass = soft_id("minecraft:seagrass", 0);
         blocks.kelp = soft_id("minecraft:kelp", 0);
         blocks.kelp_plant = soft_id("minecraft:kelp_plant", 0);
+        blocks.sugar_cane = soft_id("minecraft:sugar_cane", 0);
 
         if (!complete) {
             return std::nullopt;

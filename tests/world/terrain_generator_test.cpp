@@ -59,6 +59,7 @@ namespace {
         if (name == "minecraft:seagrass")      return 8605;
         if (name == "minecraft:kelp")          return 8606;
         if (name == "minecraft:kelp_plant")    return 8607;
+        if (name == "minecraft:sugar_cane")    return 8608;
         if (name == "minecraft:coarse_dirt")   return 14;
         if (name == "minecraft:red_sand")      return 122;
         if (name == "minecraft:terracotta")    return 678;
@@ -381,6 +382,38 @@ namespace {
         return LandColumn{};
     }
 
+    // A bank: a column at the water line with open water within four blocks of it. Sugar cane
+    // grows along any shore, so no biome is asked for.
+    LandColumn find_bank_column(const terrain::Generator& generator) {
+        for (std::int32_t radius = 0; radius <= 8192; radius += 32) {
+            for (std::int32_t z = -radius; z <= radius; z += 32) {
+                for (std::int32_t x = -radius; x <= radius; x += 32) {
+                    if (radius > 0 && std::abs(x) != radius && std::abs(z) != radius) {
+                        continue;
+                    }
+                    const int height = generator.surface_height(x, z);
+                    if (height < generator.sea_level() - 1 || height > generator.sea_level() + 1) {
+                        continue;
+                    }
+                    // Only a bank a reed can root in counts: gravel and clay shores keep none.
+                    const std::int32_t surface = generator.state_at(x, height, z);
+                    if (surface != 42 && surface != 13 && surface != 14 && surface != 121 &&
+                        surface != 122) {
+                        continue;
+                    }
+                    for (const auto& step : { std::pair{ 4, 0 }, std::pair{ -4, 0 },
+                             std::pair{ 0, 4 }, std::pair{ 0, -4 } }) {
+                        if (generator.surface_height(x + step.first, z + step.second) <
+                            generator.sea_level()) {
+                            return LandColumn{ x, z, height, surface, generator.biome_at(x, z) };
+                        }
+                    }
+                }
+            }
+        }
+        return LandColumn{};
+    }
+
     bool is_plant(std::int32_t state) {
         return state == 140 || state == 294 || state == 143 || state == 295 ||
             state == 152 || state == 300 || state == 8599 || state == 141 ||
@@ -550,6 +583,70 @@ TEST(TerrainGeneratorTest, OceanFloorGrowsSeagrassAndKelp) {
     EXPECT_GT(looked_up, 0);
     EXPECT_EQ(disagreements, 0);
     EXPECT_GT(water_cells, 0) << "the scan found no water at all, the probe is wrong";
+}
+
+TEST(TerrainGeneratorTest, SugarCaneGrowsOnABankNextToWater) {
+    REQUIRE_VANILLA_DATA();
+    const auto generator = make_generator();
+    const LandColumn bank = find_bank_column(generator);
+    ASSERT_NE(bank.biome, -1) << "no sugar cane bank within 8192 blocks";
+
+    const auto chunk_of = [](std::int32_t v) { return v >= 0 ? v / 16 : -((-v + 15) / 16); };
+    int canes = 0;
+    int stacked = 0;
+    int wrong_ground = 0;
+    int away_from_water = 0;
+    int looked_up = 0;
+    int disagreements = 0;
+    const int sea = generator.sea_level();
+    for (int i = 0; i < 16; ++i) {
+        const std::int32_t cx = chunk_of(bank.x) + (i % 4) - 1;
+        const std::int32_t cz = chunk_of(bank.z) + (i / 4) - 1;
+        const auto chunk = generator.generate(cx, cz);
+        for (int s = 0; s < chunk.section_count; ++s) {
+            const auto& section = chunk.sections[static_cast<std::size_t>(s)];
+            const std::int32_t base_y = chunk.min_y + s * 16;
+            for (int k = 0; k < 4096; ++k) {
+                const std::int32_t state = section_state(section, k);
+                if (state != 8608) {
+                    continue;
+                }
+                ++canes;
+                const std::int32_t x = cx * 16 + (k % 16);
+                const std::int32_t z = cz * 16 + ((k / 16) % 16);
+                const std::int32_t y = base_y + k / 256;
+                // A stalk stands on soil or on the stalk below it, never on air or stone.
+                const std::int32_t below = section_block(chunk, x, y - 1, z);
+                if (below == 8608) {
+                    ++stacked;
+                }
+                else if (below != 42 && below != 13 && below != 14 && below != 121 &&
+                    below != 122) {
+                    ++wrong_ground;
+                }
+                // Cane grows at the water line, one block of bank at most, three blocks tall.
+                if (y < sea - 1 || y > sea + 4) {
+                    ++away_from_water;
+                }
+                if (looked_up < 120) {
+                    ++looked_up;
+                    if (generator.state_at(x, y, z) != state) {
+                        if (disagreements < 5) {
+                            std::printf("   cane at (%d,%d,%d) is %d, chunk holds %d\n", x, y, z,
+                                generator.state_at(x, y, z), state);
+                        }
+                        ++disagreements;
+                    }
+                }
+            }
+        }
+    }
+    EXPECT_GT(canes, 0) << "nine chunks around a bank grew no sugar cane";
+    EXPECT_GT(stacked, 0) << "no stalk was more than one block tall";
+    EXPECT_EQ(wrong_ground, 0);
+    EXPECT_EQ(away_from_water, 0);
+    EXPECT_GT(looked_up, 0);
+    EXPECT_EQ(disagreements, 0);
 }
 
 TEST(TerrainGeneratorTest, CarvesCavesUnderTheSurface) {

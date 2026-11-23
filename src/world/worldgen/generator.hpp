@@ -495,12 +495,19 @@ namespace terila::world::worldgen {
             for (std::int32_t tz = wz0; tz <= wz0 + 15; ++tz) {
                 for (std::int32_t tx = wx0; tx <= wx0 + 15; ++tx) {
                     const Column plant = column(tx, tz, cache);
-                    if (plant.height <= sea_level_ || plant.height > sea_level_ + 40) {
+                    // A bank sits at the water line, so the surface is allowed to be exactly
+                    // sea level: sugar cane grows there.
+                    if (plant.height < sea_level_ || plant.height > sea_level_ + 40) {
                         continue;
                     }
-                    const std::int32_t ground = ground_plant(tx, plant.height + 1, tz, plant);
-                    if (ground != blocks_.air) {
-                        put_if_air(tx, plant.height + 1, tz, ground);
+                    // A tuft is one block, sugar cane up to three: ask for the whole band the
+                    // plants can occupy, so a stalk is as tall in the chunk as a block read
+                    // says it is.
+                    for (int dy = 1; dy <= 3; ++dy) {
+                        const std::int32_t ground = ground_plant(tx, plant.height + dy, tz, plant);
+                        if (ground != blocks_.air) {
+                            put_if_air(tx, plant.height + dy, tz, ground);
+                        }
                     }
                 }
             }
@@ -934,7 +941,12 @@ namespace terila::world::worldgen {
         // would be a block nothing in the game would place.
         std::int32_t ground_plant(std::int32_t x, std::int32_t y, std::int32_t z,
             const Column& col) const {
-            if (col.height <= sea_level_ || col.height > sea_level_ + 40 || y != col.height + 1) {
+            if (col.height < sea_level_ || col.height > sea_level_ + 40) {
+                return blocks_.air;
+            }
+            // A tuft is one block tall, sugar cane up to three, so the band is generous and
+            // each plant narrows it below.
+            if (y < col.height + 1 || y > col.height + 3) {
                 return blocks_.air;
             }
             const auto& biome = biomes_[static_cast<std::size_t>(col.biome)];
@@ -943,6 +955,9 @@ namespace terila::world::worldgen {
             }
             const std::int32_t plant = plants_.cover(biome, x, z);
             if (plant == blocks_.air) {
+                return sugar_cane_at(x, y, z, col);
+            }
+            if (y != col.height + 1) {
                 return blocks_.air;
             }
             // The cell itself has to be air, and the one under it a block a plant grows in. A
@@ -951,14 +966,54 @@ namespace terila::world::worldgen {
             if (density_at(x, y, z) > 0.0) {
                 return blocks_.air;
             }
-            const std::int32_t below = block_at(x, col.height, z, col);
-            if (below != blocks_.grass && below != blocks_.dirt &&
-                below != blocks_.coarse_dirt && below != blocks_.podzol &&
-                below != blocks_.mycelium && below != blocks_.sand &&
-                below != blocks_.red_sand) {
+            if (!plantable(block_at(x, col.height, z, col))) {
                 return blocks_.air;
             }
             return plant;
+        }
+
+        // The blocks a plant of the surface can grow in, the way the game's would_survive test
+        // reads: soil a root can hold on to, or sand for a desert shrub.
+        bool plantable(std::int32_t state) const {
+            return state == blocks_.grass || state == blocks_.dirt ||
+                state == blocks_.coarse_dirt || state == blocks_.podzol ||
+                state == blocks_.mycelium || state == blocks_.sand ||
+                state == blocks_.red_sand;
+        }
+
+        // Sugar cane: a stalk one to three blocks tall on any bank next to open water, the way
+        // the game grows it along rivers and shores rather than inside one biome. Like the
+        // tufts it comes from the column's own hash, so a chunk and a block read agree.
+        std::int32_t sugar_cane_at(std::int32_t x, std::int32_t y, std::int32_t z,
+            const Column& col) const {
+            if (blocks_.sugar_cane == blocks_.air) {
+                return blocks_.air;
+            }
+            // Cheap rejections first: the hash decides most columns, before any neighbour is
+            // asked about and before the ground is painted.
+            if (y < col.height + 1 || y > col.height + 3) {
+                return blocks_.air;
+            }
+            constexpr std::uint32_t kCaneSeed = 0x5ACA4Eu;
+            constexpr std::uint32_t kCaneChance = 10;
+            const std::uint32_t hash = terrain::detail::hash3(x, z, kCaneSeed);
+            if (hash % kCaneChance != 0) {
+                return blocks_.air;
+            }
+            // It only grows with water beside it: one of the four neighbours has to be flooded.
+            ColumnCache& cache = thread_cache();
+            const bool beside_water = cached_column(x + 1, z, cache).height < sea_level_ ||
+                cached_column(x - 1, z, cache).height < sea_level_ ||
+                cached_column(x, z + 1, cache).height < sea_level_ ||
+                cached_column(x, z - 1, cache).height < sea_level_;
+            if (!beside_water || density_at(x, y, z) > 0.0) {
+                return blocks_.air;
+            }
+            if (!plantable(block_at(x, col.height, z, col))) {
+                return blocks_.air;
+            }
+            const int height = 1 + static_cast<int>(hash % 3);
+            return y <= col.height + height ? blocks_.sugar_cane : blocks_.air;
         }
 
         std::int32_t block_at(std::int32_t x, std::int32_t y, std::int32_t z,
