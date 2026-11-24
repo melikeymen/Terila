@@ -3,7 +3,7 @@
 All notable changes to Terila, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [v0.24.0] — 2026-11-24
 
 ### Added
 
@@ -63,6 +63,23 @@ All notable changes to Terila, newest first. Format follows
 - The device binds its buffers once per graph instead of once per chunk, hands its tables
   back when the last generator that holds them goes away, and parks itself after a batch it
   cannot complete instead of retrying every chunk
+- Caves and canyons are carved by each biome's own carvers instead of being left to the
+  density field: a carver runs on the chunk the data assigns it, with its own range, chance
+  and mask, so tunnels and ravines open where the preset says
+- The preset's aquifer fills them: a cell asks for the fluid at its own position, so a deep
+  cave holds lava below the lava level and a cave or a sea that reaches the water table holds
+  water, from the height the preset names instead of a fixed sea level
+- A biome's vegetation is read from its placed features instead of a hand-written table: the
+  count, rarity, noise threshold and patch modifiers of the chain are folded into how many
+  plants and trees a chunk grows, and the species list is the biome's own selector, so a
+  forest mixes birch into oak and a taiga stands in spruce
+- The ground cover and the flowers follow the data's block state providers: a named provider
+  is followed through its registry entry, a weighted list keeps its weights, and the noise,
+  noise-threshold and dual-noise forms are sampled at the block, so a plains rolls its
+  one-in-three poppy and a meadow drifts between its flowers and its grass
+- Sugar cane grows on the banks next to open water, and seagrass and kelp cover the floor of
+  the sea, each from the column's own hash so a streamed chunk and a single block read agree
+  about it
 
 ### Changed
 
@@ -98,6 +115,8 @@ All notable changes to Terila, newest first. Format follows
   while another one was writing the same cache
 - A chunk stream that dies because one of its chunks failed is logged and the batch is
   closed instead of leaving the client waiting on a batch that never finishes
+- A column's surface height comes from the same field its chunk is painted from, so a single
+  block read and the streamed chunk no longer disagree about where the ground is
 
 ## [v0.23.0] — 2026-11-22
 
