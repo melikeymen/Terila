@@ -93,6 +93,16 @@ namespace terila::world::terrain {
         Plant,   // snow, leaves: a thin layer a mob stands on top of
     };
 
+    // One tree a biome grows: the blocks it is made of and how tall its trunk stands. The
+    // weight decides how often the species is picked, so a forest can mix birch into oak.
+    struct TreeSpecies {
+        std::int32_t log = 0;
+        std::int32_t leaves = 0;
+        int min_trunk = 4;
+        int max_trunk = 6;
+        int weight = 1;
+    };
+
     // One entry of the biome table: what the surface looks like and what grows on it.
     struct Biome {
         std::int32_t id = 0;          // biome registry id
@@ -114,6 +124,9 @@ namespace terila::world::terrain {
         std::int32_t cover = 0;
         int flower_chance = 0;
         std::int32_t flower = 0;
+        // The species the column hash picks from, read from the biome's own placed features.
+        // An empty list keeps the single log and leaf pair above.
+        std::vector<TreeSpecies> species;
     };
 
     // The biome table order the climate indexes into: water first, then the shores, then the
@@ -317,9 +330,9 @@ namespace terila::world::terrain {
         add("minecraft:desert", blocks.sand, blocks.sand, blocks.sandstone,
             0, 0, 0, 40, false);
 
-        // The ground cover, in the same BiomeIndex order as the table above. Vanilla grows it
-        // from the biome's placed features; the counts here follow those features closely
-        // enough that a plains reads as a plains and a desert stays bare.
+        // The ground cover, in the same BiomeIndex order as the table above. This is the
+        // fallback a checkout without worldgen data keeps: the generator overwrites it with
+        // the densities it reads from the biome's placed features.
         const auto covers = [&](std::size_t index, int chance, std::int32_t plant, int flowers,
             std::int32_t flower) {
             if (index >= out.size()) {

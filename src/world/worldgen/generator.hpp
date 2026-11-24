@@ -29,6 +29,7 @@
 #include "world/worldgen/surface/material.hpp"
 #include "world/worldgen/structures/structures.hpp"
 #include "world/worldgen/surface/ores.hpp"
+#include "world/worldgen/feature/vegetation_plan.hpp"
 #include "world/worldgen/surface/vegetation.hpp"
 #include "log/logger.hpp"
 
@@ -77,6 +78,19 @@ namespace terila::world::worldgen {
             }
             for (std::size_t index = 0; index < biomes_.size(); ++index) {
                 biome_index_[terrain::kBiomeNames[index]] = static_cast<int>(index);
+            }
+
+            // What grows on a biome comes from its own placed features, not from a table: the
+            // densities and the species mix are read before the planter copies the table.
+            if (kind == DimensionKind::Overworld) {
+                VegetationPlan vegetation;
+                if (!vegetation.load(block)) {
+                    LOG_WARN(Chunk, "terrain: the vegetation features cannot be read, the "
+                        "biome table keeps its own numbers");
+                }
+                else {
+                    vegetation.apply(biomes_);
+                }
             }
 
             if (!settings_.load(seed, dimension_noise_preset(kind),
@@ -513,9 +527,10 @@ namespace terila::world::worldgen {
 
                     if (plants_.has_tree(biome, tx, tz)) {
                         ++tree_columns;
-                        const int trunk = plants_.trunk_height(tx, tz);
+                        const auto species = plants_.species_of(biome, tx, tz);
+                        const int trunk = plants_.trunk_height(biome, tx, tz);
                         for (int i = 1; i <= trunk; ++i) {
-                            put(tx, plant.height + i, tz, biome.log);
+                            put(tx, plant.height + i, tz, species.log);
                         }
                         for (int dy = trunk - 2; dy <= trunk + 1; ++dy) {
                             for (int dz = -2; dz <= 2; ++dz) {
@@ -525,7 +540,7 @@ namespace terila::world::worldgen {
                                     if (dx == 0 && dz == 0 && dy <= trunk) continue;
                                     if (dy == trunk + 1 && distance > 1) continue;
                                     put_if_air(tx + dx, plant.height + dy, tz + dz,
-                                        biome.leaves);
+                                        species.leaves);
                                 }
                             }
                         }
@@ -1218,9 +1233,15 @@ namespace terila::world::worldgen {
             if (plants_.has_tree(biome, x, z) || plants_.has_cactus(biome, x, z)) {
                 return blocks_.air;
             }
+            // A bank is rare and needs open water beside it, so the reed is asked first: the
+            // ground cover of a wet biome is dense enough to take every column otherwise.
+            const std::int32_t cane = sugar_cane_at(x, y, z, col);
+            if (cane != blocks_.air) {
+                return cane;
+            }
             const std::int32_t plant = plants_.cover(biome, x, z);
             if (plant == blocks_.air) {
-                return sugar_cane_at(x, y, z, col);
+                return blocks_.air;
             }
             if (y != col.height + 1) {
                 return blocks_.air;
@@ -1231,19 +1252,28 @@ namespace terila::world::worldgen {
             if (density_at(x, y, z) > 0.0) {
                 return blocks_.air;
             }
-            if (!plantable(block_at(x, col.height, z, col))) {
+            // A grass tuft or a flower needs soil a root can hold on to; the dead bush of a
+            // desert also stands on sand, the way the game's would_survive test reads each.
+            const std::int32_t ground = block_at(x, col.height, z, col);
+            if (plant == blocks_.dead_bush ? !dry_plantable(ground) : !soil_plantable(ground)) {
                 return blocks_.air;
             }
             return plant;
         }
 
-        // The blocks a plant of the surface can grow in, the way the game's would_survive test
-        // reads: soil a root can hold on to, or sand for a desert shrub.
-        bool plantable(std::int32_t state) const {
+        bool soil_plantable(std::int32_t state) const {
             return state == blocks_.grass || state == blocks_.dirt ||
                 state == blocks_.coarse_dirt || state == blocks_.podzol ||
-                state == blocks_.mycelium || state == blocks_.sand ||
-                state == blocks_.red_sand;
+                state == blocks_.mycelium;
+        }
+
+        bool dry_plantable(std::int32_t state) const {
+            return soil_plantable(state) || state == blocks_.sand ||
+                state == blocks_.red_sand || state == blocks_.terracotta;
+        }
+
+        bool plantable(std::int32_t state) const {
+            return dry_plantable(state);
         }
 
         // Sugar cane: a stalk one to three blocks tall on any bank next to open water, the way

@@ -47,7 +47,8 @@ namespace terila::world::worldgen {
                     }
                     top = std::max(top,
                         lift(plant.height, x - tx, z - tz, tree,
-                            tree ? trunk_height(tx, tz) : 0, cactus ? cactus_height(tx, tz) : 0));
+                            tree ? trunk_height(biome, tx, tz) : 0,
+                            cactus ? cactus_height(tx, tz) : 0));
                 }
             }
             return top;
@@ -80,7 +81,7 @@ namespace terila::world::worldgen {
                     if (!tree && !cactus) {
                         continue;
                     }
-                    const int trunk = tree ? trunk_height(px, pz) : 0;
+                    const int trunk = tree ? trunk_height(biome, px, pz) : 0;
                     const int cactus_height = cactus ? this->cactus_height(px, pz) : 0;
                     for (int dz = -2; dz <= 2; ++dz) {
                         const int tz = pz + dz - z0;
@@ -120,10 +121,11 @@ namespace terila::world::worldgen {
                         continue;
                     }
                     if (has_tree(plant_biome, tx, tz)) {
-                        const int trunk = trunk_height(tx, tz);
+                        const auto species = species_of(plant_biome, tx, tz);
+                        const int trunk = trunk_height(plant_biome, tx, tz);
                         if (tx == x && tz == z && y > plant.height &&
                             y <= plant.height + trunk) {
-                            state = plant_biome.log;
+                            state = species.log;
                         }
                         const int dx = x - tx;
                         const int dz = z - tz;
@@ -132,7 +134,7 @@ namespace terila::world::worldgen {
                         const bool inside_trunk = dx == 0 && dz == 0 && dy <= trunk;
                         if (dy >= trunk - 2 && dy <= trunk + 1 && distance <= 3 &&
                             !inside_trunk && !(dy == trunk + 1 && distance > 1)) {
-                            state = plant_biome.leaves;
+                            state = species.leaves;
                         }
                     }
                     if (has_cactus(plant_biome, tx, tz) && tx == x && tz == z &&
@@ -144,8 +146,41 @@ namespace terila::world::worldgen {
             return state;
         }
 
-        int trunk_height(std::int32_t x, std::int32_t z) const {
-            return 4 + static_cast<int>(terrain::detail::hash3(x, z, kFeatureSeed + 1) % 3);
+        // The species of the tree that owns a column. Vanilla picks it from the selector the
+        // biome names; a hash of the column stands in for that roll, so every reader of the
+        // column picks the same species.
+        terrain::TreeSpecies species_of(const terrain::Biome& biome, std::int32_t x,
+            std::int32_t z) const {
+            if (biome.species.empty()) {
+                terrain::TreeSpecies plain;
+                plain.log = biome.log;
+                plain.leaves = biome.leaves;
+                return plain;
+            }
+            if (biome.species.size() == 1) {
+                return biome.species.front();
+            }
+            std::uint32_t total = 0;
+            for (const auto& species : biome.species) {
+                total += static_cast<std::uint32_t>(std::max(1, species.weight));
+            }
+            std::uint32_t pick = terrain::detail::hash3(x, z, kFeatureSeed + 13) % total;
+            for (const auto& species : biome.species) {
+                const auto weight = static_cast<std::uint32_t>(std::max(1, species.weight));
+                if (pick < weight) {
+                    return species;
+                }
+                pick -= weight;
+            }
+            return biome.species.back();
+        }
+
+        int trunk_height(const terrain::Biome& biome, std::int32_t x, std::int32_t z) const {
+            const terrain::TreeSpecies species = species_of(biome, x, z);
+            const int span = std::max(0, species.max_trunk - species.min_trunk);
+            return species.min_trunk + static_cast<int>(
+                terrain::detail::hash3(x, z, kFeatureSeed + 1) %
+                static_cast<std::uint32_t>(span + 1));
         }
 
         // The part of a sky top that no plant is responsible for: the surface, or the sea
