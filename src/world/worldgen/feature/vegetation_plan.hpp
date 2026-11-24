@@ -11,6 +11,7 @@
 // way the data says and a taiga stands in spruce.
 
 #include "world/terrain_biomes.hpp"
+#include "world/worldgen/feature/state_provider.hpp"
 #include "log/logger.hpp"
 
 #include <algorithm>
@@ -44,16 +45,27 @@ namespace terila::world::worldgen {
                 !index(biomes_doc_, "biomes", biomes_)) {
                 return false;
             }
+            // A flower patch names a provider of its own instead of a block. Without this
+            // registry such a patch is skipped and only the patches that spell their block out
+            // still grow, so a missing dump costs the meadows their flowers, not the world.
+            provider_doc_ = read_json("registries/dump/minecraft/worldgen/block_state_provider.json");
+            if (!index_registry(provider_doc_, providers_by_name_)) {
+                LOG_WARN(Chunk, "worldgen: the block state providers are missing, named "
+                    "flower patches are skipped");
+            }
             loaded_ = true;
             return true;
         }
 
         bool loaded() const noexcept { return loaded_; }
 
+        // The providers the biomes now name, by the index stored in each biome entry.
+        const std::vector<StateProvider>& providers() const noexcept { return providers_; }
+
         // Rewrites the vegetation of the biome table from the data. A field the data does not
         // describe keeps what the table already says, so a dimension whose preset has no such
         // features still looks the way it did.
-        bool apply(std::vector<terrain::Biome>& biomes) const {
+        bool apply(std::vector<terrain::Biome>& biomes) {
             if (!loaded_) {
                 return false;
             }
@@ -75,18 +87,28 @@ namespace terila::world::worldgen {
                 if (plan.cactus_per_chunk > 0.0) {
                     biome.cactus_chance = chance_of(plan.cactus_per_chunk);
                 }
-                if (plan.cover_per_chunk > 0.0 && plan.cover != 0) {
+                if (plan.cover_per_chunk > 0.0 && plan.cover_provider >= 0) {
                     biome.cover_chance = chance_of(plan.cover_per_chunk);
                     biome.cover = plan.cover;
+                    biome.cover_provider = plan.cover_provider;
                 }
-                if (plan.flower_per_chunk > 0.0 && plan.flower != 0) {
+                if (plan.flower_per_chunk > 0.0 && plan.flower_provider >= 0) {
                     biome.flower_chance = chance_of(plan.flower_per_chunk);
                     biome.flower = plan.flower;
+                    biome.flower_provider = plan.flower_provider;
                 }
-                                LOG_DEBUG(Chunk, "worldgen: {} grows {} tree per chunk {} species, cover {}"
+                LOG_DEBUG(Chunk, "worldgen: {} grows {} tree per chunk {} species, cover {}"
                     "per chunk, {} cactus, {} flowers", terrain::kBiomeNames[index],
                     plan.trees_per_chunk, plan.species.size(), plan.cover_per_chunk,
                     plan.cactus_per_chunk, plan.flower_per_chunk);
+                if (biome.flower_provider >= 0) {
+                    LOG_DEBUG(Chunk, "worldgen: {} flowers [{}]", terrain::kBiomeNames[index],
+                        join(providers_[static_cast<std::size_t>(biome.flower_provider)].names()));
+                }
+                if (biome.cover_provider >= 0) {
+                    LOG_DEBUG(Chunk, "worldgen: {} cover [{}]", terrain::kBiomeNames[index],
+                        join(providers_[static_cast<std::size_t>(biome.cover_provider)].names()));
+                }
             }
             return true;
         }
@@ -100,8 +122,10 @@ namespace terila::world::worldgen {
             double cactus_per_chunk = 0.0;
             double cover_per_chunk = 0.0;
             std::int32_t cover = 0;
+            int cover_provider = -1;
             double flower_per_chunk = 0.0;
             std::int32_t flower = 0;
+            int flower_provider = -1;
         };
 
         // One plant per N columns, the shape the column planter understands.
@@ -133,7 +157,7 @@ namespace terila::world::worldgen {
             return true;
         }
 
-        Plan derive(const Json& biome) const {
+        Plan derive(const Json& biome) {
             Plan plan;
             if (!biome.contains("features") || !biome["features"].is_array()) {
                 return plan;
@@ -174,7 +198,7 @@ namespace terila::world::worldgen {
             return nullptr;
         }
 
-        void add_placed(const Json& placed, Plan& plan) const {
+        void add_placed(const Json& placed, Plan& plan) {
             const Json* found = resolve(placed.value("feature", std::string()));
             if (found == nullptr) {
                 return;
@@ -190,25 +214,31 @@ namespace terila::world::worldgen {
             const std::string type = configured.value("type", std::string());
 
             if (type == "minecraft:simple_block") {
-                const auto name = block_name(configured.value("to_place", Json()));
-                if (!name) {
+                // The patch may name its block directly, list a few with weights, or hand the
+                // choice to a provider with a field of its own. All three read the same way.
+                if (!configured.contains("to_place")) {
                     return;
                 }
-                const auto state = block_(*name);
-                if (!state) {
+                StateProvider provider;
+                if (!provider.build(configured["to_place"], block_, providers_by_name_) ||
+                    provider.empty()) {
                     return;
                 }
-                if (is_cover(*name)) {
-                    if (blocks > plan.cover_per_chunk) {
-                        plan.cover_per_chunk = blocks;
-                        plan.cover = *state;
-                    }
-                }
-                else if (is_flower(*name)) {
+                const auto& names = provider.names();
+                const bool flower = std::any_of(names.begin(), names.end(), is_flower);
+                if (flower) {
                     if (blocks > plan.flower_per_chunk) {
                         plan.flower_per_chunk = blocks;
-                        plan.flower = *state;
+                        plan.flower = provider.first_state();
+                        plan.flower_provider = add_provider(std::move(provider));
                     }
+                    return;
+                }
+                if (std::all_of(names.begin(), names.end(), is_cover) &&
+                    blocks > plan.cover_per_chunk) {
+                    plan.cover_per_chunk = blocks;
+                    plan.cover = provider.first_state();
+                    plan.cover_provider = add_provider(std::move(provider));
                 }
                 return;
             }
@@ -486,7 +516,49 @@ namespace terila::world::worldgen {
                 block == "allium" || block == "azure_bluet" || block == "red_tulip" ||
                 block == "orange_tulip" || block == "white_tulip" || block == "pink_tulip" ||
                 block == "oxeye_daisy" || block == "cornflower" ||
-                block == "lily_of_the_valley" || block == "wildflower";
+                block == "lily_of_the_valley" || block == "wildflower" ||
+                block == "wildflowers" || block == "torchflower" ||
+                block == "closed_eyeblossom" || block == "pink_petals";
+        }
+
+        static std::string join(const std::vector<std::string>& names) {
+            std::string out;
+            for (const auto& name : names) {
+                if (!out.empty()) {
+                    out += ' ';
+                }
+                out += name;
+            }
+            return out;
+        }
+
+        // The patch a provider belongs to is appended once per biome that names it: two biomes
+        // rarely share a flower field, and a shared one would still be sampled the same way.
+        int add_provider(StateProvider provider) {
+            providers_.push_back(std::move(provider));
+            return static_cast<int>(providers_.size()) - 1;
+        }
+
+        // The block state providers, in the shape the registry dump has: the entries live one
+        // level down and carry the same id/data pair as the other registries.
+        static bool index_registry(const Json& root,
+            std::unordered_map<std::string, const Json*>& out) {
+            if (root.is_null() || !root.contains("registries")) {
+                return false;
+            }
+            const Json& registries = root["registries"];
+            if (!registries.is_object() || !registries.contains("entries") ||
+                !registries["entries"].is_array()) {
+                return false;
+            }
+            for (const auto& entry : registries["entries"]) {
+                const std::string id = entry.value("id", std::string());
+                if (id.empty() || !entry.contains("data")) {
+                    continue;
+                }
+                out[id] = &entry["data"];
+            }
+            return true;
         }
 
         // The tests and the server both run with an input directory somewhere above the
@@ -534,9 +606,12 @@ namespace terila::world::worldgen {
         Json configured_doc_;
         Json placed_doc_;
         Json biomes_doc_;
+        Json provider_doc_;
         std::unordered_map<std::string, const Json*> configured_;
         std::unordered_map<std::string, const Json*> placed_;
         std::unordered_map<std::string, const Json*> biomes_;
+        std::unordered_map<std::string, const Json*> providers_by_name_;
+        std::vector<StateProvider> providers_;
         bool loaded_ = false;
     };
 

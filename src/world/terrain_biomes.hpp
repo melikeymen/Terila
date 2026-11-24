@@ -124,6 +124,11 @@ namespace terila::world::terrain {
         std::int32_t cover = 0;
         int flower_chance = 0;
         std::int32_t flower = 0;
+        // The provider the patch names, as an index into the generator's provider table. A
+        // negative index means the biome's field was read from data without one, and the
+        // single block above is what grows.
+        int cover_provider = -1;
+        int flower_provider = -1;
         // The species the column hash picks from, read from the biome's own placed features.
         // An empty list keeps the single log and leaf pair above.
         std::vector<TreeSpecies> species;

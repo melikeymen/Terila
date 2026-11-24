@@ -81,7 +81,9 @@ namespace terila::world::worldgen {
             }
 
             // What grows on a biome comes from its own placed features, not from a table: the
-            // densities and the species mix are read before the planter copies the table.
+            // densities, the species mix and the flower fields are read before the planter
+            // copies the table.
+            std::vector<StateProvider> providers;
             if (kind == DimensionKind::Overworld) {
                 VegetationPlan vegetation;
                 if (!vegetation.load(block)) {
@@ -90,6 +92,7 @@ namespace terila::world::worldgen {
                 }
                 else {
                     vegetation.apply(biomes_);
+                    providers = vegetation.providers();
                 }
             }
 
@@ -162,7 +165,7 @@ namespace terila::world::worldgen {
 
             light_rules_ = terrain::light_rules_for(blocks_);
             terrain::add_placed_light_sources(light_rules_, block);
-            plants_.init(blocks_, biomes_, sea_level_);
+            plants_.init(blocks_, biomes_, sea_level_, providers);
             // Ores and surface structures belong to the overworld's rule set; the nether and
             // the end have neither in this generator yet.
             if (kind_ == DimensionKind::Overworld) {
@@ -1239,11 +1242,14 @@ namespace terila::world::worldgen {
             if (cane != blocks_.air) {
                 return cane;
             }
-            const std::int32_t plant = plants_.cover(biome, x, z);
-            if (plant == blocks_.air) {
+            // Every ground plant stands in one cell, so the two cells above it are asked
+            // before the provider of the cover is: a field sample per cell would be wasted
+            // on a cell that cannot hold a plant anyway.
+            if (y != col.height + 1) {
                 return blocks_.air;
             }
-            if (y != col.height + 1) {
+            const std::int32_t plant = plants_.cover(biome, x, col.height, z);
+            if (plant == blocks_.air) {
                 return blocks_.air;
             }
             // The cell itself has to be air, and the one under it a block a plant grows in. A

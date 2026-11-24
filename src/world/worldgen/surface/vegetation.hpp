@@ -6,6 +6,7 @@
 
 #include "world/terrain_biomes.hpp"
 #include "world/terrain_noise.hpp"
+#include "world/worldgen/feature/state_provider.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -20,10 +21,11 @@ namespace terila::world::worldgen {
         static constexpr std::uint32_t kFeatureSeed = 0x7E41A5u;
 
         void init(const terrain::Blocks& blocks, const std::vector<terrain::Biome>& biomes,
-            int sea_level) {
+            int sea_level, const std::vector<StateProvider>& providers = {}) {
             blocks_ = blocks;
             biomes_ = biomes;
             sea_level_ = sea_level;
+            providers_ = providers;
         }
 
         // The y of the block that keeps the sky out of a column: the surface, the water above
@@ -224,19 +226,38 @@ namespace terila::world::worldgen {
 
         // The ground plant that stands on an undisturbed surface column, or 0 for none. A
         // flower takes the grass's place where the flower hash fires, and the two hashes are
-        // independent so a meadow mixes both.
-        std::int32_t cover(const terrain::Biome& biome, std::int32_t x, std::int32_t z) const {
-            if (biome.flower != 0 && biome.flower_chance > 0 &&
+        // independent so a meadow mixes both. When the data names a provider, the provider
+        // picks the species itself, from the field it carries at this block.
+        std::int32_t cover(const terrain::Biome& biome, std::int32_t x, std::int32_t ground,
+            std::int32_t z) const {
+            const std::int32_t y = ground + 1;
+            if (biome.flower_chance > 0 &&
                 terrain::detail::hash3(x, z, kFeatureSeed + 11) %
                     static_cast<std::uint32_t>(biome.flower_chance) == 0) {
-                return biome.flower;
+                const std::int32_t state = provider_state(biome.flower_provider, x, y, z);
+                if (state != 0) {
+                    return state;
+                }
+                if (biome.flower != 0) {
+                    return biome.flower;
+                }
             }
-            if (biome.cover != 0 && biome.cover_chance > 0 &&
+            if (biome.cover_chance > 0 &&
                 terrain::detail::hash3(x, z, kFeatureSeed + 7) %
                     static_cast<std::uint32_t>(biome.cover_chance) == 0) {
-                return biome.cover;
+                const std::int32_t state = provider_state(biome.cover_provider, x, y, z);
+                return state != 0 ? state : biome.cover;
             }
             return 0;
+        }
+
+        std::int32_t provider_state(int index, std::int32_t x, std::int32_t y,
+            std::int32_t z) const {
+            if (index < 0 || static_cast<std::size_t>(index) >= providers_.size()) {
+                return 0;
+            }
+            return providers_[static_cast<std::size_t>(index)].state_at(x, y, z,
+                static_cast<std::uint32_t>(index) * 0x9E3779B9u);
         }
 
         bool has_tree(const terrain::Biome& biome, std::int32_t x, std::int32_t z) const {
@@ -254,6 +275,7 @@ namespace terila::world::worldgen {
     private:
         terrain::Blocks blocks_{};
         std::vector<terrain::Biome> biomes_;
+        std::vector<StateProvider> providers_;
         int sea_level_ = 63;
     };
 
