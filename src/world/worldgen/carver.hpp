@@ -475,8 +475,9 @@ namespace terila::world::worldgen {
                 float pitch, int step, int distance, double start_vertical_scale,
                 double floor_level) {
                 // A tunnel keeps its own stream, so the branch it grows does not shift the
-                // numbers the rest of the path draws.
-                RandomSource random = tunnel_random(seed);
+                // numbers the rest of the path draws. The game starts that stream as a
+                // single-threaded legacy source over the seed the tunnel was handed.
+                LegacyRandom random(seed);
                 const int split = random.next_int(distance / 2) + distance / 4;
                 const bool steep = random.next_int(6) == 0;
                 float pitch_drift = 0.0f;
@@ -496,17 +497,17 @@ namespace terila::world::worldgen {
                     yaw += yaw_drift * 0.1f;
                     pitch_drift *= 0.9f;
                     yaw_drift *= 0.75f;
-                    pitch_drift += (random_float(random) - random_float(random)) *
-                        random_float(random) * 2.0f;
-                    yaw_drift += (random_float(random) - random_float(random)) *
-                        random_float(random) * 4.0f;
+                    pitch_drift += (random.next_float() - random.next_float()) *
+                        random.next_float() * 2.0f;
+                    yaw_drift += (random.next_float() - random.next_float()) *
+                        random.next_float() * 4.0f;
 
                     if (walked == split && thickness > 1.0f) {
                         tunnel_path(random.next_long(), x, y, z, horizontal_scale,
-                            vertical_scale, random_float(random) * 0.5f + 0.5f,
+                            vertical_scale, random.next_float() * 0.5f + 0.5f,
                             yaw - 1.5707964f, pitch / 3.0f, walked, distance, 1.0, floor_level);
                         tunnel_path(random.next_long(), x, y, z, horizontal_scale,
-                            vertical_scale, random_float(random) * 0.5f + 0.5f,
+                            vertical_scale, random.next_float() * 0.5f + 0.5f,
                             yaw + 1.5707964f, pitch / 3.0f, walked, distance, 1.0, floor_level);
                         return;
                     }
@@ -535,12 +536,12 @@ namespace terila::world::worldgen {
 
             void canyon_path(std::uint64_t seed, double x, double y, double z, float thickness,
                 float yaw, float pitch, int step, int distance, double y_scale) {
-                RandomSource random = tunnel_random(seed);
+                LegacyRandom random(seed);
                 std::vector<float> width_by_height(static_cast<std::size_t>(gen_depth_), 1.0f);
                 float width = 1.0f;
                 for (int level = 0; level < gen_depth_; ++level) {
                     if (level == 0 || random.next_int(carver_.width_smoothness) == 0) {
-                        width = 1.0f + random_float(random) * random_float(random);
+                        width = 1.0f + random.next_float() * random.next_float();
                     }
                     width_by_height[static_cast<std::size_t>(level)] = width * width;
                 }
@@ -559,7 +560,7 @@ namespace terila::world::worldgen {
                     const float factor = carver_.vertical_radius_default_factor +
                         carver_.vertical_radius_center_factor * middle;
                     vertical = static_cast<double>(factor) * vertical *
-                        (0.75 + random_float(random) * 0.25);
+                        (0.75 + random.next_float() * 0.25);
                     const float lean = float_cos(static_cast<double>(pitch));
                     const float drop = float_sin(pitch);
                     x += static_cast<double>(float_cos(static_cast<double>(yaw)) * lean);
@@ -570,10 +571,10 @@ namespace terila::world::worldgen {
                     yaw += yaw_drift * 0.05f;
                     pitch_drift *= 0.8f;
                     yaw_drift *= 0.5f;
-                    pitch_drift += (random_float(random) - random_float(random)) *
-                        random_float(random) * 2.0f;
-                    yaw_drift += (random_float(random) - random_float(random)) *
-                        random_float(random) * 4.0f;
+                    pitch_drift += (random.next_float() - random.next_float()) *
+                        random.next_float() * 2.0f;
+                    yaw_drift += (random.next_float() - random.next_float()) *
+                        random.next_float() * 4.0f;
 
                     if (random.next_int(4) != 0) {
                         if (!reaches(x, z, walked, distance, thickness)) {
@@ -592,17 +593,6 @@ namespace terila::world::worldgen {
                             });
                     }
                 }
-            }
-
-            static float random_float(RandomSource& random) {
-                return static_cast<float>(random.next_long() >> 40) * 5.9604645e-8f;
-            }
-
-            // The stream a tunnel walks on: the game widens this seed into the two halves the
-            // generator runs on, without stirring it through the noise seed mixer.
-            static RandomSource tunnel_random(std::uint64_t seed) {
-                const std::uint64_t low = seed ^ 0x6A09E667F3BCC909ull;
-                return RandomSource(low, low + 0x9E3779B97F4A7C15ull);
             }
 
             const ConfiguredCarver& carver_;
