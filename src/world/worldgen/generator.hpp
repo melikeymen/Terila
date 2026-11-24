@@ -211,25 +211,12 @@ namespace terila::world::worldgen {
             return cached_column(x, z, cache).biome;
         }
 
-        // The biome the game would name for one 4x4x4 cell. Terrain paints a column from the
-        // biome at its surface, but the cell a vein sits in belongs to the cave biome there, and
-        // the game answers that one by the nearest entry of its climate table.
-        std::int32_t biome_state_id_at(std::int32_t x, int y, std::int32_t z) const {
-            std::int32_t fallback = biomes_.empty() ? 0 : biomes_.front().id;
-            if (kind_ == DimensionKind::End) {
-                return fallback;
-            }
+        // The name the game gives one 4x4x4 cell. Terrain paints a column from the biome at its
+        // surface; the cell a vein sits in belongs to the cave biome there, and the game names
+        // that one by the nearest entry of its climate table.
+        const std::string* biome_cell_name_at(std::int32_t x, int y, std::int32_t z) const {
             const ClimateSample climate = climate_sample(x, z);
-            const std::string* name = settings_.climate().nearest(
-                climate_point_at(x, y, z, climate));
-            if (name == nullptr) {
-                return fallback;
-            }
-            const int index = biome_index_for(*name);
-            if (index < 0 || index >= static_cast<int>(biomes_.size())) {
-                return fallback;
-            }
-            return biomes_[static_cast<std::size_t>(index)].id;
+            return settings_.climate().nearest(climate_point_at(x, y, z, climate));
         }
 
         // The biome of one block rather than of a column, which is what the decoration pass

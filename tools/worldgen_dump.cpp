@@ -88,10 +88,12 @@ int main(int argc, char** argv) {
             const int y = chunk.min_y + section_index * 16 + cy * 4 + 2;
             for (int czz = 0; czz < 4; ++czz) {
                 for (int cxx = 0; cxx < 4; ++cxx) {
-                    out << "b " << (wx0 + cxx * 4 + 2) << ' ' << y << ' '
-                        << (wz0 + czz * 4 + 2) << ' '
-                        << generator.biome_state_id_at(wx0 + cxx * 4 + 2, y, wz0 + czz * 4 + 2)
-                        << '\n';
+                    const std::int32_t bx = wx0 + cxx * 4 + 2;
+                    const std::int32_t bz = wz0 + czz * 4 + 2;
+                    const std::string* name = generator.biome_cell_name_at(bx, y, bz);
+                    const auto id = name == nullptr ? std::optional<std::int32_t>()
+                                                    : biome_id(*name);
+                    out << "b " << bx << ' ' << y << ' ' << bz << ' ' << id.value_or(0) << '\n';
                 }
             }
         }
