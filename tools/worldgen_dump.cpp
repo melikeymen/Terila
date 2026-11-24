@@ -79,33 +79,19 @@ int main(int argc, char** argv) {
                 out << (wx0 + x) << ' ' << y << ' ' << (wz0 + z) << ' ' << state << '\n';
             }
         }
+    }
+
+    // The biome of every 4x4x4 cell of the finished chunk, named the way the game names it:
+    // the cell underground belongs to the cave biome there, not to the column's surface biome.
+    for (int section_index = 0; section_index < chunk.section_count; ++section_index) {
         for (int cy = 0; cy < 4; ++cy) {
+            const int y = chunk.min_y + section_index * 16 + cy * 4 + 2;
             for (int czz = 0; czz < 4; ++czz) {
                 for (int cxx = 0; cxx < 4; ++cxx) {
-                    const int cell = (cy * 4 + czz) * 4 + cxx;
-                    std::int32_t biome = 0;
-                    if (section.biome_bits == 0) {
-                        biome = section.biome_palette.empty()
-                            ? 0 : section.biome_palette.front();
-                    }
-                    else {
-                        const int bits = section.biome_bits;
-                        const int bit = cell * bits;
-                        const std::uint64_t word = static_cast<std::uint64_t>(
-                            section.biome_states[static_cast<std::size_t>(bit / 64)]);
-                        std::uint64_t value = word >> (bit % 64);
-                        if (bit % 64 + bits > 64) {
-                            value |= static_cast<std::uint64_t>(section.biome_states[
-                                static_cast<std::size_t>(bit / 64) + 1]) << (64 - bit % 64);
-                        }
-                        const auto entry = static_cast<std::size_t>(
-                            value & ((1ull << bits) - 1ull));
-                        biome = entry < section.biome_palette.size()
-                            ? section.biome_palette[entry] : 0;
-                    }
-                    out << "b " << (wx0 + cxx * 4 + 2) << ' '
-                        << (chunk.min_y + section_index * 16 + cy * 4 + 2) << ' '
-                        << (wz0 + czz * 4 + 2) << ' ' << biome << '\n';
+                    out << "b " << (wx0 + cxx * 4 + 2) << ' ' << y << ' '
+                        << (wz0 + czz * 4 + 2) << ' '
+                        << generator.biome_state_id_at(wx0 + cxx * 4 + 2, y, wz0 + czz * 4 + 2)
+                        << '\n';
                 }
             }
         }

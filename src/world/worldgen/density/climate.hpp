@@ -9,9 +9,11 @@
 
 #include <algorithm>
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <utility>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -31,6 +33,10 @@ namespace terila::world::worldgen {
 
     struct BiomePoint {
         std::array<ClimateRange, 6> climate{};
+        // The same boxes in ten-thousandths, the unit the game compares climate in, plus the
+        // entry's offset, which the game charges as a bias.
+        std::array<std::pair<std::int64_t, std::int64_t>, 6> quantized{};
+        std::int64_t offset = 0;
         std::string biome;
     };
 
@@ -61,7 +67,10 @@ namespace terila::world::worldgen {
                     point.climate[axis] = found == parameters.end()
                         ? ClimateRange{ -1.0, 1.0 }
                         : range_of(*found);
+                    point.quantized[axis].first = quantize(point.climate[axis].min);
+                    point.quantized[axis].second = quantize(point.climate[axis].max);
                 }
+                point.offset = quantize(parameters.value("offset", 0.0));
                 points_.push_back(std::move(point));
             }
             if (points_.empty()) {
@@ -107,28 +116,52 @@ namespace terila::world::worldgen {
             return nullptr;
         }
 
-        // The nearest entry, for parameter sets written as single points (the nether).
-        const std::string* find_nearest(const std::array<double, 6>& climate) const {
-            const std::string* best = nullptr;
-            double best_distance = std::numeric_limits<double>::infinity();
-            for (const auto& point : points_) {
-                double distance = 0.0;
-                for (std::size_t axis = 0; axis < 6; ++axis) {
-                    const ClimateRange& range = point.climate[axis];
-                    const double value = climate[axis];
-                    if (value < range.min) {
-                        distance += (range.min - value) * (range.min - value);
-                    }
-                    else if (value > range.max) {
-                        distance += (value - range.max) * (value - range.max);
-                    }
+        // The nearest entry: `climate` is temperature, humidity, continentalness, erosion,
+        // depth and weirdness. The table writes a surface biome's depth as a single value of
+        // zero, so a query never lands inside that box and the game answers by distance rather
+        // than by containment. This is the search a biome of the finished world is named by.
+        const std::string* nearest(const std::array<double, 6>& climate) const {
+            if (points_.empty()) {
+                return nullptr;
+            }
+            std::array<std::int64_t, 6> target{};
+            for (std::size_t axis = 0; axis < 6; ++axis) {
+                target[axis] = quantize(climate[axis]);
+            }
+            const BiomePoint* best = nullptr;
+            std::int64_t best_fitness = 0;
+            for (const BiomePoint& point : points_) {
+                std::int64_t fitness = point.offset * point.offset;
+                for (std::size_t axis = 0; axis < 6 && (best == nullptr || fitness < best_fitness);
+                    ++axis) {
+                    const std::int64_t distance = axis_distance(point.quantized[axis],
+                        target[axis]);
+                    fitness += distance * distance;
                 }
-                if (distance < best_distance) {
-                    best_distance = distance;
-                    best = &point.biome;
+                if (best == nullptr || fitness < best_fitness) {
+                    best = &point;
+                    best_fitness = fitness;
                 }
             }
-            return best;
+            return &best->biome;
+        }
+
+        // The nearest entry, for parameter sets written as single points (the nether).
+        const std::string* find_nearest(const std::array<double, 6>& climate) const {
+            return nearest(climate);
+        }
+
+        // Climate is compared in ten-thousandths, computed in single precision the way the
+        // game does, so a bound written as 0.7 quantises to 6999 rather than 7000.
+        static std::int64_t quantize(double value) noexcept {
+            return static_cast<std::int64_t>(static_cast<float>(value) * 10000.0f);
+        }
+
+        static std::int64_t axis_distance(const std::pair<std::int64_t, std::int64_t>& range,
+            std::int64_t value) noexcept {
+            const std::int64_t below = range.first - value;
+            const std::int64_t above = value - range.second;
+            return std::max<std::int64_t>(0, std::max(below, above));
         }
 
         std::size_t size() const noexcept { return points_.size(); }

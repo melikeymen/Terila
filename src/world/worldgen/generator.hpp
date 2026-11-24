@@ -211,6 +211,27 @@ namespace terila::world::worldgen {
             return cached_column(x, z, cache).biome;
         }
 
+        // The biome the game would name for one 4x4x4 cell. Terrain paints a column from the
+        // biome at its surface, but the cell a vein sits in belongs to the cave biome there, and
+        // the game answers that one by the nearest entry of its climate table.
+        std::int32_t biome_state_id_at(std::int32_t x, int y, std::int32_t z) const {
+            std::int32_t fallback = biomes_.empty() ? 0 : biomes_.front().id;
+            if (kind_ == DimensionKind::End) {
+                return fallback;
+            }
+            const ClimateSample climate = climate_sample(x, z);
+            const std::string* name = settings_.climate().nearest(
+                climate_point_at(x, y, z, climate));
+            if (name == nullptr) {
+                return fallback;
+            }
+            const int index = biome_index_for(*name);
+            if (index < 0 || index >= static_cast<int>(biomes_.size())) {
+                return fallback;
+            }
+            return biomes_[static_cast<std::size_t>(index)].id;
+        }
+
         // The biome of one block rather than of a column, which is what the decoration pass
         // asks: in the game's settings a cave has a biome of its own.
         const std::string* biome_name_at(std::int32_t x, int y, std::int32_t z) const {
@@ -1479,6 +1500,17 @@ namespace terila::world::worldgen {
             if (kind_ == DimensionKind::End) {
                 return nullptr;
             }
+            const std::array<double, 6> point = climate_point_at(x, y, z, climate);
+            if (point_out != nullptr) {
+                *point_out = point;
+            }
+            return settings_.climate().find(point);
+        }
+
+        // The climate point of one block: the column's climate plus the depth the density
+        // function reports at that height.
+        std::array<double, 6> climate_point_at(std::int32_t x, int y, std::int32_t z,
+            const ClimateSample& climate) const {
             double depth = 0.0;
             if (const DfPtr function = settings_.root("depth")) {
                 EvalContext& context = thread_context();
@@ -1486,12 +1518,8 @@ namespace terila::world::worldgen {
                 depth = settings_.density().sample(function, x, static_cast<double>(y), z,
                     context);
             }
-            const std::array<double, 6> point{ climate.temperature, climate.humidity,
-                climate.continents, climate.erosion, depth, climate.weirdness };
-            if (point_out != nullptr) {
-                *point_out = point;
-            }
-            return settings_.climate().find(point);
+            return { climate.temperature, climate.humidity, climate.continents, climate.erosion,
+                depth, climate.weirdness };
         }
 
         // The end biome source: the central island is `the_end`, and the outer islands are
