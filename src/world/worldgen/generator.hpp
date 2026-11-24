@@ -175,7 +175,8 @@ namespace terila::world::worldgen {
                     })) {
                     LOG_WARN(Chunk, "terrain: the carvers of this build cannot be read");
                 }
-                ores_.init(static_cast<std::uint64_t>(seed_), min_y_, world_top_ - 1, blocks_);
+                ores_.init(static_cast<std::uint64_t>(seed_), min_y_, world_top_ - 1, blocks_,
+                    block);
                 structures_.init(static_cast<std::uint64_t>(seed_), block,
                     [this](std::string_view name) -> int {
                         const auto found = biome_index_.find(std::string(name));
@@ -208,6 +209,13 @@ namespace terila::world::worldgen {
         int biome_at(std::int32_t x, std::int32_t z) const {
             ColumnCache& cache = thread_cache();
             return cached_column(x, z, cache).biome;
+        }
+
+        // The biome of one block rather than of a column, which is what the decoration pass
+        // asks: in the game's settings a cave has a biome of its own.
+        const std::string* biome_name_at(std::int32_t x, int y, std::int32_t z) const {
+            const ClimateSample climate = climate_sample(x, z);
+            return climate_name_at(x, y, z, climate);
         }
 
         // A single block, in the four kinds the world rules test.
@@ -512,6 +520,17 @@ namespace terila::world::worldgen {
                     },
                     [&put](std::int32_t x, std::int32_t y, std::int32_t z, std::int32_t state) {
                         put(x, y, z, state);
+                    });
+            }
+
+            // The veins come after the carvers and before the plants, where the game runs its
+            // decoration steps: a vein sees the caves around it, and a block read of this chunk
+            // later answers the vein through the same overlay.
+            if (kind_ == DimensionKind::Overworld) {
+                ores_.decorate(cx, cz, blocks, sea_level_,
+                    [this](std::int32_t x, int y, std::int32_t z) {
+                        const std::string* name = biome_name_at(x, y, z);
+                        return name == nullptr ? -1 : ores_.biome_id(*name);
                     });
             }
 
@@ -1431,17 +1450,9 @@ namespace terila::world::worldgen {
             if (kind_ == DimensionKind::End) {
                 return end_biome_at(x, z);
             }
-            double depth = 0.0;
-            if (const DfPtr function = settings_.root("depth")) {
-                EvalContext& context = thread_context();
-                context.reset(cache_slots_);
-                depth = settings_.density().sample(function, x, static_cast<double>(y), z,
-                    context);
-            }
-            const std::array<double, 6> point{ climate.temperature, climate.humidity,
-                climate.continents, climate.erosion, depth, climate.weirdness };
+            std::array<double, 6> point{};
             int index = -1;
-            if (const std::string* name = settings_.climate().find(point)) {
+            if (const std::string* name = climate_name_at(x, y, z, climate, &point)) {
                 index = biome_index_for(*name);
             }
             // The nether's parameter entries are single points, so a point that no box
@@ -1456,6 +1467,31 @@ namespace terila::world::worldgen {
                     climate.continents);
             }
             return std::max(0, index);
+        }
+
+        // The biome the climate point of this block names, before this checkout folds the name
+        // into its smaller table. The decoration pass asks this one: an ore vein is gated on the
+        // biome the game's own generation settings list it under, and underground that biome is
+        // not the one the surface column shows.
+        const std::string* climate_name_at(std::int32_t x, int y, std::int32_t z,
+            const ClimateSample& climate,
+            std::array<double, 6>* point_out = nullptr) const {
+            if (kind_ == DimensionKind::End) {
+                return nullptr;
+            }
+            double depth = 0.0;
+            if (const DfPtr function = settings_.root("depth")) {
+                EvalContext& context = thread_context();
+                context.reset(cache_slots_);
+                depth = settings_.density().sample(function, x, static_cast<double>(y), z,
+                    context);
+            }
+            const std::array<double, 6> point{ climate.temperature, climate.humidity,
+                climate.continents, climate.erosion, depth, climate.weirdness };
+            if (point_out != nullptr) {
+                *point_out = point;
+            }
+            return settings_.climate().find(point);
         }
 
         // The end biome source: the central island is `the_end`, and the outer islands are

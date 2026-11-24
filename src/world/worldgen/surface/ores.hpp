@@ -8,6 +8,12 @@
 
 #include "world/terrain_biomes.hpp"
 #include "world/terrain_noise.hpp"
+#include "world/worldgen/feature/ore_decoration.hpp"
+
+#include <atomic>
+#include <functional>
+#include <memory>
+#include <shared_mutex>
 
 #include <algorithm>
 #include <array>
@@ -21,11 +27,15 @@ namespace terila::world::worldgen {
 
     class OreBlobs {
     public:
-        void init(std::uint64_t seed, int min_y, int max_y, const terrain::Blocks& blocks) {
+        void init(std::uint64_t seed, int min_y, int max_y, const terrain::Blocks& blocks,
+            const terrain::IdResolver& block) {
             seed_ = seed;
             min_y_ = min_y;
             max_y_ = max_y;
             blocks_ = blocks;
+            air_ = blocks.air;
+            water_ = blocks.water;
+            lava_ = blocks.lava;
             placements_.clear();
             add(blocks.granite, 64, 2, 1, 0, 60);
             add(blocks.granite, 64, 1, 6, 64, 128);
@@ -37,6 +47,80 @@ namespace terila::world::worldgen {
             add(blocks.gravel, 33, 14, 1, min_y_, max_y_);
             add(blocks.clay, 33, 1, 1, min_y_, max_y_);
             add(blocks.dirt, 33, 7, 1, 0, 160);
+            decoration_.load(seed, block);
+            std::unique_lock lock(store_->mutex);
+            for (Layer& layer : store_->layers) {
+                layer.owner = nullptr;
+                layer.blocks.clear();
+            }
+            store_->stamp = 0;
+        }
+
+        int biome_id(const std::string& name) const { return decoration_.biome_id(name); }
+
+        // Runs the chunk's ore features after the carvers and before the plants, the point in
+        // the game where the decoration steps run. What the pass writes is the answer a later
+        // block read of this chunk gives: the veins the game itself would have drawn.
+        void decorate(std::int32_t cx, std::int32_t cz, std::vector<std::int32_t>& blocks,
+            int sea_level,
+            const std::function<int(std::int32_t, int, std::int32_t)>& biome_at) const {
+            if (!decoration_.loaded()) {
+                return;
+            }
+            DecorationView view;
+            view.cx = cx;
+            view.cz = cz;
+            view.min_y = min_y_;
+            view.world_top = max_y_ + 1;
+            view.sea_level = sea_level;
+            view.blocks = &blocks;
+            view.air = air_;
+            view.water = water_;
+            view.lava = lava_;
+            view.biome_at = biome_at;
+
+            OreDecoration::Overlay overlay;
+            decoration_.decorate(view, overlay);
+            if (overlay.empty()) {
+                return;
+            }
+            std::unique_lock lock(store_->mutex);
+            Layer* victim = &store_->layers[0];
+            for (Layer& layer : store_->layers) {
+                if (layer.owner == store_.get() && layer.cx == cx && layer.cz == cz) {
+                    victim = &layer;
+                    break;
+                }
+                if (layer.owner != store_.get() || layer.stamp < victim->stamp) {
+                    victim = &layer;
+                }
+            }
+            victim->owner = store_.get();
+            victim->cx = cx;
+            victim->cz = cz;
+            victim->stamp = ++store_->stamp;
+            victim->blocks = std::move(overlay);
+            store_->filled = true;
+        }
+
+        // The block a decoration feature wrote into a chunk that this pass already finished,
+        // or 0 when the chunk keeps what the terrain painted.
+        std::int32_t vein_at(std::int32_t x, std::int32_t y, std::int32_t z) const {
+            if (!store_->filled) {
+                return 0;
+            }
+            const std::int32_t cx = x >> 4;
+            const std::int32_t cz = z >> 4;
+            std::shared_lock lock(store_->mutex);
+            for (const Layer& layer : store_->layers) {
+                if (layer.owner != store_.get() || layer.cx != cx || layer.cz != cz) {
+                    continue;
+                }
+                const std::uint64_t key = pack(x & 15, y, z & 15);
+                const auto found = layer.blocks.find(key);
+                return found == layer.blocks.end() ? 0 : found->second;
+            }
+            return 0;
         }
 
         // The state a stone block becomes, or 0 when no blob covers it.
@@ -60,6 +144,9 @@ namespace terila::world::worldgen {
             std::int32_t deep) const {
             if (deep != blocks_.stone && deep != blocks_.deepslate) {
                 return deep;
+            }
+            if (const std::int32_t vein = vein_at(x, y, z); vein != 0) {
+                return vein;
             }
             if (const std::int32_t blob = blob_at(x, y, z); blob != 0) {
                 return blob;
@@ -248,6 +335,22 @@ namespace terila::world::worldgen {
             }
         }
 
+        // Overlays of the last few decorated chunks, oldest evicted first. Decorating a chunk
+        // needs the chunk's own rock, so an overlay is built once, where the chunk is built; a
+        // read of a chunk the table no longer holds answers nothing. Copies of the generator
+        // share the table, which keeps a copied worker answering its siblings' chunks.
+        struct Store {
+            mutable std::shared_mutex mutex;
+            std::array<Layer, 8> layers{};
+            std::uint64_t stamp = 0;
+            std::atomic<bool> filled{ false };
+        };
+
+        OreDecoration decoration_;
+        std::shared_ptr<Store> store_ = std::make_shared<Store>();
+        std::int32_t air_ = 0;
+        std::int32_t water_ = 0;
+        std::int32_t lava_ = 0;
         terrain::Blocks blocks_{};
         std::uint64_t seed_ = 0;
         int min_y_ = -64;
