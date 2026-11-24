@@ -222,8 +222,7 @@ namespace terila::world::worldgen {
         // The biome of one block rather than of a column, which is what the decoration pass
         // asks: in the game's settings a cave has a biome of its own.
         const std::string* biome_name_at(std::int32_t x, int y, std::int32_t z) const {
-            const ClimateSample climate = climate_sample(x, z);
-            return climate_name_at(x, y, z, climate);
+            return biome_cell_name_at(x, y, z);
         }
 
         // A single block, in the four kinds the world rules test.
@@ -1120,6 +1119,11 @@ namespace terila::world::worldgen {
             // surface is the dimension's own rock.
             if (kind_ != DimensionKind::Overworld) {
                 return deep_default_;
+            }
+            // A decorated chunk keeps the veins the pass drew, so a block read of it answers
+            // with those before this filler's own stone and deepslate.
+            if (const std::int32_t vein = ores_.vein_at(x, y, z); vein != 0) {
+                return vein;
             }
             if (blocks_.deepslate == blocks_.stone || y >= 8) {
                 return blocks_.stone;

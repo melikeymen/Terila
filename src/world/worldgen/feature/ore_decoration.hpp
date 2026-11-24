@@ -738,8 +738,10 @@ namespace terila::world::worldgen {
         // mixed with the chunk's origin and seeded again.
         std::int64_t decoration_seed(std::int64_t origin_x, std::int64_t origin_z) const {
             RandomSource random = RandomSource::from_seed(seed_);
-            const std::uint64_t x_scale = random.next_long() | 1ull;
-            const std::uint64_t z_scale = random.next_long() | 1ull;
+            // These two scales come through a `WorldgenRandom` as well, so each long is two
+            // thirty two bit halves instead of one draw of the generator.
+            const std::uint64_t x_scale = random.next_legacy_long() | 1ull;
+            const std::uint64_t z_scale = random.next_legacy_long() | 1ull;
             const std::uint64_t mixed = static_cast<std::uint64_t>(origin_x) * x_scale +
                 static_cast<std::uint64_t>(origin_z) * z_scale;
             return static_cast<std::int64_t>(mixed ^ seed_);
@@ -754,7 +756,7 @@ namespace terila::world::worldgen {
             for (const Modifier& modifier : feature.modifiers) {
                 if (modifier.kind == Modifier::Kind::Count) {
                     count = modifier.count_uniform
-                        ? modifier.count_min + random.next_int(
+                        ? modifier.count_min + random.next_legacy_int(
                             std::max(1, modifier.count_max - modifier.count_min + 1))
                         : modifier.count_min;
                 }
@@ -769,13 +771,13 @@ namespace terila::world::worldgen {
                     case Modifier::Kind::Count:
                         break;
                     case Modifier::Kind::Rarity:
-                        if (!(random.next_float() < 1.0f / static_cast<float>(modifier.chance))) {
+                        if (!(random.next_legacy_float() < 1.0f / static_cast<float>(modifier.chance))) {
                             drop = true;
                         }
                         break;
                     case Modifier::Kind::InSquare:
-                        x += random.next_int(16);
-                        z += random.next_int(16);
+                        x += random.next_legacy_int(16);
+                        z += random.next_legacy_int(16);
                         break;
                     case Modifier::Kind::HeightRange: {
                         const int low = resolve(modifier.min_anchor, *pass.view);
@@ -786,17 +788,17 @@ namespace terila::world::worldgen {
                         else if (modifier.trapezoid) {
                             const int range = high - low;
                             if (modifier.plateau >= range) {
-                                y = low + random.next_int(range + 1);
+                                y = low + random.next_legacy_int(range + 1);
                             }
                             else {
                                 const int plateau_start = (range - modifier.plateau) / 2;
                                 const int plateau_end = range - plateau_start;
-                                y = low + random.next_int(plateau_end + 1) +
-                                    random.next_int(plateau_start + 1);
+                                y = low + random.next_legacy_int(plateau_end + 1) +
+                                    random.next_legacy_int(plateau_start + 1);
                             }
                         }
                         else {
-                            y = low + random.next_int(high - low + 1);
+                            y = low + random.next_legacy_int(high - low + 1);
                         }
                         break;
                     }
@@ -824,7 +826,7 @@ namespace terila::world::worldgen {
         void vein(Pass& pass, const OreFeature& feature, RandomSource& random,
             std::int32_t origin_x, std::int32_t origin_y, std::int32_t origin_z) const {
             const DecorationView& view = *pass.view;
-            const float direction = random.next_float() * 3.14159265358979323846f;
+            const float direction = random.next_legacy_float() * 3.14159265358979323846f;
             const float spread = static_cast<float>(feature.size) / 8.0f;
             const int reach = static_cast<int>(std::ceil(spread));
             const int max_radius = static_cast<int>(std::ceil(
@@ -833,8 +835,8 @@ namespace terila::world::worldgen {
             const double x1 = static_cast<double>(origin_x) - std::sin(direction) * spread;
             const double z0 = static_cast<double>(origin_z) + std::cos(direction) * spread;
             const double z1 = static_cast<double>(origin_z) - std::cos(direction) * spread;
-            const double y0 = origin_y + random.next_int(3) - 2;
-            const double y1 = origin_y + random.next_int(3) - 2;
+            const double y0 = origin_y + random.next_legacy_int(3) - 2;
+            const double y1 = origin_y + random.next_legacy_int(3) - 2;
             const int x_start = origin_x - reach - max_radius;
             const int y_start = origin_y - 2 - max_radius;
             const int z_start = origin_z - reach - max_radius;
@@ -861,7 +863,7 @@ namespace terila::world::worldgen {
                 const double xx = x0 + static_cast<double>(progress) * (x1 - x0);
                 const double yy = y0 + static_cast<double>(progress) * (y1 - y0);
                 const double zz = z0 + static_cast<double>(progress) * (z1 - z0);
-                const double ss = random.next_double() *
+                const double ss = random.next_legacy_double() *
                     static_cast<double>(feature.size) / 16.0;
                 const double radius = ((std::sin(static_cast<double>(
                     3.14159265358979323846f * progress)) + 1.0) * ss + 1.0) / 2.0;
@@ -971,7 +973,7 @@ namespace terila::world::worldgen {
                         skip_air_check = false;
                     }
                     else {
-                        skip_air_check = random.next_float() >= feature.discard;
+                        skip_air_check = random.next_legacy_float() >= feature.discard;
                     }
                 }
                 if (!skip_air_check && touches_air(pass, x, y, z)) {

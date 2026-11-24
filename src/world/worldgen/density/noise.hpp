@@ -207,6 +207,41 @@ namespace terila::world::worldgen {
             return static_cast<double>(next_long() >> 11) * static_cast<double>(1.110223e-16f);
         }
 
+        // A chunk's decoration draws through a `WorldgenRandom`, which is the game's older
+        // source wrapped around this generator. Every draw there starts from the top bits of
+        // one long instead of the whole long: a bounded draw takes thirty one bits and rejects
+        // a slice, a float takes twenty four bits, and a double is two halves. These are the
+        // draws feature placement sees, and they are not the ones above.
+        int next_legacy_int(int bound) {
+            if ((bound & -bound) == bound) {
+                return static_cast<int>((static_cast<std::int64_t>(bound) * next_legacy_bits(31))
+                    >> 31);
+            }
+            int value = 0;
+            int remainder = 0;
+            do {
+                value = next_legacy_bits(31);
+                remainder = value % bound;
+            } while (value - remainder + (bound - 1) < 0);
+            return remainder;
+        }
+
+        std::uint64_t next_legacy_long() {
+            const std::uint64_t high = static_cast<std::uint64_t>(next_legacy_bits(32));
+            const std::uint64_t low = static_cast<std::uint64_t>(next_legacy_bits(32));
+            return (high << 32) + low;
+        }
+
+        float next_legacy_float() {
+            return static_cast<float>(next_legacy_bits(24)) / 16777216.0f;
+        }
+
+        double next_legacy_double() {
+            const std::int64_t high = static_cast<std::int64_t>(next_legacy_bits(26)) << 27;
+            const std::int64_t low = next_legacy_bits(27);
+            return static_cast<double>(high + low) * 1.1102230246251565e-16;
+        }
+
         // The top twenty four bits as a fraction: the same draw the noise streams use wherever
         // a placement needs a float.
         float next_float() {
@@ -221,6 +256,10 @@ namespace terila::world::worldgen {
         PositionalFactory fork_positional();
 
     private:
+        int next_legacy_bits(int bits) {
+            return static_cast<int>(next_long() >> (64 - bits));
+        }
+
         static std::uint64_t mix_stafford(std::uint64_t z) {
             z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
             z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
