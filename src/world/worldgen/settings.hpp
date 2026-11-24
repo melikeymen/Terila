@@ -7,6 +7,7 @@
 
 #include "data/input_store.hpp"
 #include "world/worldgen/aquifer.hpp"
+#include "world/worldgen/carver.hpp"
 #include "world/worldgen/density/climate.hpp"
 #include "world/worldgen/density/density.hpp"
 #include "log/logger.hpp"
@@ -147,6 +148,19 @@ namespace terila::world::worldgen {
 
         DfPtr final_density() const noexcept { return final_density_; }
         const AquiferFunctions& aquifers() const noexcept { return aquifer_functions_; }
+        const Carvers& carvers() const noexcept { return carvers_; }
+
+        // The carvers are named by the biome list, so they are read once the biome registry of
+        // this build is known.
+        bool load_carvers(const std::function<int(std::string_view)>& biome_index_of) {
+            const nlohmann::json configured =
+                read_json("registries/dump/minecraft/worldgen/carver.json");
+            const nlohmann::json biomes = read_json("worldgen/biomes.json");
+            if (configured.is_null() || biomes.is_null()) {
+                return false;
+            }
+            return carvers_.load(configured, biomes, biome_index_of);
+        }
 
     private:
         static const nlohmann::json* find_preset(const nlohmann::json& root,
@@ -211,6 +225,7 @@ namespace terila::world::worldgen {
         std::unordered_map<std::string, DfPtr> router_;
         DfPtr final_density_;
         AquiferFunctions aquifer_functions_;
+        Carvers carvers_;
         std::string default_block_ = "minecraft:stone";
         std::string default_fluid_ = "minecraft:water";
         std::string material_rule_id_ = "minecraft:overworld";

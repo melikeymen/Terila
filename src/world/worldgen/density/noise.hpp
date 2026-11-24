@@ -207,6 +207,12 @@ namespace terila::world::worldgen {
             return static_cast<double>(next_long() >> 11) * static_cast<double>(1.110223e-16f);
         }
 
+        // The top twenty four bits as a fraction: the same draw the noise streams use wherever
+        // a placement needs a float.
+        float next_float() {
+            return static_cast<float>(next_long() >> 40) * 5.9604645e-8f;
+        }
+
         RandomSource fork() {
             const std::uint64_t low = next_long();
             return RandomSource(low, next_long());

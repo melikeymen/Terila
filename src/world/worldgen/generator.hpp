@@ -20,6 +20,7 @@
 #include "world/terrain_noise.hpp"
 #include "world/worldgen/chunk_sections.hpp"
 #include "world/worldgen/aquifer.hpp"
+#include "world/worldgen/carver.hpp"
 #include "world/worldgen/column.hpp"
 #include "world/worldgen/density_grid.hpp"
 #include "world/worldgen/dimension.hpp"
@@ -151,6 +152,12 @@ namespace terila::world::worldgen {
             // Ores and surface structures belong to the overworld's rule set; the nether and
             // the end have neither in this generator yet.
             if (kind_ == DimensionKind::Overworld) {
+                if (!settings_.load_carvers([this](std::string_view name) -> int {
+                        const auto found = biome_index_.find(std::string(name));
+                        return found == biome_index_.end() ? -1 : found->second;
+                    })) {
+                    LOG_WARN(Chunk, "terrain: the carvers of this build cannot be read");
+                }
                 ores_.init(static_cast<std::uint64_t>(seed_), min_y_, world_top_ - 1, blocks_);
                 structures_.init(static_cast<std::uint64_t>(seed_), block,
                     [this](std::string_view name) -> int {
@@ -434,6 +441,47 @@ namespace terila::world::worldgen {
             }
 
             mark("fill");
+
+            // Caves and canyons: grown from the eight chunk ring around this one, kept in a
+            // mask, and then opened into whatever the aquifer says stands in the hole. Rock
+            // that the barrier noise pushed back stays rock.
+            if (!settings_.carvers().empty()) {
+                MaskSlots& masks = thread_masks();
+                MaskSlots::Slot& slot = masks.slots[masks.next];
+                masks.next = (masks.next + 1) % MaskSlots::kSlots;
+                slot.world = world_id_;
+                slot.cx = cx;
+                slot.cz = cz;
+                slot.valid = true;
+                slot.mask.begin(min_y_ + 1, world_top_ - 1 - 7);
+                carve_into(slot.mask, cx, cz);
+                if (timed) {
+                    LOG_INFO(Chunk, "worldgen caves: {} blocks", slot.mask.carved_cells());
+                }
+                if (!slot.mask.empty()) {
+                    for (int lz = 0; lz < 16; ++lz) {
+                        for (int lx = 0; lx < 16; ++lx) {
+                            const std::int32_t wx = wx0 + lx;
+                            const std::int32_t wz = wz0 + lz;
+                            for (int y = slot.mask.min_y(); y <= slot.mask.max_y(); ++y) {
+                                if (!slot.mask.contains(lx, y, lz)) {
+                                    continue;
+                                }
+                                const Substance kind = field.aquifer.substance(wx, y, wz, 0.0);
+                                if (kind == Substance::Solid) {
+                                    continue;
+                                }
+                                blocks[static_cast<std::size_t>(y - min_y_) * 256 +
+                                    static_cast<std::size_t>(lz) * 16 +
+                                    static_cast<std::size_t>(lx)] =
+                                    kind == Substance::Water ? fluid_
+                                        : (kind == Substance::Lava ? blocks_.lava : blocks_.air);
+                            }
+                        }
+                    }
+                }
+                mark("carve");
+            }
 
             // Structures land on the finished surface, before the vegetation stage that fills
             // the air above it.
@@ -766,6 +814,90 @@ namespace terila::world::worldgen {
                 }
             }
             return slot;
+        }
+
+        // The carved blocks of a chunk, kept per thread next to the field: a block read of a
+        // generated chunk has to see the same air and water the file holds.
+        struct MaskSlots {
+            static constexpr int kSlots = 2;
+
+            struct Slot {
+                std::uint64_t world = 0;
+                int cx = 0;
+                int cz = 0;
+                bool valid = false;
+                CarvingMask mask;
+            };
+
+            Slot slots[kSlots]{};
+            int next = 0;
+        };
+
+        static MaskSlots& thread_masks() {
+            static thread_local MaskSlots masks;
+            return masks;
+        }
+
+        const CarvingMask* cached_mask(std::int32_t x, std::int32_t z) const {
+            const MaskSlots& masks = thread_masks();
+            for (const auto& slot : masks.slots) {
+                if (slot.valid && slot.world == world_id_ && slot.cx == (x >> 4) &&
+                    slot.cz == (z >> 4)) {
+                    return &slot.mask;
+                }
+            }
+            return nullptr;
+        }
+
+        // The biome a carver start chunk belongs to, at the resolution the game asks it: the
+        // chunk's own corner in the biome lattice, not a column of the terrain.
+        int carver_biome(int cx, int cz) const {
+            struct Slot {
+                std::uint64_t world = 0;
+                int cx = 0;
+                int cz = 0;
+                bool valid = false;
+                int biome = 0;
+            };
+            static thread_local std::array<Slot, 2048> slots{};
+            const std::uint64_t key = (static_cast<std::uint64_t>(world_id_) << 42) ^
+                (static_cast<std::uint64_t>(static_cast<std::uint32_t>(cx)) << 21) ^
+                static_cast<std::uint64_t>(static_cast<std::uint32_t>(cz));
+            Slot& slot = slots[static_cast<std::size_t>(terrain::detail::hash64(key)) & 2047u];
+            if (slot.valid && slot.world == world_id_ && slot.cx == cx && slot.cz == cz) {
+                return slot.biome;
+            }
+            const std::int32_t x = cx * 16 + 8;
+            const std::int32_t z = cz * 16 + 8;
+            slot.world = world_id_;
+            slot.cx = cx;
+            slot.cz = cz;
+            slot.valid = true;
+            slot.biome = biome_at(x, sea_level_, z, climate_sample(x, z));
+            return slot.biome;
+        }
+
+        void carve_into(CarvingMask& mask, int cx, int cz) const {
+            const Carvers& carvers = settings_.carvers();
+            const int depth = world_top_ - min_y_;
+            for (int dz = -8; dz <= 8; ++dz) {
+                for (int dx = -8; dx <= 8; ++dx) {
+                    const int source_x = cx + dx;
+                    const int source_z = cz + dz;
+                    const std::vector<int>& list =
+                        carvers.list_for_biome(carver_biome(source_x, source_z));
+                    for (std::size_t index = 0; index < list.size(); ++index) {
+                        const ConfiguredCarver& carver = carvers.at(list[index]);
+                        LegacyRandom random;
+                        random.set_large_feature_seed(
+                            seed_ + static_cast<std::uint64_t>(index), source_x, source_z);
+                        if (random.next_float() <= carver.probability) {
+                            Carvers::carve(carver, mask, cx, cz, source_x, source_z,
+                                min_y_ + 1, depth, random);
+                        }
+                    }
+                }
+            }
         }
 
         GridCache::Slot* cached_field(std::int32_t x, std::int32_t z) const {
@@ -1154,13 +1286,11 @@ namespace terila::world::worldgen {
             if (y < min_y_ || y >= world_top_) {
                 return blocks_.air;
             }
-            if (density(x, y, z) <= 0.0) {
-                // The aquifer can also push rock back over a body, so an open field value is
-                // not yet an open block.
-                const std::int32_t fluid = fluid_at(x, y, z, col);
-                if (fluid != blocks_.air || matter_at(x, y, z) != Substance::Solid) {
-                    return fluid;
-                }
+            // The carvers open a block and the aquifer can push rock back over one, so the
+            // field value alone is not the answer: rock, air or a fluid decides whether the
+            // material rules are asked at all.
+            if (matter_at(x, y, z) != Substance::Solid) {
+                return fluid_at(x, y, z, col);
             }
             // Surface rules stop eight blocks below the preliminary surface, so a block deep
             // under it needs neither neighbour scan: the chain would answer stone or deepslate
@@ -1197,6 +1327,16 @@ namespace terila::world::worldgen {
         // was generated on this thread keeps its aquifer around; anywhere else the sea rule
         // stands in, which only differs inside a cave the aquifer would have flooded.
         Substance matter_at(std::int32_t x, std::int32_t y, std::int32_t z) const {
+            if (const CarvingMask* mask = cached_mask(x, z)) {
+                if (mask->contains(x & 15, y, z & 15)) {
+                    if (GridCache::Slot* field = cached_field(x, z)) {
+                        if (field->aquifer.ready()) {
+                            return field->aquifer.substance(x, y, z, 0.0);
+                        }
+                    }
+                    return Substance::Air;
+                }
+            }
             const double density = density_at(x, y, z);
             if (density > 0.0) {
                 return Substance::Solid;
