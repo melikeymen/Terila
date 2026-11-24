@@ -22,13 +22,16 @@ namespace terila::world::worldgen {
         void set_seed(std::uint64_t seed) { state_ = (seed ^ kMultiplier) & kMask; }
 
         // The placement seed: the two axes are folded together through two draws, so two
-        // neighbouring chunks never walk the same path even when only one axis differs.
+        // neighbouring chunks never walk the same path even when only one axis differs. The
+        // original seed rides along in the result, which is what makes the two neighbouring
+        // chunks still differ from a pair that started elsewhere.
         void set_large_feature_seed(std::uint64_t seed, int x, int z) {
             set_seed(seed);
-            const std::int64_t x_seed = next_long() | 1;
-            const std::int64_t z_seed = next_long() | 1;
-            set_seed(static_cast<std::uint64_t>(
-                static_cast<std::int64_t>(x) * x_seed ^ static_cast<std::int64_t>(z) * z_seed));
+            const std::int64_t x_seed = next_long();
+            const std::int64_t z_seed = next_long();
+            const std::int64_t folded = static_cast<std::int64_t>(x) * x_seed ^
+                static_cast<std::int64_t>(z) * z_seed ^ static_cast<std::int64_t>(seed);
+            set_seed(static_cast<std::uint64_t>(folded));
         }
 
         int next_bits(int bits) {
@@ -57,7 +60,12 @@ namespace terila::world::worldgen {
         }
 
         std::int64_t next_long() {
-            return (static_cast<std::int64_t>(next_bits(32)) << 32) + next_bits(32);
+            // The halves are drawn in a fixed order: the high one first. Reading them straight
+            // into one expression leaves the order to the compiler, and a builder that draws
+            // them backwards swaps every long the placement derives from.
+            const std::int64_t high = next_bits(32);
+            const std::int64_t low = next_bits(32);
+            return (high << 32) + low;
         }
 
         float next_float() {
