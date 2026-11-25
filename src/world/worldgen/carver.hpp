@@ -80,7 +80,10 @@ namespace terila::world::worldgen {
             } else if (type.find("uniform") != std::string::npos) {
                 result.kind = Kind::Uniform;
                 result.min = value.value("min_inclusive", result.min);
-                result.max = value.value("max_inclusive", result.max);
+                // A radius is spelled as a range with an exclusive top, so that bound is what
+                // the provider multiplies into; reading only the inclusive one flattens it.
+                result.max = value.value("max_exclusive",
+                    value.value("max_inclusive", result.max));
             } else {
                 result.kind = Kind::Constant;
                 result.max = result.min;
@@ -503,12 +506,20 @@ namespace terila::world::worldgen {
                         random.next_float() * 4.0f;
 
                     if (walked == split && thickness > 1.0f) {
-                        tunnel_path(random.next_long(), x, y, z, horizontal_scale,
-                            vertical_scale, random.next_float() * 0.5f + 0.5f,
-                            yaw - 1.5707964f, pitch / 3.0f, walked, distance, 1.0, floor_level);
-                        tunnel_path(random.next_long(), x, y, z, horizontal_scale,
-                            vertical_scale, random.next_float() * 0.5f + 0.5f,
-                            yaw + 1.5707964f, pitch / 3.0f, walked, distance, 1.0, floor_level);
+                        // The seed and the thickness of a branch are two draws from this stream,
+                        // so they are taken in the order the game takes them before the branch
+                        // is walked; leaving both inside the call would let the compiler swap
+                        // them and hand the branch the other number.
+                        const std::uint64_t first_seed = random.next_long();
+                        const float first_thickness = random.next_float() * 0.5f + 0.5f;
+                        const std::uint64_t second_seed = random.next_long();
+                        const float second_thickness = random.next_float() * 0.5f + 0.5f;
+                        tunnel_path(first_seed, x, y, z, horizontal_scale, vertical_scale,
+                            first_thickness, yaw - 1.5707964f, pitch / 3.0f, walked, distance, 1.0,
+                            floor_level);
+                        tunnel_path(second_seed, x, y, z, horizontal_scale, vertical_scale,
+                            second_thickness, yaw + 1.5707964f, pitch / 3.0f, walked, distance,
+                            1.0, floor_level);
                         return;
                     }
                     if (random.next_int(4) != 0) {
@@ -638,8 +649,9 @@ namespace terila::world::worldgen {
             }
 
             // Every biome names its carvers in order; the order is the seed offset, so it is
-            // kept exactly as the data spells it.
-            per_biome_.assign(64, {});
+            // kept exactly as the data spells it. The table grows to the highest biome index
+            // the registry hands out, so no biome falls back to another one's list.
+            per_biome_.clear();
             default_list_ = {};
             if (biomes.contains("data") && biomes["data"].is_array()) {
                 for (const auto& entry : biomes["data"]) {
@@ -661,7 +673,10 @@ namespace terila::world::worldgen {
                         }
                     }
                     const int index = biome_index_of(entry["id"].get<std::string>());
-                    if (index >= 0 && index < static_cast<int>(per_biome_.size())) {
+                    if (index >= 0) {
+                        if (static_cast<std::size_t>(index) >= per_biome_.size()) {
+                            per_biome_.resize(static_cast<std::size_t>(index) + 1);
+                        }
                         per_biome_[static_cast<std::size_t>(index)] = list;
                     }
                     if (default_list_.empty() && !list.empty()) {

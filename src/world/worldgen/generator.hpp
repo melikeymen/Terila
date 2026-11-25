@@ -894,7 +894,7 @@ namespace terila::world::worldgen {
         }
 
         // The biome a carver start chunk belongs to, at the resolution the game asks it: the
-        // chunk's own corner in the biome lattice, not a column of the terrain.
+        // noise biome of the chunk's corner cell at height zero, not a column of the terrain.
         int carver_biome(int cx, int cz) const {
             struct Slot {
                 std::uint64_t world = 0;
@@ -911,13 +911,13 @@ namespace terila::world::worldgen {
             if (slot.valid && slot.world == world_id_ && slot.cx == cx && slot.cz == cz) {
                 return slot.biome;
             }
-            const std::int32_t x = cx * 16 + 8;
-            const std::int32_t z = cz * 16 + 8;
+            const std::int32_t x = cx * 16;
+            const std::int32_t z = cz * 16;
             slot.world = world_id_;
             slot.cx = cx;
             slot.cz = cz;
             slot.valid = true;
-            slot.biome = biome_at(x, sea_level_, z, climate_sample(x, z));
+            slot.biome = biome_at(x, 0, z, climate_sample(x, z));
             return slot.biome;
         }
 
@@ -928,8 +928,8 @@ namespace terila::world::worldgen {
                 for (int dx = -8; dx <= 8; ++dx) {
                     const int source_x = cx + dx;
                     const int source_z = cz + dz;
-                    const std::vector<int>& list =
-                        carvers.list_for_biome(carver_biome(source_x, source_z));
+                    const int biome = carver_biome(source_x, source_z);
+                    const std::vector<int>& list = carvers.list_for_biome(biome);
                     for (std::size_t index = 0; index < list.size(); ++index) {
                         const ConfiguredCarver& carver = carvers.at(list[index]);
                         LegacyRandom random;
@@ -937,7 +937,7 @@ namespace terila::world::worldgen {
                             seed_ + static_cast<std::uint64_t>(index), source_x, source_z);
                         if (random.next_float() <= carver.probability) {
                             Carvers::carve(carver, mask, cx, cz, source_x, source_z,
-                                min_y_ + 1, depth, random);
+                                min_y_, depth, random);
                         }
                     }
                 }
