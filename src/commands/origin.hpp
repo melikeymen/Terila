@@ -1,6 +1,6 @@
 #pragma once
 
-#include "commands/selector.hpp"
+#include "commands/arguments/selector.hpp"
 #include "item/components.hpp"
 
 #include <cstdint>

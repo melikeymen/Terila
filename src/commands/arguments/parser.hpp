@@ -1,8 +1,8 @@
 #pragma once
 
 #include "commands/cursor.hpp"
-#include "commands/text.hpp"
-#include "commands/value.hpp"
+#include "commands/arguments/text.hpp"
+#include "commands/arguments/value.hpp"
 #include "item/item_parser.hpp"
 
 #include <algorithm>

@@ -1,8 +1,8 @@
 #pragma once
 
 #include "commands/origin.hpp"
-#include "commands/parser.hpp"
-#include "commands/value.hpp"
+#include "commands/arguments/parser.hpp"
+#include "commands/arguments/value.hpp"
 
 #include <cstdint>
 #include <functional>

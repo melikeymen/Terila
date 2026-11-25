@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "commands/selector.hpp"
+#include "commands/arguments/selector.hpp"
 
 #include <cstdint>
 #include <string>

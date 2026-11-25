@@ -7,7 +7,7 @@
 // players the caller knows about to resolve(), which applies the marker, the filters, the
 // sort order and the limit in one place.
 
-#include "commands/text.hpp"
+#include "commands/arguments/text.hpp"
 
 #include <algorithm>
 #include <cmath>

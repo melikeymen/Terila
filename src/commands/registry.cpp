@@ -1,7 +1,7 @@
 #include "commands/registry.hpp"
 
 #include "commands/cursor.hpp"
-#include "commands/text.hpp"
+#include "commands/arguments/text.hpp"
 #include "protocol/varint.hpp"
 
 #include <algorithm>
