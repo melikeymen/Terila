@@ -441,7 +441,7 @@ namespace terila::world::worldgen {
                             // open block of the column.
                             state = kind == Substance::Water ? fluid_ : blocks_.lava;
                             if (kind == Substance::Water && y == sea_level_ - 1 &&
-                                biome_of(col).ice_top) {
+                                frozen_at(col, y)) {
                                 state = blocks_.ice;
                             }
                             if (state == fluid_) {
@@ -463,11 +463,11 @@ namespace terila::world::worldgen {
                         }
                     }
 
-                    // A cold surface keeps a snow layer on top of whatever the rules painted.
-                    const auto& biome = biome_of(col);
-                    if (biome.snow_cap ||
-                        (biome.snow_above > 0 && col.height >= biome.snow_above)) {
-                        put_if_air(wx, col.height + 1, wz, blocks_.snow);
+                    // The sky of a cold biome leaves a layer on whatever the rules painted,
+                    // above the water line too, where the same cold has just frozen the sea.
+                    const int top = std::max(col.height + 1, sea_level_);
+                    if (frozen_at(col, top)) {
+                        put_if_air(wx, top, wz, blocks_.snow);
                     }
                 }
             }
@@ -1423,7 +1423,7 @@ namespace terila::world::worldgen {
             const Column& col) const {
             switch (matter_at(x, y, z)) {
             case Substance::Water:
-                return (y == sea_level_ - 1 && biome_of(col).ice_top) ? blocks_.ice : fluid_;
+                return (y == sea_level_ - 1 && frozen_at(col, y)) ? blocks_.ice : fluid_;
             case Substance::Lava:
                 return blocks_.lava;
             case Substance::Solid:
@@ -1435,6 +1435,18 @@ namespace terila::world::worldgen {
 
         const terrain::Biome& biome_of(const Column& col) const {
             return biomes_[static_cast<std::size_t>(col.biome)];
+        }
+
+        // The game's snow line: a biome settles at its own temperature, and above seventeen
+        // blocks over the sea it drops by height until the line is crossed. Nothing falls out
+        // of a sky without precipitation, so that biome never freezes.
+        bool frozen_at(const Column& col, int y) const {
+            const int snow_line = sea_level_ + 17;
+            float temperature = col.ground_temperature;
+            if (y > snow_line) {
+                temperature -= static_cast<float>(y - snow_line) * 0.05f / 40.0f;
+            }
+            return col.precipitation && temperature < 0.15f;
         }
 
         ClimateSample climate_sample(std::int32_t x, std::int32_t z) const {
@@ -1571,6 +1583,17 @@ namespace terila::world::worldgen {
             const ClimateSample climate = climate_sample(x, z);
             result.temperature = static_cast<float>(climate.temperature);
             result.biome = biome_at(x, result.height + 1, z, climate);
+            // The sky the surface freeze reads belongs to the biome the game names this cell,
+            // which is the nearest entry of the climate table rather than the box that holds
+            // the point: the two disagree only on the edges of a table this build does not
+            // carry in full.
+            if (const std::string* biome_name = settings_.climate().nearest(
+                    climate_point_at(x, result.height, z, climate))) {
+                if (const auto ground = settings_.ground(*biome_name)) {
+                    result.ground_temperature = ground->temperature;
+                    result.precipitation = ground->precipitation;
+                }
+            }
             result.surface_depth = surface_depth_of(x, z);
             result.surface_secondary = surface_secondary_of(x, z);
             result.preliminary = result.height;
@@ -1734,6 +1757,8 @@ namespace terila::world::worldgen {
                 ? (fz >= 0.5f ? d : b)
                 : (fz >= 0.5f ? c : a);
             result.biome = nearest.biome;
+            result.ground_temperature = nearest.ground_temperature;
+            result.precipitation = nearest.precipitation;
             result.surface_depth = nearest.surface_depth;
             result.surface_secondary = nearest.surface_secondary;
             // The level the surface rules call ground has to be the height this column actually

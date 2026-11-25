@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -72,6 +73,7 @@ namespace terila::world::worldgen {
                 }
                 climate_ready_ = true;
             }
+            load_ground();
 
             material_rules_ = read_json("registries/dump/minecraft/worldgen/material_rule.json");
             material_conditions_ = read_json(
@@ -146,9 +148,44 @@ namespace terila::world::worldgen {
             return found == router_.end() ? nullptr : found->second;
         }
 
+        // What a biome's own sky does at its surface: the temperature it settles at and whether
+        // anything falls out of it. The caller runs the height term of the game's snow line on
+        // top of these; a name the data does not list answers nothing.
+        struct Ground {
+            float temperature = 1.0f;
+            bool precipitation = false;
+        };
+
+        std::optional<Ground> ground(std::string_view biome) const {
+            const auto found = ground_.find(std::string(biome));
+            if (found == ground_.end()) {
+                return std::nullopt;
+            }
+            return found->second;
+        }
+
         DfPtr final_density() const noexcept { return final_density_; }
         const AquiferFunctions& aquifers() const noexcept { return aquifer_functions_; }
         const Carvers& carvers() const noexcept { return carvers_; }
+
+        // The biome registry carries the two values the surface freeze reads: the temperature a
+        // biome settles at, and whether anything falls out of its sky at all.
+        void load_ground() {
+            const nlohmann::json biomes = read_json("worldgen/biomes.json");
+            if (!biomes.contains("data") || !biomes["data"].is_array()) {
+                return;
+            }
+            for (const auto& entry : biomes["data"]) {
+                if (!entry.contains("data") || !entry["data"].is_object()) {
+                    continue;
+                }
+                const nlohmann::json& data = entry["data"];
+                Ground ground;
+                ground.precipitation = data.value("has_precipitation", true);
+                ground.temperature = static_cast<float>(data.value("temperature", 1.0));
+                ground_[entry.value("id", std::string())] = ground;
+            }
+        }
 
         // The carvers are named by the biome list, so they are read once the biome registry of
         // this build is known.
@@ -223,6 +260,7 @@ namespace terila::world::worldgen {
         nlohmann::json material_rules_;
         nlohmann::json material_conditions_;
         std::unordered_map<std::string, DfPtr> router_;
+        std::unordered_map<std::string, Ground> ground_;
         DfPtr final_density_;
         AquiferFunctions aquifer_functions_;
         Carvers carvers_;

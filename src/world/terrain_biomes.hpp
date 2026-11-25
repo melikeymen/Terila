@@ -113,9 +113,6 @@ namespace terila::world::terrain {
         std::int32_t leaves = 0;
         int tree_chance = 0;          // one tree per N columns, 0 disables trees
         int cactus_chance = 0;        // one cactus per N columns
-        bool snow_cap = false;        // a snow layer on top of the surface
-        int snow_above = 0;           // snow above this surface height, 0 disables
-        bool ice_top = false;         // a frozen surface at sea level
         // The ground plant that stands on the surface block when the column's hash picks it:
         // one plant per cover_chance columns, and one flower per flower_chance columns that
         // takes the grass's place. Decided from the column's own coordinates so the chunk and
@@ -283,8 +280,7 @@ namespace terila::world::terrain {
         out.reserve(kBiomeCount);
         bool complete = true;
         const auto add = [&](const char* name, std::int32_t surface, std::int32_t filler,
-            std::int32_t deep, std::int32_t log, std::int32_t leaves, int trees, int cacti,
-            bool snow, int snow_above = 0, bool ice = false) {
+            std::int32_t deep, std::int32_t log, std::int32_t leaves, int trees, int cacti) {
             const auto resolved = biome(name);
             if (!resolved) {
                 LOG_WARN(Chunk, "terrain: cannot resolve biome '{}'", name);
@@ -292,48 +288,47 @@ namespace terila::world::terrain {
                 complete = false;
                 return;
             }
-            out.push_back(Biome{ *resolved, surface, filler, deep, log, leaves, trees,
-                cacti, snow, snow_above, ice });
+            out.push_back(Biome{ *resolved, surface, filler, deep, log, leaves, trees, cacti });
         };
 
         add("minecraft:deep_ocean", blocks.gravel, blocks.gravel, blocks.stone,
-            0, 0, 0, 0, false);
+            0, 0, 0, 0);
         add("minecraft:ocean", blocks.gravel, blocks.gravel, blocks.stone,
-            0, 0, 0, 0, false);
+            0, 0, 0, 0);
         add("minecraft:frozen_ocean", blocks.gravel, blocks.gravel, blocks.stone,
-            0, 0, 0, 0, true, 0, true);
+            0, 0, 0, 0);
         add("minecraft:beach", blocks.sand, blocks.sand, blocks.sandstone,
-            0, 0, 0, 0, false);
+            0, 0, 0, 0);
         add("minecraft:stony_shore", blocks.stone, blocks.stone, blocks.stone,
-            0, 0, 0, 0, false);
+            0, 0, 0, 0);
         add("minecraft:snowy_plains", blocks.grass, blocks.dirt, blocks.stone,
-            blocks.spruce_log, blocks.spruce_leaves, 150, 0, true);
+            blocks.spruce_log, blocks.spruce_leaves, 150, 0);
         add("minecraft:snowy_taiga", blocks.grass, blocks.dirt, blocks.stone,
-            blocks.spruce_log, blocks.spruce_leaves, 40, 0, true);
+            blocks.spruce_log, blocks.spruce_leaves, 40, 0);
         add("minecraft:taiga", blocks.grass, blocks.dirt, blocks.stone,
-            blocks.spruce_log, blocks.spruce_leaves, 26, 0, false);
+            blocks.spruce_log, blocks.spruce_leaves, 26, 0);
         add("minecraft:windswept_hills", blocks.grass, blocks.dirt, blocks.stone,
-            blocks.spruce_log, blocks.spruce_leaves, 110, 0, false, 150);
+            blocks.spruce_log, blocks.spruce_leaves, 110, 0);
         add("minecraft:stony_peaks", blocks.stone, blocks.stone, blocks.stone,
-            0, 0, 0, 0, false, 120);
+            0, 0, 0, 0);
         add("minecraft:meadow", blocks.grass, blocks.dirt, blocks.stone,
-            blocks.oak_log, blocks.oak_leaves, 200, 0, false);
+            blocks.oak_log, blocks.oak_leaves, 200, 0);
         add("minecraft:plains", blocks.grass, blocks.dirt, blocks.stone,
-            blocks.oak_log, blocks.oak_leaves, 120, 0, false);
+            blocks.oak_log, blocks.oak_leaves, 120, 0);
         add("minecraft:forest", blocks.grass, blocks.dirt, blocks.stone,
-            blocks.oak_log, blocks.oak_leaves, 18, 0, false);
+            blocks.oak_log, blocks.oak_leaves, 18, 0);
         add("minecraft:birch_forest", blocks.grass, blocks.dirt, blocks.stone,
-            blocks.birch_log, blocks.birch_leaves, 20, 0, false);
+            blocks.birch_log, blocks.birch_leaves, 20, 0);
         add("minecraft:swamp", blocks.grass, blocks.coarse_dirt, blocks.stone,
-            blocks.oak_log, blocks.oak_leaves, 70, 0, false);
+            blocks.oak_log, blocks.oak_leaves, 70, 0);
         add("minecraft:jungle", blocks.grass, blocks.dirt, blocks.stone,
-            blocks.jungle_log, blocks.jungle_leaves, 14, 0, false);
+            blocks.jungle_log, blocks.jungle_leaves, 14, 0);
         add("minecraft:savanna", blocks.grass, blocks.dirt, blocks.stone,
-            blocks.acacia_log, blocks.acacia_leaves, 90, 0, false);
+            blocks.acacia_log, blocks.acacia_leaves, 90, 0);
         add("minecraft:badlands", blocks.red_sand, blocks.terracotta, blocks.stone,
-            0, 0, 0, 60, false);
+            0, 0, 0, 60);
         add("minecraft:desert", blocks.sand, blocks.sand, blocks.sandstone,
-            0, 0, 0, 40, false);
+            0, 0, 0, 40);
 
         // The ground cover, in the same BiomeIndex order as the table above. This is the
         // fallback a checkout without worldgen data keeps: the generator overwrites it with

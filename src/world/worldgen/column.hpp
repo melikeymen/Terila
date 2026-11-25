@@ -18,6 +18,10 @@ namespace terila::world::worldgen {
         int height = 0;
         int biome = 0;
         float temperature = 0.0f;
+        // The biome's own climate: the temperature its surface settles at and whether its sky
+        // drops anything at all. The snow line and the ice lid are read from these two.
+        float ground_temperature = 1.0f;
+        bool precipitation = false;
         int surface_depth = 3;
         double surface_secondary = 0.0;
         int preliminary = 0;
