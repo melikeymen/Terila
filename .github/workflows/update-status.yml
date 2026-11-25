@@ -1,9 +1,9 @@
-# Regenerates status.md from the checked in measurement in tools/parity/parity.json and
-# commits it back, so the repository always answers "how close is the world to vanilla?".
+# Measures the world generation for every commit and writes the report in status.md.
 #
-# Re-measuring needs the vanilla server and its region files, so that stays a local step:
-#   python tools/status/update_status.py --measure <vanilla-dump> <terila-dump>
-# and the resulting tools/parity/parity.json is what this workflow renders.
+# Nothing is taken from a checked in number: the run clones the data extractor, builds the game
+# data it needs into input/, generates the same three by three chunk area with the real server and
+# with this generator, and compares the two block by block. Only the report is committed, because
+# everything else in the run is a product of the run itself.
 
 name: Update Status
 
@@ -19,19 +19,293 @@ concurrency:
   group: update-status
   cancel-in-progress: true
 
+env:
+  MINECRAFT_VERSION: "26.3"
+  SEED: "12345"
+  EXTRACTOR_REPOSITORY: "https://github.com/melikeymen/terila-data-extractor.git"
+  RCON_PORT: "25575"
+  RCON_PASSWORD: "parity"
+
 jobs:
   status:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Write status.md
-        run: python tools/status/update_status.py
+      # The data set under input/ is a quarter of a gigabyte of extracted game data, so it is
+      # produced here rather than stored in the repository. The extractor resolves the version
+      # from the launcher manifest, downloads what it needs and writes build/extractor_output.
+      - name: Extract the game data into input
+        run: |
+          start=$(date +%s)
+          git clone --depth 1 "$EXTRACTOR_REPOSITORY" "$RUNNER_TEMP/extractor"
+          cd "$RUNNER_TEMP/extractor"
+          ./gradlew --no-daemon extractAll
+          mv build/extractor_output "$GITHUB_WORKSPACE/input"
+          echo "EXTRACT_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+
+      - name: Build the dump tool
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -S .
+          cmake --build build --parallel 2 --target worldgen_dump
+
+      - name: Generate the area with this generator
+        run: |
+          start=$(date +%s)
+          mkdir -p "$RUNNER_TEMP/terila"
+          for chunk_x in -1 0 1; do
+            for chunk_z in -1 0 1; do
+              ./build/worldgen_dump input "$SEED" "$chunk_x" "$chunk_z" \
+                "$RUNNER_TEMP/terila/${chunk_x}_${chunk_z}.txt"
+            done
+          done
+          echo "TERILA_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+
+      # The server download is a bundler: it carries the real server jar and its libraries inside a
+      # zip, so both are unpacked next to each other and the server is started from a classpath.
+      - name: Download the vanilla server
+        run: |
+          python - <<'PY'
+          import glob, json, os, shutil, urllib.request, zipfile
+
+          version = os.environ["MINECRAFT_VERSION"]
+          manifest = json.load(urllib.request.urlopen(
+              "https://launchermeta.mojang.com/mc/game/version_manifest_v2.json", timeout=120))
+          entry = next(item for item in manifest["versions"] if item["id"] == version)
+          meta = json.load(urllib.request.urlopen(entry["url"], timeout=120))
+
+          work = os.path.join(os.environ["RUNNER_TEMP"], "server")
+          os.makedirs(work, exist_ok=True)
+          bundle = os.path.join(work, "bundler.jar")
+          with urllib.request.urlopen(meta["downloads"]["server"]["url"], timeout=600) as source:
+              with open(bundle, "wb") as target:
+                  shutil.copyfileobj(source, target)
+          with zipfile.ZipFile(bundle) as archive:
+              archive.extractall(work)
+
+          jars = [path for path in glob.glob(os.path.join(work, "**", "*.jar"), recursive=True)
+                  if os.path.basename(path) != "bundler.jar"]
+          inner = next((path for path in jars if "/versions/" in path.replace("\\", "/")),
+                       next(path for path in jars if "server" in os.path.basename(path)))
+          libraries = [path for path in jars
+                       if "/libraries/" in path.replace("\\", "/") and path != inner]
+          classpath = os.pathsep.join([inner] + sorted(libraries))
+
+          settings = {
+              "level-name": "benchmark",
+              "level-seed": os.environ["SEED"],
+              "level-type": "minecraft:normal",
+              "online-mode": "false",
+              "enable-rcon": "true",
+              "rcon.port": os.environ["RCON_PORT"],
+              "rcon.password": os.environ["RCON_PASSWORD"],
+              "broadcast-rcon-to-ops": "false",
+              "spawn-protection": "0",
+              "view-distance": "4",
+              "simulation-distance": "4",
+              "max-tick-time": "-1",
+              "sync-chunk-writes": "true",
+          }
+          with open(os.path.join(work, "server.properties"), "w", encoding="utf-8") as file:
+              for key, value in settings.items():
+                  file.write("%s=%s\n" % (key, value))
+          with open(os.path.join(work, "eula.txt"), "w", encoding="utf-8") as file:
+              file.write("eula=true\n")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as file:
+              file.write("SERVER_DIR=%s\n" % work)
+              file.write("SERVER_CLASSPATH=%s\n" % classpath)
+          print("server jar:", inner)
+          print("libraries:", len(libraries))
+          PY
+
+      # The server is started once and answers the chunk requests over RCON: force loading the area
+      # is what makes it generate the chunks, and the flush before stopping is what puts them in
+      # the region files the dumps are read from.
+      - name: Generate the area with the real server
+        run: |
+          start=$(date +%s)
+          cd "$SERVER_DIR"
+          java -Xmx3G -cp "$SERVER_CLASSPATH" net.minecraft.server.Main nogui > server.log 2>&1 &
+          server_pid=$!
+          for attempt in $(seq 1 120); do
+            grep -q 'Done (' server.log && break
+            sleep 2
+          done
+          if ! grep -q 'Done (' server.log; then
+            tail -40 server.log
+            exit 1
+          fi
+
+          python - <<'PY'
+          import os, socket, struct, sys, time
+
+          def packet(request_id, kind, body):
+              payload = struct.pack("<ii", request_id, kind) + body.encode("utf8") + b"\x00\x00"
+              return struct.pack("<i", len(payload)) + payload
+
+          class Rcon:
+              # A reply arrives as one or more packets, each carrying its own id, so the answer to
+              # a command is every packet that repeats the id it was sent with.
+              def __init__(self, port, password):
+                  self.socket = socket.create_connection(("127.0.0.1", port), timeout=120)
+                  self.request_id = 0
+                  self.call(password, kind=3)
+
+              def _read(self):
+                  raw = b""
+                  while len(raw) < 4:
+                      chunk = self.socket.recv(4 - len(raw))
+                      if not chunk:
+                          raise RuntimeError("the server closed the rcon connection")
+                      raw += chunk
+                  size = struct.unpack("<i", raw)[0]
+                  body = b""
+                  while len(body) < size:
+                      body += self.socket.recv(size - len(body))
+                  request_id, _kind = struct.unpack("<ii", body[:8])
+                  return request_id, body[8:-2].decode("utf8", "replace")
+
+              def call(self, command, kind=2):
+                  self.request_id += 1
+                  self.socket.sendall(packet(self.request_id, kind, command))
+                  answer = ""
+                  while True:
+                      request_id, part = self._read()
+                      answer += part
+                      if request_id == self.request_id:
+                          return answer
+
+          rcon = Rcon(int(os.environ["RCON_PORT"]), os.environ["RCON_PASSWORD"])
+          answer = rcon.call("seed")
+          print("seed ->", answer)
+          if os.environ["SEED"] not in answer:
+              raise SystemExit("the world was not created with seed %s: %s"
+                               % (os.environ["SEED"], answer))
+          print("forceload ->", rcon.call("forceload add -16 -16 31 31"))
+          time.sleep(60)
+          for command in ("forceload query", "save-all flush"):
+              print(command, "->", rcon.call(command))
+          rcon.call("stop")
+          PY
+
+          wait "$server_pid"
+          echo "SERVER_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+          find "$SERVER_DIR/benchmark" -name "*.mca" | head -20
+
+      - name: Dump the vanilla chunks
+        run: |
+          region=$(find "$SERVER_DIR/benchmark" -path "*overworld/region" -type d | head -1)
+          if [ -z "$region" ]; then
+            echo "no overworld region directory in $SERVER_DIR/benchmark" >&2
+            find "$SERVER_DIR/benchmark" -maxdepth 3 -type d >&2
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/vanilla"
+          for chunk_x in -1 0 1; do
+            for chunk_z in -1 0 1; do
+              python tools/parity/vanilla_dump.py input \
+                "$region/r.$((chunk_x >> 5)).$((chunk_z >> 5)).mca" "$chunk_x" "$chunk_z" \
+                "$RUNNER_TEMP/vanilla/${chunk_x}_${chunk_z}.txt"
+            done
+          done
+
+      - name: Write the report
+        run: |
+          python - <<'PY'
+          import datetime, os, sys
+
+          sys.path.insert(0, "tools/parity")
+          import compare
+
+          result = compare.summarize_area("input", os.path.join(os.environ["RUNNER_TEMP"], "vanilla"),
+                                          os.path.join(os.environ["RUNNER_TEMP"], "terila"))
+          commit = os.environ.get("GITHUB_SHA", "")[:8]
+          blocks = result["blocks"]
+          biomes = result.get("biomes", {})
+          chunks = result.get("chunks", {})
+          if chunks.get("count") != 9:
+              raise SystemExit("only %s of the 9 chunk dumps were compared" % chunks.get("count"))
+
+          lines = [
+              "# Project status",
+              "",
+              "Measured by the Update Status workflow for commit `%s` on %s. The run extracts the "
+              "game data, generates the same %d chunks with a real %s server and with this "
+              "generator, and compares them block by block."
+              % (commit, datetime.date.today().isoformat(), chunks.get("count", 0),
+                 os.environ["MINECRAFT_VERSION"]),
+              "",
+              "## Benchmark",
+              "",
+              "| Stage | Time (seconds) |",
+              "| --- | --- |",
+              "| Extracting the game data (Minecraft %s) | %s |"
+              % (os.environ["MINECRAFT_VERSION"], os.environ.get("EXTRACT_SECONDS", "?")),
+              "| Generating the area with the real server | %s |"
+              % os.environ.get("SERVER_SECONDS", "?"),
+              "| Generating the area with this generator | %s |"
+              % os.environ.get("TERILA_SECONDS", "?"),
+              "",
+              "## World generation parity",
+              "",
+              "Seed %s, %d chunks compared block by block." % (os.environ["SEED"],
+                                                              chunks.get("count", 0)),
+              "",
+              "| Measurement | Result |",
+              "| --- | --- |",
+              "| Blocks matching vanilla | %d / %d (%.2f%%)"
+              % (blocks["matched"], blocks["compared"], blocks["percent"]),
+          ]
+          if biomes:
+              lines.append("| Biomes matching vanilla | %d / %d (%.2f%%)"
+                           % (biomes["matched"], biomes["compared"], biomes["percent"]))
+          lines += [
+              "",
+              "### Blocks that differ, by height",
+              "",
+              "| Height | Mismatched | Total | Share |",
+              "| --- | --- | --- | --- |",
+          ]
+          for band in result["bands"]:
+              lines.append("| %s | %d | %d | %.2f%% |"
+                           % (band["band"], band["wrong"], band["total"], band["percent"]))
+          lines += [
+              "",
+              "### Chunks furthest from vanilla",
+              "",
+              "| Chunk | Blocks matching | Biomes matching |",
+              "| --- | --- | --- |",
+          ]
+          for chunk in chunks.get("worst", []):
+              lines.append("| %s | %.2f%% | %.2f%% |"
+                           % (chunk["chunk"], chunk["blocks"], chunk["biomes"]))
+          lines += [
+              "",
+              "### Most common remaining differences",
+              "",
+              "| Vanilla | Terila | Blocks |",
+              "| --- | --- | --- |",
+          ]
+          for pair in result["pairs"]:
+              lines.append("| %s | %s | %d |" % (pair["vanilla"], pair["terila"], pair["count"]))
+          lines.append("")
+
+          with open("status.md", "w", encoding="utf-8", newline="\n") as file:
+              file.write("\n".join(lines))
+          print("blocks %.2f%%, biomes %.2f%%" % (blocks["percent"],
+                                                 biomes.get("percent", 0.0)))
+          PY
 
       - name: Commit the report when it changed
         run: |
@@ -42,5 +316,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add status.md
-          git commit -m "docs(status): refresh the world generation parity report"
+          git commit -m "docs(status): refresh the world generation benchmark"
           git push
