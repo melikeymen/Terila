@@ -128,10 +128,25 @@ namespace terila::world::worldgen {
                 }
             }
 
-            const std::int64_t origin_x = static_cast<std::int64_t>(view.cx) * 16;
-            const std::int64_t origin_z = static_cast<std::int64_t>(view.cz) * 16;
-            const std::int64_t decoration = decoration_seed(origin_x, origin_z);
+            // A vein is centred in its own chunk but its body reaches across the border, and
+            // the game lets the features of the surrounding chunks write into the one being
+            // generated. The same walk runs for that ring here; every pass writes only the
+            // cells that belong to this chunk, so a vein from a neighbour lands where it
+            // would have landed had the world generated that neighbour first.
+            for (int dz = -1; dz <= 1; ++dz) {
+                for (int dx = -1; dx <= 1; ++dx) {
+                    decorate_from(pass, (view.cx + dx) * 16, (view.cz + dz) * 16);
+                }
+            }
+        }
 
+    private:
+        struct Pass;
+
+        // Every step of the decoration order for one chunk origin, seeded the way the game
+        // seeds a chunk's features so the same seed always grows the same veins.
+        void decorate_from(Pass& pass, std::int32_t origin_x, std::int32_t origin_z) const {
+            const std::int64_t decoration = decoration_seed(origin_x, origin_z);
             for (std::size_t step = 0; step < steps_.size(); ++step) {
                 const std::vector<Entry>& order = steps_[step];
                 for (std::size_t position = 0; position < order.size(); ++position) {
@@ -143,13 +158,11 @@ namespace terila::world::worldgen {
                     RandomSource random = RandomSource::from_seed(static_cast<std::uint64_t>(
                         decoration + static_cast<std::int64_t>(position) +
                         static_cast<std::int64_t>(10000) * static_cast<std::int64_t>(step)));
-                    place_feature(pass, feature, random, static_cast<std::int32_t>(origin_x),
-                        static_cast<std::int32_t>(origin_z));
+                    place_feature(pass, feature, random, origin_x, origin_z);
                 }
             }
         }
 
-    private:
         // One rule of a target: the game tests the block a vein is about to replace against a
         // small tree of predicates rather than against a single block.
         struct Predicate {
