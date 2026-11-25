@@ -294,13 +294,21 @@ namespace terila::world::worldgen {
             return RandomSource(seed ^ seed_lo_, seed ^ seed_hi_);
         }
 
+        // A position is folded into one long by the game's grid hash: the x term wraps at
+        // thirty two bits, the whole thing is squared, and the low half is dropped so
+        // neighbouring blocks share nothing.
         RandomSource at(int x, int y, int z) const {
-            std::uint64_t positional = (static_cast<std::uint64_t>(x * 3129871) &
-                0xFFFFFFFFull) ^ (static_cast<std::uint64_t>(z) * 116129781ull) ^
-                static_cast<std::uint64_t>(y);
+            const std::uint64_t mixed_x = static_cast<std::uint64_t>(
+                static_cast<std::int64_t>(static_cast<std::int32_t>(
+                    static_cast<std::uint32_t>(x) * 3129871u)));
+            std::uint64_t positional = mixed_x ^
+                (static_cast<std::uint64_t>(static_cast<std::int64_t>(z)) * 116129781ull) ^
+                static_cast<std::uint64_t>(static_cast<std::int64_t>(y));
             positional = positional * positional * 42317861ull + positional * 11ull;
-            positional >>= 16;
-            return RandomSource(positional ^ seed_lo_, seed_hi_);
+            // The game keeps the sign of the hash here, so the shift carries it down.
+            const std::uint64_t seed = static_cast<std::uint64_t>(
+                static_cast<std::int64_t>(positional) >> 16);
+            return RandomSource(seed ^ seed_lo_, seed_hi_);
         }
 
     private:

@@ -158,7 +158,7 @@ namespace terila::world::worldgen {
                     }
                     return biomes_[static_cast<std::size_t>(index)].id;
                 },
-                settings_.material_rule_id(), min_y_)) {
+                settings_.material_rule_id(), min_y_, seed_)) {
                 LOG_WARN(Chunk, "terrain: the material rules cannot be loaded");
                 return false;
             }
@@ -741,6 +741,9 @@ namespace terila::world::worldgen {
         static constexpr int kNetherLavaLevel = 32;
         // How far below the preliminary surface the material chain still paints blocks.
         static constexpr int kSurfaceWindow = 8;
+        // The stone to deepslate fade runs from y=1 to y=7; above it the deep filler is stone
+        // and below it deepslate, so only the band has to ask the material chain.
+        static constexpr int kDeepslateFadeTop = 8;
 
         struct ClimateSample {
             double temperature = 0.0;
@@ -1112,8 +1115,9 @@ namespace terila::world::worldgen {
             return min_y_;
         }
 
-        // The game fades stone into deepslate over the eight blocks above y=0: a block there
-        // is deepslate with a chance that falls from seven eighths at y=1 to nothing at y=8.
+        // The game fades stone into deepslate over the eight blocks above y=0, and that band is
+        // the one place the material chain has to draw: every cell above it is stone and every
+        // cell below it deepslate, so the rest of the deep filler needs no rule at all.
         std::int32_t deep_filler(std::int32_t x, std::int32_t y, std::int32_t z) const {
             // The nether and the end have no deepslate gradient: everything under the
             // surface is the dimension's own rock.
@@ -1125,25 +1129,15 @@ namespace terila::world::worldgen {
             if (const std::int32_t vein = ores_.vein_at(x, y, z); vein != 0) {
                 return vein;
             }
-            if (blocks_.deepslate == blocks_.stone || y >= 8) {
-                return blocks_.stone;
-            }
-            if (y <= 0) {
-                return blocks_.deepslate;
-            }
-            const std::uint64_t hash = terrain::detail::hash64(
-                (static_cast<std::uint64_t>(static_cast<std::uint32_t>(x)) << 42) ^
-                (static_cast<std::uint64_t>(static_cast<std::uint32_t>(z)) << 12) ^
-                static_cast<std::uint64_t>(static_cast<std::uint32_t>(y)) ^ 0x6A09E667ull);
-            return (hash % 8) < static_cast<std::uint64_t>(8 - y) ? blocks_.deepslate
-                                                                 : blocks_.stone;
+            return y <= 0 ? blocks_.deepslate : blocks_.stone;
         }
 
         std::int32_t painted_at(std::int32_t x, std::int32_t y, std::int32_t z,
             const Column& col, int stone_above, int stone_below, int water_height) const {
             // Deep under the surface the chain can only answer the deepslate gradient, which
             // is the y test below; skipping the chain there keeps a chunk affordable.
-            if (y + kSurfaceWindow < col.preliminary && y > min_y_ + 5) {
+            if (y + kSurfaceWindow < col.preliminary && y > min_y_ + 5 &&
+                (y <= 0 || y >= kDeepslateFadeTop)) {
                 return deep_filler(x, y, z);
             }
             MaterialContext context;

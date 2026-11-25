@@ -141,7 +141,13 @@ namespace terila::world::worldgen {
         }
 
     private:
-        struct Pass;
+        // Everything one chunk needs while the pass runs, carried explicitly so two threads
+        // generating two chunks cannot see each other's chunk.
+        struct Pass {
+            const DecorationView* view = nullptr;
+            Overlay* overlay = nullptr;
+            std::vector<int> heights;
+        };
 
         // Every step of the decoration order for one chunk origin, seeded the way the game
         // seeds a chunk's features so the same seed always grows the same veins.
@@ -150,15 +156,29 @@ namespace terila::world::worldgen {
             for (std::size_t step = 0; step < steps_.size(); ++step) {
                 const std::vector<Entry>& order = steps_[step];
                 for (std::size_t position = 0; position < order.size(); ++position) {
-                    if (order[position].ore < 0) {
+                    const Entry& entry = order[position];
+                    if (entry.ore < 0 && entry.disk < 0) {
                         continue;
                     }
-                    const OreFeature& feature = features_[static_cast<std::size_t>(
-                        order[position].ore)];
                     RandomSource random = RandomSource::from_seed(static_cast<std::uint64_t>(
                         decoration + static_cast<std::int64_t>(position) +
                         static_cast<std::int64_t>(10000) * static_cast<std::int64_t>(step)));
-                    place_feature(pass, feature, random, origin_x, origin_z);
+                    if (entry.ore >= 0) {
+                        const OreFeature& feature = features_[static_cast<std::size_t>(
+                            entry.ore)];
+                        place_feature(pass, feature.modifiers, feature.biomes, random, origin_x,
+                            origin_z, [&](int x, int y, int z) {
+                                vein(pass, feature, random, x, y, z);
+                            });
+                    }
+                    else {
+                        const DiskFeature& feature = disks_[static_cast<std::size_t>(
+                            entry.disk)];
+                        place_feature(pass, feature.modifiers, feature.biomes, random, origin_x,
+                            origin_z, [&](int x, int y, int z) {
+                                disk(pass, feature, random, x, y, z);
+                            });
+                    }
                 }
             }
         }
@@ -209,10 +229,28 @@ namespace terila::world::worldgen {
             std::int32_t state = 0;
         };
 
+        // The predicate a placement modifier or a disk target tests: the same small tree as a
+        // vein target, plus the offset every read can carry and the fluid and solid tests a
+        // disk asks about.
+        struct BlockPredicate {
+            enum class Kind : std::uint8_t { Never, Block, Fluid, Solid, All, Any, Not };
+
+            Kind kind = Kind::Never;
+            std::unordered_set<std::int32_t> states;
+            int dx = 0;
+            int dy = 0;
+            int dz = 0;
+            std::vector<BlockPredicate> children;
+
+            bool matches(const Pass& pass, int x, int y, int z) const;
+        };
+
         // One placement modifier. The order the data lists them in is the order the game runs
         // them, and every one of them may draw from the feature's stream.
         struct Modifier {
-            enum class Kind : std::uint8_t { Count, Rarity, InSquare, HeightRange, Biome };
+            enum class Kind : std::uint8_t {
+                Count, Rarity, InSquare, HeightRange, Biome, Heightmap, Filter, Offset,
+            };
 
             struct Anchor {
                 enum class Kind : std::uint8_t { Absolute, AboveBottom, BelowTop, SeaLevel };
@@ -227,6 +265,10 @@ namespace terila::world::worldgen {
             int count_max = 1;
             bool trapezoid = false;
             int plateau = 0;
+            int dx = 0;
+            int dy = 0;
+            int dz = 0;
+            BlockPredicate filter;
             Anchor min_anchor;
             Anchor max_anchor;
         };
@@ -240,19 +282,27 @@ namespace terila::world::worldgen {
             std::vector<std::uint8_t> biomes;
         };
 
-        // A placed feature in the game's order: its name for the log, and the ore it grows when
-        // this checkout grows one.
+        // A disk is a flat blob of one block painted into a round patch of the sea floor. The
+        // state provider is a short rule list, so a sand disk lays sandstone where it sits on
+        // top of a cave opening.
+        struct DiskFeature {
+            std::string name;
+            std::vector<std::pair<BlockPredicate, std::int32_t>> rules;
+            std::int32_t fallback = -1;
+            BlockPredicate target;
+            int radius_min = 0;
+            int radius_max = 0;
+            int half_height = 0;
+            std::vector<Modifier> modifiers;
+            std::vector<std::uint8_t> biomes;
+        };
+
+        // A placed feature in the game's order: its name for the log, and the body it grows
+        // when this checkout grows one.
         struct Entry {
             std::string name;
             int ore = -1;
-        };
-
-        // Everything one chunk needs while the pass runs, carried explicitly so two threads
-        // generating two chunks cannot see each other's chunk.
-        struct Pass {
-            const DecorationView* view = nullptr;
-            Overlay* overlay = nullptr;
-            std::vector<int> heights;
+            int disk = -1;
         };
 
         static Json read_json(const std::string& relative) {
@@ -388,6 +438,129 @@ namespace terila::world::worldgen {
             return predicate;
         }
 
+        BlockPredicate parse_block_predicate(const Json& value) const {
+            BlockPredicate predicate;
+            if (!value.is_object()) {
+                return predicate;
+            }
+            if (value.contains("offset") && value["offset"].is_array() &&
+                value["offset"].size() == 3) {
+                predicate.dx = value["offset"][0].get<int>();
+                predicate.dy = value["offset"][1].get<int>();
+                predicate.dz = value["offset"][2].get<int>();
+            }
+            const std::string type = value.value("type", std::string());
+            if (type == "minecraft:matching_blocks") {
+                const Json& blocks = value.contains("blocks") ? value["blocks"]
+                    : value.value("block", Json());
+                const auto add = [&](const Json& entry) {
+                    if (!entry.is_string()) {
+                        return;
+                    }
+                    if (const auto state = block_(entry.get<std::string>())) {
+                        predicate.states.insert(*state);
+                    }
+                };
+                if (blocks.is_array()) {
+                    for (const auto& entry : blocks) {
+                        add(entry);
+                    }
+                }
+                else {
+                    add(blocks);
+                }
+                predicate.kind = predicate.states.empty() ? BlockPredicate::Kind::Never
+                    : BlockPredicate::Kind::Block;
+            }
+            else if (type == "minecraft:matching_fluids") {
+                const Json& fluids = value.contains("fluids") ? value["fluids"]
+                    : value.value("fluid", Json());
+                const auto add = [&](const Json& entry) {
+                    if (entry.is_string()) {
+                        if (const auto state = block_(entry.get<std::string>())) {
+                            predicate.states.insert(*state);
+                        }
+                    }
+                };
+                if (fluids.is_array()) {
+                    for (const auto& entry : fluids) {
+                        add(entry);
+                    }
+                }
+                else {
+                    add(fluids);
+                }
+                predicate.kind = predicate.states.empty() ? BlockPredicate::Kind::Never
+                    : BlockPredicate::Kind::Fluid;
+            }
+            else if (type == "minecraft:solid") {
+                predicate.kind = BlockPredicate::Kind::Solid;
+            }
+            else if (type == "minecraft:all_of" || type == "minecraft:any_of") {
+                predicate.kind = type == "minecraft:all_of" ? BlockPredicate::Kind::All
+                    : BlockPredicate::Kind::Any;
+                const Json& rules = value.contains("predicates") ? value["predicates"]
+                    : value.value("rules", Json::array());
+                if (rules.is_array()) {
+                    for (const auto& rule : rules) {
+                        predicate.children.push_back(parse_block_predicate(rule));
+                    }
+                }
+            }
+            else if (type == "minecraft:not") {
+                predicate.kind = BlockPredicate::Kind::Not;
+                const Json& rule = value.contains("predicate") ? value["predicate"]
+                    : value.value("rule", Json());
+                predicate.children.push_back(parse_block_predicate(rule));
+            }
+            return predicate;
+        }
+
+        // A block state provider is either one block or a rule list with a fallback; a rule
+        // whose predicate holds wins before the fallback is asked.
+        bool parse_state_provider(const Json& value, DiskFeature& feature) const {
+            if (!value.is_object()) {
+                return false;
+            }
+            if (value.contains("id")) {
+                const auto state = block_(value.value("id", std::string()));
+                if (!state) {
+                    return false;
+                }
+                feature.fallback = *state;
+                return true;
+            }
+            if (value.value("type", std::string()) != "minecraft:rule_based") {
+                return false;
+            }
+            const Json& fallback = value.value("fallback", Json());
+            if (fallback.is_object() && fallback.contains("id")) {
+                if (const auto state = block_(fallback.value("id", std::string()))) {
+                    feature.fallback = *state;
+                }
+            }
+            const Json& rules = value.value("rules", Json::array());
+            if (!rules.is_array()) {
+                return false;
+            }
+            for (const auto& rule : rules) {
+                if (!rule.is_object()) {
+                    return false;
+                }
+                const Json& then_block = rule.value("then", Json());
+                if (!then_block.is_object() || !then_block.contains("id")) {
+                    return false;
+                }
+                const auto state = block_(then_block.value("id", std::string()));
+                if (!state) {
+                    return false;
+                }
+                BlockPredicate condition = parse_block_predicate(rule.value("if_true", Json()));
+                feature.rules.emplace_back(std::move(condition), *state);
+            }
+            return feature.fallback >= 0 || !feature.rules.empty();
+        }
+
         static Modifier::Anchor parse_anchor(const Json& value) {
             Modifier::Anchor anchor;
             if (!value.is_object()) {
@@ -426,10 +599,10 @@ namespace terila::world::worldgen {
             return anchor.value;
         }
 
-        // Only the modifiers an ore vein of this checkout uses are understood; a feature that
+        // Only the modifiers a feature of this checkout uses are understood; a feature that
         // asks for anything else is dropped whole rather than placed somewhere the game would
         // not have put it.
-        bool parse_modifiers(const Json& placement, OreFeature& feature) const {
+        bool parse_modifiers(const Json& placement, std::vector<Modifier>& out) const {
             if (!placement.is_array()) {
                 return false;
             }
@@ -483,16 +656,32 @@ namespace terila::world::worldgen {
                 else if (type == "minecraft:biome") {
                     modifier.kind = Modifier::Kind::Biome;
                 }
+                else if (type == "minecraft:heightmap") {
+                    // Every heightmap the overworld places features on counts the same
+                    // blocks: the first cell above the sea floor.
+                    modifier.kind = Modifier::Kind::Heightmap;
+                }
+                else if (type == "minecraft:offset") {
+                    modifier.kind = Modifier::Kind::Offset;
+                    modifier.dx = entry.value("x", 0);
+                    modifier.dy = entry.value("y", 0);
+                    modifier.dz = entry.value("z", 0);
+                }
+                else if (type == "minecraft:block_predicate_filter") {
+                    modifier.kind = Modifier::Kind::Filter;
+                    modifier.filter = parse_block_predicate(entry.value("predicate", Json()));
+                }
                 else {
                     return false;
                 }
-                feature.modifiers.push_back(modifier);
+                out.push_back(modifier);
             }
             return true;
         }
 
         void build_features() {
             std::unordered_map<std::string, int> index_of;
+            std::unordered_map<std::string, int> disk_index_of;
             for (const auto& [id, data] : placed_) {
                 const std::string configured = data->value("feature", std::string());
                 const auto found = configured_.find(configured);
@@ -500,6 +689,31 @@ namespace terila::world::worldgen {
                     continue;
                 }
                 const Json& config = *found->second;
+                if (config.value("type", std::string()) == "minecraft:disk") {
+                    DiskFeature disk;
+                    disk.name = id;
+                    disk.half_height = config.value("half_height", 0);
+                    const Json& radius = config.value("radius", Json());
+                    if (!radius.is_object()) {
+                        continue;
+                    }
+                    disk.radius_min = radius.value("min_inclusive", 0);
+                    disk.radius_max = radius.value("max_inclusive", 0);
+                    if (disk.radius_max < disk.radius_min || disk.radius_max > 8 ||
+                        disk.half_height < 0 || disk.half_height > 4) {
+                        continue;
+                    }
+                    disk.target = parse_block_predicate(config.value("target", Json()));
+                    if (!parse_state_provider(config.value("state_provider", Json()), disk) ||
+                        !parse_modifiers(data->value("placement", Json::array()),
+                            disk.modifiers)) {
+                        continue;
+                    }
+                    disk.biomes.assign(biome_names_.size(), 0);
+                    disk_index_of[id] = static_cast<int>(disks_.size());
+                    disks_.push_back(std::move(disk));
+                    continue;
+                }
                 if (config.value("type", std::string()) != "minecraft:ore") {
                     continue;
                 }
@@ -525,7 +739,8 @@ namespace terila::world::worldgen {
                     feature.targets.push_back(std::move(parsed));
                 }
                 if (feature.targets.empty() ||
-                    !parse_modifiers(data->value("placement", Json::array()), feature)) {
+                    !parse_modifiers(data->value("placement", Json::array()),
+                        feature.modifiers)) {
                     continue;
                 }
                 feature.biomes.assign(biome_names_.size(), 0);
@@ -557,6 +772,14 @@ namespace terila::world::worldgen {
                                 feature.biomes[static_cast<std::size_t>(biome)] = 1;
                             }
                         }
+                        const auto disk = disk_index_of.find(entry.get<std::string>());
+                        if (disk != disk_index_of.end()) {
+                            DiskFeature& feature = disks_[static_cast<std::size_t>(
+                                disk->second)];
+                            if (static_cast<std::size_t>(biome) < feature.biomes.size()) {
+                                feature.biomes[static_cast<std::size_t>(biome)] = 1;
+                            }
+                        }
                     }
                 }
             }
@@ -573,6 +796,7 @@ namespace terila::world::worldgen {
             int feature = 0;
             std::string name;
             int ore = -1;
+            int disk = -1;
         };
 
         void build_order() {
@@ -611,6 +835,7 @@ namespace terila::world::worldgen {
                                 node.feature = feature->second;
                                 node.name = name;
                                 node.ore = find_ore(name);
+                                node.disk = find_disk(name);
                                 seen = node_index.emplace(key,
                                     static_cast<int>(nodes.size())).first;
                                 nodes.push_back(std::move(node));
@@ -700,13 +925,22 @@ namespace terila::world::worldgen {
             for (int node : post) {
                 const Node& entry = nodes[static_cast<std::size_t>(node)];
                 steps_[static_cast<std::size_t>(entry.step)].push_back({ entry.name,
-                    entry.ore });
+                    entry.ore, entry.disk });
             }
         }
 
         int find_ore(const std::string& name) const {
             for (std::size_t index = 0; index < features_.size(); ++index) {
                 if (features_[index].name == name) {
+                    return static_cast<int>(index);
+                }
+            }
+            return -1;
+        }
+
+        int find_disk(const std::string& name) const {
+            for (std::size_t index = 0; index < disks_.size(); ++index) {
+                if (disks_[index].name == name) {
                     return static_cast<int>(index);
                 }
             }
@@ -763,10 +997,12 @@ namespace terila::world::worldgen {
         // The modifier chain: a number of starts, each moved inside the chunk, dropped on a
         // height and filtered by its biome, then the vein body. Every start draws its square
         // and its height before the body runs, in the order the data lists the modifiers.
-        void place_feature(Pass& pass, const OreFeature& feature, RandomSource& random,
-            std::int32_t origin_x, std::int32_t origin_z) const {
+        template <typename Body>
+        void place_feature(Pass& pass, const std::vector<Modifier>& modifiers,
+            const std::vector<std::uint8_t>& biomes, RandomSource& random,
+            std::int32_t origin_x, std::int32_t origin_z, Body&& body) const {
             int count = 1;
-            for (const Modifier& modifier : feature.modifiers) {
+            for (const Modifier& modifier : modifiers) {
                 if (modifier.kind == Modifier::Kind::Count) {
                     count = modifier.count_uniform
                         ? modifier.count_min + random.next_legacy_int(
@@ -779,7 +1015,7 @@ namespace terila::world::worldgen {
                 std::int32_t z = origin_z;
                 std::int32_t y = pass.view->min_y;
                 bool drop = false;
-                for (const Modifier& modifier : feature.modifiers) {
+                for (const Modifier& modifier : modifiers) {
                     switch (modifier.kind) {
                     case Modifier::Kind::Count:
                         break;
@@ -819,19 +1055,86 @@ namespace terila::world::worldgen {
                         const int biome = pass.view->biome_at
                             ? pass.view->biome_at(x, y, z) : -1;
                         if (biome < 0 ||
-                            static_cast<std::size_t>(biome) >= feature.biomes.size() ||
-                            feature.biomes[static_cast<std::size_t>(biome)] == 0) {
+                            static_cast<std::size_t>(biome) >= biomes.size() ||
+                            biomes[static_cast<std::size_t>(biome)] == 0) {
                             drop = true;
                         }
                         break;
                     }
+                    case Modifier::Kind::Heightmap: {
+                        // The heightmap answers the cell above the topmost solid block, so a
+                        // disk dropped on the sea floor starts at the water.
+                        const std::size_t column = static_cast<std::size_t>(z & 15) * 16 +
+                            static_cast<std::size_t>(x & 15);
+                        y = pass.heights[column] + 1;
+                        if (y <= pass.view->min_y) {
+                            drop = true;
+                        }
+                        break;
+                    }
+                    case Modifier::Kind::Filter:
+                        if (!modifier.filter.matches(pass, x, y, z)) {
+                            drop = true;
+                        }
+                        break;
+                    case Modifier::Kind::Offset:
+                        x += modifier.dx;
+                        y += modifier.dy;
+                        z += modifier.dz;
+                        break;
                     }
                 }
                 if (drop) {
                     continue;
                 }
-                vein(pass, feature, random, x, y, z);
+                body(x, y, z);
             }
+        }
+
+        // The disk body: a round patch of columns, each painted from the top of the disk down
+        // until the run of matching blocks ends.
+        void disk(Pass& pass, const DiskFeature& feature, RandomSource& random,
+            std::int32_t origin_x, std::int32_t origin_y, std::int32_t origin_z) const {
+            const int span = feature.radius_max - feature.radius_min;
+            const int radius = feature.radius_min +
+                (span > 0 ? random.next_legacy_int(span + 1) : 0);
+            const int top = origin_y + feature.half_height;
+            const int bottom = origin_y - feature.half_height - 1;
+            for (int x = origin_x - radius; x <= origin_x + radius; ++x) {
+                const int dx = x - origin_x;
+                for (int z = origin_z - radius; z <= origin_z + radius; ++z) {
+                    const int dz = z - origin_z;
+                    if (dx * dx + dz * dz > radius * radius) {
+                        continue;
+                    }
+                    // The column is walked from the top of the disk down, and a gap does not
+                    // stop the walk: the game paints every run of matching cells it finds.
+                    for (int y = top; y > bottom; --y) {
+                        if (!feature.target.matches(pass, x, y, z)) {
+                            continue;
+                        }
+                        const std::int32_t state = disk_state(pass, feature, random, x, y, z);
+                        if (state < 0 || !inside(pass, x, y, z)) {
+                            continue;
+                        }
+                        write(pass, x, y, z, state);
+                    }
+                }
+            }
+
+        }
+
+        // The first rule of the provider whose predicate holds wins; the fallback answers when
+        // no rule does, and -1 stops the column.
+        static std::int32_t disk_state(const Pass& pass, const DiskFeature& feature,
+            RandomSource& random, int x, int y, int z) {
+            (void)random;
+            for (const auto& rule : feature.rules) {
+                if (rule.first.matches(pass, x, y, z)) {
+                    return rule.second;
+                }
+            }
+            return feature.fallback;
         }
 
         // The vein body: a line of growing spheres from one end to the other, every sphere
@@ -968,11 +1271,14 @@ namespace terila::world::worldgen {
 
         // One cell inside the vein's box: the first target whose rule accepts the block under
         // it wins, and a target that rolls against air exposure may still drop the cell.
+        static bool inside(const Pass& pass, int x, int y, int z) {
+            return x >= pass.view->cx * 16 && x < pass.view->cx * 16 + 16 &&
+                z >= pass.view->cz * 16 && z < pass.view->cz * 16 + 16;
+        }
+
         void apply(Pass& pass, const OreFeature& feature, RandomSource& random, int x, int y,
             int z) const {
-            const bool inside = x >= pass.view->cx * 16 && x < pass.view->cx * 16 + 16 &&
-                z >= pass.view->cz * 16 && z < pass.view->cz * 16 + 16;
-            if (!inside) {
+            if (!inside(pass, x, y, z)) {
                 return;
             }
             const std::int32_t state = current(pass, x, y, z);
@@ -1058,8 +1364,47 @@ namespace terila::world::worldgen {
         std::vector<std::string> biome_names_;
         std::unordered_map<std::string, int> biome_ids_;
         std::vector<OreFeature> features_;
+        std::vector<DiskFeature> disks_;
         std::vector<std::vector<Entry>> steps_;
         bool loaded_ = false;
     };
+
+    // A block predicate reads one cell of the chunk (with its offset applied) and answers the
+    // small tree the data describes. A cell the pass does not hold answers -1, which no block
+    // list contains, so a predicate outside the chunk is false.
+    inline bool OreDecoration::BlockPredicate::matches(const Pass& pass, int x, int y, int z) const {
+        const int px = x + dx;
+        const int py = y + dy;
+        const int pz = z + dz;
+        switch (kind) {
+        case Kind::Block:
+        case Kind::Fluid:
+            return states.find(OreDecoration::current(pass, px, py, pz)) != states.end();
+        case Kind::Solid: {
+            const std::int32_t state = OreDecoration::current(pass, px, py, pz);
+            return state >= 0 && state != pass.view->air && state != pass.view->water &&
+                state != pass.view->lava;
+        }
+        case Kind::All:
+            for (const auto& child : children) {
+                if (!child.matches(pass, px, py, pz)) {
+                    return false;
+                }
+            }
+            return true;
+        case Kind::Any:
+            for (const auto& child : children) {
+                if (child.matches(pass, px, py, pz)) {
+                    return true;
+                }
+            }
+            return false;
+        case Kind::Not:
+            return children.empty() ? true : !children.front().matches(pass, px, py, pz);
+        case Kind::Never:
+            break;
+        }
+        return false;
+    }
 
 } // namespace terila::world::worldgen

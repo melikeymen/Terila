@@ -49,9 +49,10 @@ namespace terila::world::worldgen {
 
         bool load(const nlohmann::json& rules, const nlohmann::json& conditions,
             const DensityGraph& density, BlockResolver block, BiomeResolver biome,
-            std::string_view root_id = "minecraft:overworld", int min_y = -64) {
+            std::string_view root_id = "minecraft:overworld", int min_y = -64,
+            std::uint32_t world_seed = 0) {
             return load_impl(rules, conditions, density, std::move(block), std::move(biome),
-                root_id, min_y);
+                root_id, min_y, world_seed);
         }
 
         bool ready() const noexcept { return root_ != nullptr; }
@@ -90,7 +91,9 @@ namespace terila::world::worldgen {
             double f0 = 0.0;
             double f1 = 0.0;
             bool flag = false;
-            std::uint64_t random_seed = 0;
+            // A vertical gradient draws from its own named stream, which the game hands out
+            // per world rather than per column.
+            PositionalFactory factory;
             const NormalNoise* noise = nullptr;
         };
 
@@ -135,11 +138,15 @@ namespace terila::world::worldgen {
 
         bool load_impl(const nlohmann::json& rules, const nlohmann::json& conditions,
             const DensityGraph& density, BlockResolver block, BiomeResolver biome,
-            std::string_view root_id, int min_y) {
+            std::string_view root_id, int min_y, std::uint32_t world_seed) {
             block_ = std::move(block);
             biome_ = std::move(biome);
             density_ = &density;
             min_y_ = min_y;
+            // The same chain the game walks: the world's stream is forked into a factory, the
+            // factory hashes the rule name into a stream, and that stream forks once more for
+            // the positional draws.
+            surface_factory_ = RandomSource::from_seed(world_seed).fork_positional();
             if (!load_registry(rules, rules_raw_) || !load_registry(conditions, conditions_raw_)) {
                 return false;
             }
@@ -268,7 +275,9 @@ namespace terila::world::worldgen {
                 node->kind = Kind::VerticalGradient;
                 node->v0 = anchor_of(value.value("true_at_and_below", nlohmann::json{}), min_y_);
                 node->v1 = anchor_of(value.value("false_at_and_above", nlohmann::json{}), min_y_);
-                node->random_seed = random_seed_of(value.value("random_name", std::string()));
+                node->factory = surface_factory_
+                    .from_hash_of(value.value("random_name", std::string()))
+                    .fork_positional();
                 return node;
             }
             if (type == "minecraft:biome") {
@@ -363,15 +372,6 @@ namespace terila::world::worldgen {
             return resolved ? *resolved : -1;
         }
 
-        static std::uint64_t random_seed_of(const std::string& name) {
-            std::uint64_t hash = 0xCBF29CE484222325ull;
-            for (const char c : name) {
-                hash ^= static_cast<std::uint8_t>(c);
-                hash *= 0x100000001B3ull;
-            }
-            return hash;
-        }
-
         static NodePtr nothing() {
             static const NodePtr node = [] {
                 auto value = std::make_shared<Node>();
@@ -440,21 +440,18 @@ namespace terila::world::worldgen {
                 return false;
             }
             case Kind::VerticalGradient: {
-                const int low = std::min(node.v0, node.v1);
-                const int high = std::max(node.v0, node.v1);
-                if (context.y <= low) {
+                if (context.y <= node.v0) {
                     return true;
                 }
-                if (context.y >= high) {
+                if (context.y >= node.v1) {
                     return false;
                 }
-                const double t = static_cast<double>(context.y - low) /
-                    static_cast<double>(high - low);
-                const std::uint64_t hash = mix64(node.random_seed ^
-                    (static_cast<std::uint64_t>(context.x) * 0x9E3779B97F4A7C15ull) ^
-                    (static_cast<std::uint64_t>(context.y) * 0xC2B2AE3D27D4EB4Full) ^
-                    static_cast<std::uint64_t>(context.z));
-                return static_cast<double>((hash >> 11) % 1000) / 1000.0 < 1.0 - t;
+                // The probability falls linearly from the lower anchor to the upper one and a
+                // per block float decides whether this cell still belongs to the layer.
+                const double probability = static_cast<double>(node.v1 - context.y) /
+                    static_cast<double>(node.v1 - node.v0);
+                RandomSource draw = node.factory.at(context.x, context.y, context.z);
+                return static_cast<double>(draw.next_float()) < probability;
             }
             case Kind::NoiseThreshold: {
                 if (node.noise == nullptr) {
@@ -501,6 +498,7 @@ namespace terila::world::worldgen {
         BiomeResolver biome_;
         const DensityGraph* density_ = nullptr;
         int min_y_ = -64;
+        PositionalFactory surface_factory_;
     };
 
 } // namespace terila::world::worldgen
