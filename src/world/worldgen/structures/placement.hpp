@@ -96,17 +96,17 @@ namespace terila::world::worldgen {
         return (quarter_turns & 1) != 0 ? size_x : size_z;
     }
 
-    // Writes the part of a template that lands in one chunk. The palette's air is skipped:
-    // a structure carves its rooms out of the terrain with its own blocks, not by deleting
-    // what the generator put there. A turned template is written at its turned cells and
-    // with the turned state of each block.
+    // Writes the part of a template that lands in one chunk. Air is a block in the palette,
+    // so an air cell clears what the terrain left there: a house needs its rooms hollow, not
+    // filled with the stone that surrounds it. Only a structure void cell is left alone. A
+    // turned template is written at its turned cells and with the turned state of each block.
     template<class Write>
     int apply_template(const StructureTemplate& tmpl, std::int32_t origin_x,
         std::int32_t origin_y, std::int32_t origin_z, std::int32_t chunk_x,
         std::int32_t chunk_z, int rotation, const StateRotator& rotate, Write&& write) {
         int placed = 0;
         for (const TemplateCell& cell : tmpl.cells) {
-            if (cell.state == 0) {
+            if (cell.state == kStructureVoid) {
                 continue;
             }
             std::int32_t local_x = cell.x;

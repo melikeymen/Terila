@@ -7,6 +7,7 @@
 
 #include "data/input_store.hpp"
 #include "world/terrain_biomes.hpp"
+#include "world/worldgen/structures/catalog.hpp"
 #include "world/worldgen/structures/jigsaw.hpp"
 #include "world/worldgen/structures/placement.hpp"
 #include "world/worldgen/structures/template.hpp"
@@ -23,6 +24,14 @@
 
 namespace terila::world::worldgen {
 
+    // The bounds the assembler falls back on: the expansion depth the game stops at, how far
+    // from the start a piece may reach, and the piece cap that keeps a breadth-first walk
+    // finite when a pool refers back to itself.
+    inline constexpr int kJigsawDepth = 7;
+    inline constexpr int kJigsawReach = 80;
+    inline constexpr int kJigsawPieces = 32;
+    inline constexpr int kJigsawPiecesPerLayer = 16;
+
     struct StructureKind {
         std::string id;
         std::string set_id;
@@ -34,7 +43,6 @@ namespace terila::world::worldgen {
         bool project_start_to_heightmap = false;     // Project start to WORLD_SURFACE_WG
         // A shipwreck lies on the sea floor; a portal sits on dry land.
         bool underwater = false;
-        bool is_jigsaw = false;                      // True if this uses jigsaw assembly
     };
 
     // Ruined portals are the ones the game builds from single templates, so they are the
@@ -64,60 +72,12 @@ namespace terila::world::worldgen {
         beached.id = "minecraft:shipwreck_beached";
         beached.underwater = false;
 
-        // Pillager outpost: jigsaw structure starting from base_plates pool.
-        StructureKind outpost;
-        outpost.id = "minecraft:pillager_outpost";
-        outpost.set_id = "minecraft:pillager_outposts";
-        outpost.start_pool = "minecraft:pillager_outpost/base_plates";
-        outpost.start_jigsaw_name = "minecraft:entrance";
-        outpost.project_start_to_heightmap = true;
-        outpost.is_jigsaw = true;
-
-        // Village variants: jigsaw structures.
-        auto make_village = [](const std::string& id, const std::string& set_id,
-            const std::string& start_pool) {
-            StructureKind v;
-            v.id = id;
-            v.set_id = set_id;
-            v.start_pool = start_pool;
-            v.start_jigsaw_name = "minecraft:village_center";
-            v.project_start_to_heightmap = true;
-            v.is_jigsaw = true;
-            return v;
-        };
-
-        StructureKind village_plains = make_village("minecraft:village_plains",
-            "minecraft:villages", "minecraft:village/plains/town_centers");
-        StructureKind village_desert = make_village("minecraft:village_desert",
-            "minecraft:villages", "minecraft:village/desert/town_centers");
-        StructureKind village_savanna = make_village("minecraft:village_savanna",
-            "minecraft:villages", "minecraft:village/savanna/town_centers");
-        StructureKind village_snowy = make_village("minecraft:village_snowy",
-            "minecraft:villages", "minecraft:village/snowy/town_centers");
-        StructureKind village_taiga = make_village("minecraft:village_taiga",
-            "minecraft:villages", "minecraft:village/taiga/town_centers");
-
-        // Ancient city: underground jigsaw structure.
-        StructureKind ancient_city;
-        ancient_city.id = "minecraft:ancient_city";
-        ancient_city.set_id = "minecraft:ancient_cities";
-        ancient_city.start_pool = "minecraft:ancient_city/city_center";
-        ancient_city.start_jigsaw_name = "minecraft:city_anchor";
-        ancient_city.start_height_absolute = -27;
-        ancient_city.has_start_height = true;
-        ancient_city.is_jigsaw = true;
-
+        // Everything the game assembles from a jigsaw is read from the data by the catalog,
+        // so only the structures built from one whole template are named here.
         std::vector<StructureKind> kinds;
         kinds.push_back(std::move(portal));
         kinds.push_back(std::move(wreck));
         kinds.push_back(std::move(beached));
-        kinds.push_back(std::move(outpost));
-        kinds.push_back(std::move(village_plains));
-        kinds.push_back(std::move(village_desert));
-        kinds.push_back(std::move(village_savanna));
-        kinds.push_back(std::move(village_snowy));
-        kinds.push_back(std::move(village_taiga));
-        kinds.push_back(std::move(ancient_city));
         return kinds;
     }
 
@@ -125,7 +85,8 @@ namespace terila::world::worldgen {
     public:
         bool init(std::uint64_t seed, const terrain::IdResolver& block,
             const std::function<int(std::string_view)>& biome_id, std::vector<StructureKind> kinds,
-            const StateTextResolver& state = {}, const StateRotator& rotate = {}) {
+            const StateTextResolver& state = {}, const StateRotator& rotate = {},
+            bool include_jigsaw = true) {
             seed_ = seed;
             kinds_.clear();
             jigsaw_kinds_.clear();
@@ -147,56 +108,59 @@ namespace terila::world::worldgen {
             // The ground a piece stands on is filled with the same block a beard uses.
             filler_ = resolve("minecraft:dirt");
             for (StructureKind& kind : kinds) {
-                if (kind.is_jigsaw) {
-                    JigsawItem item;
-                    item.spread = spread_of(kind.set_id);
-                    if (item.spread.spacing <= 0) {
-                        continue;
-                    }
-                    item.id = kind.id;
-                    item.start_pool = kind.start_pool;
-                    item.start_jigsaw_name = kind.start_jigsaw_name;
-                    item.start_height_absolute = kind.start_height_absolute;
-                    item.has_start_height = kind.has_start_height;
-                    item.project_start_to_heightmap = kind.project_start_to_heightmap;
-                    const JigsawBounds bounds = bounds_of(item.id);
-                    item.max_depth = bounds.depth;
-                    item.max_distance = bounds.distance;
-                    item.underwater = kind.underwater;
-                    // A structure only goes where its biome tag allows it to.
-                    item.biomes = biomes_of(item.id, biome_id);
-                    // Preload all templates this pool can produce for faster runtime.
-                    auto pool_opt = load_pool(item.start_pool);
-                    if (pool_opt) {
-                        item.pool_templates = pool_templates(*pool_opt);
-                    }
-                    jigsaw_kinds_.push_back(std::move(item));
-                } else {
-                    Item item;
-                    item.spread = spread_of(kind.set_id);
-                    if (item.spread.spacing <= 0) {
-                        continue;
-                    }
-                    for (const std::string& id : kind.templates) {
-                        StructureTemplate tmpl;
-                        if (load_template(id, resolve, tmpl) && !tmpl.empty()) {
-                            item.templates.push_back(std::move(tmpl));
-                        }
-                    }
-                    if (item.templates.empty()) {
-                        continue;
-                    }
-                    item.id = std::move(kind.id);
-                    item.underwater = kind.underwater;
-                    // A structure only goes where its biome tag allows it to.
-                    item.biomes = biomes_of(item.id, biome_id);
-                    kinds_.push_back(std::move(item));
+                Item item;
+                item.spread = spread_of(kind.set_id);
+                if (item.spread.spacing <= 0) {
+                    continue;
                 }
+                for (const std::string& id : kind.templates) {
+                    StructureTemplate tmpl;
+                    if (load_template(id, resolve, tmpl) && !tmpl.empty()) {
+                        item.templates.push_back(std::move(tmpl));
+                    }
+                }
+                if (item.templates.empty()) {
+                    continue;
+                }
+                item.id = std::move(kind.id);
+                item.underwater = kind.underwater;
+                // A structure only goes where its biome tag allows it to.
+                item.biomes = biomes_of(item.id, biome_id);
+                kinds_.push_back(std::move(item));
+            }
+
+            // The jigsaw structures come from the data: the catalog names the start pool, the
+            // height the start is projected to, how far the pieces may grow and the biomes the
+            // structure may sit in.
+            for (const JigsawSpec& spec : include_jigsaw ? jigsaw_specs()
+                                                         : std::vector<JigsawSpec>{}) {
+                JigsawItem item;
+                item.spread = spread_of(spec.set_id);
+                if (item.spread.spacing <= 0) {
+                    continue;
+                }
+                item.id = spec.id;
+                item.start_pool = spec.start_pool;
+                item.start_jigsaw_name = spec.start_jigsaw_name;
+                item.start_height_absolute = spec.start_height;
+                item.has_start_height = spec.has_start_height;
+                item.project_start_to_heightmap = spec.project_start_to_heightmap;
+                item.max_depth = spec.size > 0 ? spec.size : kJigsawDepth;
+                item.max_distance = spec.max_distance > 0 ? spec.max_distance : kJigsawReach;
+                item.max_pieces = kJigsawPieces + item.max_depth * kJigsawPiecesPerLayer;
+                // A structure only goes where its biome tag allows it to.
+                for (const std::string& name : spec.biome_names) {
+                    const int id = biome_id(name);
+                    if (id >= 0) {
+                        item.biomes.push_back(id);
+                    }
+                }
+                jigsaw_kinds_.push_back(std::move(item));
             }
             return !kinds_.empty() || !jigsaw_kinds_.empty();
         }
 
-        bool empty() const { return kinds_.empty(); }
+        bool empty() const { return kinds_.empty() && jigsaw_kinds_.empty(); }
 
         // Writes every structure that reaches into the chunk. `sea_level` keeps a structure
         // out of the water: a site whose surface is below it is left alone.
@@ -267,15 +231,12 @@ namespace terila::world::worldgen {
                         const std::int32_t centre_x = site.chunk_x * 16 + 8;
                         const std::int32_t centre_z = site.chunk_z * 16 + 8;
                         // Determine ground height at the structure center.
+                        // A structure that projects its start onto the heightmap stands on
+                        // the surface; one that names a height stands where the data puts it,
+                        // which is how an underground city stays at its own depth.
                         std::int32_t ground = surface(centre_x, centre_z);
-                        if (item.has_start_height) {
+                        if (!item.project_start_to_heightmap && item.has_start_height) {
                             ground = item.start_height_absolute;
-                        } else if (item.project_start_to_heightmap) {
-                            // Already have the heightmap value from surface().
-                        }
-                        // Waterline check.
-                        if (item.underwater ? (ground >= sea_level) : (ground < sea_level)) {
-                            continue;
                         }
                         if (!item.biomes.empty()) {
                             const int biome = biome_of(centre_x, centre_z);
@@ -328,13 +289,6 @@ namespace terila::world::worldgen {
             bool underwater = false;
         };
 
-        // How far a jigsaw structure may grow: the depth of its expansion and the distance
-        // from its centre its pieces may reach.
-        struct JigsawBounds {
-            int depth = 7;
-            int distance = 80;
-        };
-
         struct JigsawItem {
             std::string id;
             StructureSpread spread;
@@ -348,7 +302,6 @@ namespace terila::world::worldgen {
             int max_distance = 80;
             bool underwater = false;
             std::vector<int> biomes;
-            std::vector<std::string> pool_templates;  // All template IDs this pool can produce
         };
 
         // The tags the game ships, loaded once: a structure's biome field is usually a tag.
@@ -431,35 +384,6 @@ namespace terila::world::worldgen {
             catch (const std::exception&) {
             }
             return ids;
-        }
-
-        // The expansion bounds of a jigsaw structure: `size` is the number of layers its
-        // pieces may grow to and `max_distance_from_center` the reach from the start.
-        static JigsawBounds bounds_of(const std::string& structure_id) {
-            JigsawBounds bounds;
-            std::string text;
-            if (!data::input::read_text("worldgen/structures.json", text)) {
-                return bounds;
-            }
-            try {
-                const nlohmann::json parsed = nlohmann::json::parse(text);
-                for (const nlohmann::json& entry : parsed.at("data")) {
-                    if (entry.at("id").get<std::string>() != structure_id) {
-                        continue;
-                    }
-                    const nlohmann::json& structure = entry.at("data");
-                    if (structure.value("type", std::string()) != "minecraft:jigsaw") {
-                        break;
-                    }
-                    bounds.depth = structure.value("size", bounds.depth);
-                    bounds.distance = structure.value("max_distance_from_center", bounds.distance);
-                    break;
-                }
-            }
-            catch (const std::exception&) {
-                return JigsawBounds{};
-            }
-            return bounds;
         }
 
         // The placement block of a set: salt, spacing and separation from the data.

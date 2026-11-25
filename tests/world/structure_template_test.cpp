@@ -180,21 +180,27 @@ namespace {
             { 15, 0, 0, 12 },
             { 16, 0, 0, 13 },
             { 3, 1, 0, 0 },
+            { 4, 1, 0, terila::world::worldgen::kStructureVoid },
         };
 
         int written = 0;
+        int air = 0;
         int wrong_chunk = 0;
         const int placed = terila::world::worldgen::apply_template(tmpl, 0, 64, 0, 0, 0, 0, {},
             [&](std::int32_t wx, std::int32_t wy, std::int32_t wz, std::int32_t state) {
                 ++written;
                 EXPECT_GE(wy, 64);
-                EXPECT_NE(state, 0);
+                if (state == 0) {
+                    ++air;
+                }
                 if ((wx >> 4) != 0 || (wz >> 4) != 0) {
                     ++wrong_chunk;
                 }
             });
-        EXPECT_EQ(placed, 2);
-        EXPECT_EQ(written, 2);
+        // Air is a palette entry, so the room is written; only the void cell is left alone.
+        EXPECT_EQ(placed, 3);
+        EXPECT_EQ(written, 3);
+        EXPECT_EQ(air, 1);
         EXPECT_EQ(wrong_chunk, 0);
 
         // The same template writes its other column when the neighbour chunk asks for it.
@@ -341,7 +347,7 @@ namespace {
             }
         }
         terila::world::worldgen::Structures wreck_only;
-        ASSERT_TRUE(wreck_only.init(1337, any_block, every_biome, wet));
+        ASSERT_TRUE(wreck_only.init(1337, any_block, every_biome, wet, {}, {}, false));
 
         const auto count_at = [&](std::int32_t floor_y) {
             int placed = 0;

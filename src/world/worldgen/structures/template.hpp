@@ -22,6 +22,10 @@
 
 namespace terila::world::worldgen {
 
+    // A template cell the game leaves untouched: `minecraft:structure_void` is a marker, not
+    // a block, so the cell it sits in keeps whatever the terrain already holds.
+    inline constexpr std::int32_t kStructureVoid = -1;
+
     struct TemplateCell {
         std::int32_t x = 0;
         std::int32_t y = 0;
@@ -229,7 +233,8 @@ namespace terila::world::worldgen {
                 return true;
             }
             for (auto entry = blocks->begin(); entry != blocks->end(); ++entry) {
-                const std::int32_t state = resolve(entry.key());
+                const std::int32_t state = entry.key().find("minecraft:structure_void") == 0
+                    ? kStructureVoid : resolve(entry.key());
                 for (const nlohmann::json& position : entry.value()) {
                     if (!position.is_array() || position.size() < 3) {
                         continue;

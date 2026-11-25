@@ -632,7 +632,8 @@ namespace terila::world::worldgen {
             const auto blocks = parsed.find("blocks");
             if (blocks != parsed.end() && blocks->is_object()) {
                 for (auto entry = blocks->begin(); entry != blocks->end(); ++entry) {
-                    const std::int32_t state = resolve(entry.key());
+                    const std::int32_t state = entry.key().find("minecraft:structure_void") == 0
+                        ? kStructureVoid : resolve(entry.key());
                     for (const nlohmann::json& position : entry.value()) {
                         if (!position.is_array() || position.size() < 3) continue;
                         TemplateCell cell;
@@ -646,6 +647,22 @@ namespace terila::world::worldgen {
             }
 
             std::vector<JigsawBlock> jigsaws = extract_jigsaws(tmpl, parsed);
+            // A jigsaw block is scaffolding: the game replaces it with the state the block
+            // entity names as its final state as soon as the piece is placed, so the piece
+            // itself carries that state from here on.
+            for (const JigsawBlock& jb : jigsaws) {
+                // A final state of structure void means the joint leaves the terrain alone, so
+                // the cell is skipped the same way a void cell of the palette is.
+                const std::int32_t final_state =
+                    jb.final_state.find("minecraft:structure_void") != std::string::npos
+                        ? kStructureVoid : resolve(jb.final_state);
+                for (TemplateCell& cell : tmpl.cells) {
+                    if (cell.x == jb.x && cell.y == jb.y && cell.z == jb.z) {
+                        cell.state = final_state;
+                        break;
+                    }
+                }
+            }
             out_tmpl = std::move(tmpl);
             out_jigsaws = std::move(jigsaws);
             const std::lock_guard lock(mutex);
@@ -1040,7 +1057,7 @@ namespace terila::world::worldgen {
         for (const auto& piece : pieces) {
             const std::int32_t base_y = base_of(piece);
             for (const auto& cell : piece.tmpl.cells) {
-                if (cell.state == 0) continue;  // Skip air
+                if (cell.state == kStructureVoid) continue;  // The terrain keeps this cell
                 std::int32_t local_x = cell.x;
                 std::int32_t local_z = cell.z;
                 rotate_cell(piece.rotation, piece.tmpl.size_x, piece.tmpl.size_z,
