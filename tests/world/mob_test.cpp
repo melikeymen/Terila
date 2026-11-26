@@ -338,6 +338,25 @@ TEST(WorldClockTest, TheDayCycleDecidesWhenItIsNight) {
     EXPECT_EQ(clock.game_time, 24000);
 }
 
+TEST(WorldClockTest, TheMoonBrightnessFollowsThePhase) {
+    terila::world::WorldClock clock;
+    // Day zero is a full moon, and every day steps a quarter of the way to a new one.
+    EXPECT_EQ(clock.moon_phase(), 0);
+    EXPECT_FLOAT_EQ(clock.moon_brightness(), 1.0f);
+
+    clock.set_game_time(terila::world::WorldClock::kDayLength * 4);
+    EXPECT_EQ(clock.moon_phase(), 4);
+    EXPECT_FLOAT_EQ(clock.moon_brightness(), 0.0f) << "a new moon gives nothing back";
+
+    clock.set_game_time(terila::world::WorldClock::kDayLength * 6);
+    EXPECT_EQ(clock.moon_phase(), 6);
+    EXPECT_FLOAT_EQ(clock.moon_brightness(), 0.5f) << "the way back is the same way in";
+
+    clock.set_game_time(terila::world::WorldClock::kDayLength * 8);
+    EXPECT_EQ(clock.moon_phase(), 0) << "the cycle starts over after eight days";
+    EXPECT_FLOAT_EQ(clock.moon_brightness(), 1.0f);
+}
+
 TEST(MobTest, ArmorSoaksPartOfTheHitAndDeathRemovesTheMob) {
     entity::MobManager mobs;
     make_manager(mobs);
@@ -548,6 +567,80 @@ TEST(DifficultyTest, TheThreatLevelGrowsWithTimeAndMoon) {
     const auto easy = entity::threat_level(entity::Difficulty::Easy, 72000 + 1440000,
         3600000, 1.0f);
     EXPECT_FLOAT_EQ(easy.effective, 1.5f);
+}
+
+TEST(PopulationTest, MonsterGroupsFollowTheWorldsThreatLevel) {
+    entity::Population spawner;
+    spawner.set_world(flat_world(world::terrain::kPlains));
+
+    // A peaceful world never earns a group, however old it is.
+    spawner.set_difficulty(entity::Difficulty::Peaceful);
+    spawner.set_game_time(72000 + 1440000);
+    spawner.set_moon_brightness(1.0f);
+    EXPECT_EQ(spawner.monster_groups(0, 0), 0);
+
+    // Easy starts at the quarter of the budget the scale is floored to.
+    spawner.set_difficulty(entity::Difficulty::Easy);
+    spawner.set_game_time(0);
+    spawner.set_moon_brightness(0.0f);
+    EXPECT_EQ(spawner.monster_groups(0, 0), 1);
+
+    // A fresh normal world has grown into half of it.
+    spawner.set_difficulty(entity::Difficulty::Normal);
+    EXPECT_EQ(spawner.monster_groups(0, 0), 2);
+
+    // A hard world that has run for days under a full moon spends the whole budget.
+    spawner.set_difficulty(entity::Difficulty::Hard);
+    spawner.set_game_time(72000 + 1440000);
+    spawner.set_moon_brightness(1.0f);
+    EXPECT_EQ(spawner.monster_groups(0, 0), 3);
+
+    // The moon alone is not enough while the world is young: its share only counts once the
+    // world itself has aged.
+    spawner.set_game_time(0);
+    EXPECT_LT(spawner.monster_groups(0, 0), 3);
+}
+
+TEST(PopulationTest, AMoreDangerousWorldCarriesMoreMonsters) {
+    // Same seed, same terrain, same night, same players: only the threat level differs, so a
+    // different monster count can only come from the budget it decides.
+    const auto monsters_after = [](entity::Difficulty difficulty, std::int64_t game_time,
+                                    float moon) {
+        entity::MobManager mobs;
+        make_manager(mobs);
+        entity::Population spawner;
+        spawner.set_world(flat_world(world::terrain::kPlains));
+        spawner.set_difficulty(difficulty);
+        spawner.set_game_time(game_time);
+        spawner.set_moon_brightness(moon);
+
+        std::vector<entity::PlayerPos> players;
+        for (int i = 0; i < 5; ++i) {
+            for (int j = 0; j < 5; ++j) {
+                entity::PlayerPos player;
+                player.x = static_cast<double>(i) * 64.0;
+                player.y = 64.0;
+                player.z = static_cast<double>(j) * 64.0;
+                player.id = static_cast<std::int32_t>(players.size()) + 1;
+                players.push_back(player);
+            }
+        }
+
+        std::uint32_t rng = 0x51A5E5u;
+        for (int tick = 0; tick < 60; ++tick) {
+            spawner.tick(mobs, players, true, rng);
+        }
+        return static_cast<std::size_t>(std::count_if(mobs.mobs().begin(), mobs.mobs().end(),
+            [](const entity::Mob& mob) {
+                return mob.category() == data::MobCategory::Monster;
+            }));
+    };
+
+    const std::size_t fresh = monsters_after(entity::Difficulty::Normal, 0, 0.0f);
+    const std::size_t grown = monsters_after(entity::Difficulty::Hard, 72000 + 1440000, 1.0f);
+    EXPECT_GT(fresh, 0u) << "a fresh world still gets its share";
+    EXPECT_GT(grown, fresh) << "the older, harder world carries more"
+        << " (fresh " << fresh << ", grown " << grown << ")";
 }
 
 TEST(DifficultyTest, PeacefulRemovesTheMonstersThatWereAlreadyThere) {

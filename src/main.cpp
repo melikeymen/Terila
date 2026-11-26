@@ -597,6 +597,7 @@ int main() {
     std::uint32_t population_rng = static_cast<std::uint32_t>(world_terrain.seed()) ^ 0x5EED5EEDu;
     bool population_started = false;
     spawner.set_sky_darkening(clock->sky_darken_level());
+    spawner.set_moon_brightness(clock->moon_brightness());
 
     // Items whose id doubles as a placeable block, e.g. minecraft:stone.
     std::unordered_map<std::int32_t, std::int32_t> item_block_state;
@@ -972,6 +973,8 @@ int main() {
             // at all while a player is still receiving a burst of chunks: the io thread
             // belongs to the stream until the view distance is in.
             spawner.set_sky_darkening(clock->sky_darken_level());
+            spawner.set_game_time(clock->game_time);
+            spawner.set_moon_brightness(clock->moon_brightness());
             if (!population_started && !player_positions.empty() && !streaming) {
                 population_started = true;
                 const auto& first = player_positions.front();

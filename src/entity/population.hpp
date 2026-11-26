@@ -60,6 +60,10 @@ namespace terila::entity {
     public:
         void set_world(SpawnWorld world) { world_ = std::move(world); }
         void set_difficulty(Difficulty difficulty) { difficulty_ = difficulty; }
+        // The world's age and its moon, the two halves of the threat level the cycle cannot
+        // read from the terrain.
+        void set_game_time(std::int64_t ticks) { game_time_ = ticks; }
+        void set_moon_brightness(float brightness) { moon_brightness_ = brightness; }
         void set_spawn_point(std::int32_t x, std::int32_t z) {
             spawn_x_ = x;
             spawn_z_ = z;
@@ -129,10 +133,6 @@ namespace terila::entity {
             for (std::size_t i = 0; i < window; ++i) {
                 const auto [cx, cz] = chunks_[(chunk_cursor_ + i) % chunks_.size()];
                 for (const auto category : kCategories) {
-                    if (difficulty_ == Difficulty::Peaceful &&
-                        category == data::MobCategory::Monster) {
-                        continue;
-                    }
                     const auto slot = static_cast<std::size_t>(category);
                     if (counts[slot] >= capacity(category)) {
                         continue;
@@ -140,8 +140,14 @@ namespace terila::entity {
                     if (!can_spawn_locally(cx, cz, category)) {
                         continue;
                     }
+                    const int groups = category == data::MobCategory::Monster
+                            ? monster_groups(cx, cz)
+                            : kGroupsPerChunk;
+                    if (groups == 0) {
+                        continue;
+                    }
                     spawn_chunk(mobs, players, cx, cz, category, rng, counts[slot],
-                        capacity(category));
+                        capacity(category), groups);
                 }
             }
             chunk_cursor_ = (chunk_cursor_ + window) % chunks_.size();
@@ -156,6 +162,25 @@ namespace terila::entity {
         // How many chunks the local time is being tracked for. Exposed so the bound can be
         // checked without reaching into the map.
         std::size_t tracked_chunks() const noexcept { return local_time_.size(); }
+
+        std::int64_t local_ticks(std::int32_t cx, std::int32_t cz) const {
+            const auto found = local_time_.find(chunk_key(cx, cz));
+            return found == local_time_.end() ? 0 : found->second;
+        }
+
+        // How many groups of monsters a chunk is worth. The game spends the same three
+        // everywhere; the threat level of this chunk, which grows with the world's age, the
+        // time this part of it has been lived in and the moon, decides how much of that
+        // budget it gets. A peaceful world earns none, so nothing hostile is placed.
+        int monster_groups(std::int32_t cx, std::int32_t cz) const {
+            const auto level = threat_level(difficulty_, game_time_, local_ticks(cx, cz),
+                moon_brightness_);
+            if (level.base == Difficulty::Peaceful) {
+                return 0;
+            }
+            const float budget = static_cast<float>(kGroupsPerChunk) * level.monster_share();
+            return std::max(1, static_cast<int>(std::ceil(budget)));
+        }
 
         // The per-category maximum from the game's own category table.
         static int max_instances(data::MobCategory category) noexcept {
@@ -393,7 +418,7 @@ namespace terila::entity {
         // makes a herd one species and the next group another.
         void spawn_chunk(MobManager& mobs, const std::vector<PlayerPos>& players,
             std::int32_t cx, std::int32_t cz, data::MobCategory category, std::uint32_t& rng,
-            std::size_t& count, std::size_t limit) {
+            std::size_t& count, std::size_t limit, int groups) {
             const std::int32_t start_x = cx * 16 + random_between(rng, 0, 15);
             const std::int32_t start_z = cz * 16 + random_between(rng, 0, 15);
             const int top = height_at(start_x, start_z);
@@ -407,7 +432,7 @@ namespace terila::entity {
             }
 
             int cluster = 0;
-            for (int group = 0; group < kGroupsPerChunk; ++group) {
+            for (int group = 0; group < groups; ++group) {
                 std::int32_t x = start_x;
                 std::int32_t z = start_z;
                 const data::BiomeSpawn* entry = nullptr;
@@ -747,6 +772,8 @@ namespace terila::entity {
 
         SpawnWorld world_;
         Difficulty difficulty_ = Difficulty::Normal;
+        std::int64_t game_time_ = 0;
+        float moon_brightness_ = 0.0f;
         std::int32_t spawn_x_ = 0;
         std::int32_t spawn_z_ = 0;
         bool has_spawn_point_ = false;

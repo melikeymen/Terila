@@ -33,6 +33,10 @@ namespace terila::entity {
         return "normal";
     }
 
+    // The effective difficulty the scale is read against: a world that has run long enough
+    // and is hard enough to stand at the top of it.
+    inline constexpr float kFullPressure = 4.0f;
+
     // How dangerous a position has become. The base difficulty is the world setting; the
     // effective value also grows with the time the world has run, with the time this part of
     // it has been inhabited, and with the moon. It is what decides whether a freshly spawned
@@ -45,6 +49,17 @@ namespace terila::entity {
 
         bool harder_than(float requirement) const noexcept {
             return effective > requirement;
+        }
+
+        // The share of a chunk's monster spawn budget the world has earned: none while the
+        // world is peaceful, a quarter at the bottom of the scale, all of it once the scale
+        // is full. Vanilla spends the same budget at every difficulty; here the threat level
+        // is what a world of that age and that moon is allowed to place.
+        float monster_share() const noexcept {
+            if (base == Difficulty::Peaceful) {
+                return 0.0f;
+            }
+            return std::clamp(effective / kFullPressure, 0.25f, 1.0f);
         }
 
         // 0 below normal, 1 at the top of hard, linear in between.

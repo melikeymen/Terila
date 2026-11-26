@@ -4,6 +4,7 @@
 // minutes. Everything that asks "is it dark" reads this clock, and the natural spawner's
 // monster rule hangs off it.
 
+#include <algorithm>
 #include <cstdint>
 
 namespace terila::world {
@@ -71,16 +72,19 @@ namespace terila::world {
             return static_cast<int>(15.0f - sky_light_level());
         }
 
-        // 0 at noon, 1 at midnight: the moon's share of the daylight, used for the threat
-        // level a naturally spawned mob is created with.
-        float sky_darken() const noexcept {
-            double darken = 1.0 -
-                (std::cos(static_cast<double>(time_of_day) * 2.0 * 3.14159265358979323846 /
-                    static_cast<double>(kDayLength)) + 1.0) * 0.5;
-            darken = 1.0 - darken;          // 0 at midnight, 1 at noon
-            darken = 0.2 + darken * 0.8;    // never fully bright
-            return static_cast<float>(1.0 - darken);
+        // The eight phases of the moon, counted from a full moon on day zero.
+        int moon_phase() const noexcept {
+            return static_cast<int>((game_time / kDayLength) % 8);
         }
+
+        // 1 under a full moon, 0 under a new one, and a quarter per step in between. The
+        // moon is one of the three things that make a place more dangerous over time.
+        float moon_brightness() const noexcept {
+            const int phase = moon_phase();
+            const int steps = std::min(phase, 8 - phase);
+            return 1.0f - static_cast<float>(steps) * 0.25f;
+        }
+
     };
 
 } // namespace terila::world
