@@ -56,7 +56,8 @@ namespace terila::world::worldgen {
             const terrain::IdResolver& block, const terrain::IdResolver& biome,
             const StateTextResolver& state = {},
             DimensionKind kind = DimensionKind::Overworld,
-            const StateRotator& rotate = {}) {
+            const StateRotator& rotate = {},
+            const LightTable* light_table = nullptr) {
             min_y_ = min_y;
             section_count_ = section_count;
             seed_ = seed;
@@ -163,8 +164,16 @@ namespace terila::world::worldgen {
                 return false;
             }
 
-            light_rules_ = terrain::light_rules_for(blocks_);
-            terrain::add_placed_light_sources(light_rules_, block);
+            // A caller that carries the block data hands over the light properties of every
+            // state; without it the generator keeps its own short table, which is what the
+            // tests and any caller without a registry still get.
+            if (light_table != nullptr) {
+                light_rules_ = rules_from(*light_table);
+            }
+            else {
+                light_rules_ = terrain::light_rules_for(blocks_);
+                terrain::add_placed_light_sources(light_rules_, block);
+            }
             plants_.init(blocks_, biomes_, sea_level_, providers);
             // Ores and surface structures belong to the overworld's rule set; the nether and
             // the end have neither in this generator yet.

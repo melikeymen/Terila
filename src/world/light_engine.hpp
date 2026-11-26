@@ -11,6 +11,46 @@
 
 namespace terila::world {
 
+    enum class LightLayer : std::uint8_t { Sky, Block };
+
+    // The nibble a client would read out of a chunk's light arrays. The payloads are written
+    // in section order and only for sections that carry light, so the array of a section is
+    // found by counting the lit sections below it.
+    inline int light_level_at(const Chunk& chunk, std::int32_t x, std::int32_t y,
+        std::int32_t z, LightLayer layer) {
+        const int local_y = y - chunk.min_y;
+        const int height = chunk.section_count * 16;
+        if (local_y < 0 || local_y >= height || x < 0 || x > 15 || z < 0 || z > 15) {
+            return 0;
+        }
+        const auto& mask = layer == LightLayer::Sky ? chunk.light.sky_y_mask
+                                                    : chunk.light.block_y_mask;
+        const auto& updates = layer == LightLayer::Sky ? chunk.light.sky_updates
+                                                       : chunk.light.block_updates;
+        const auto lit = [&mask](int bit) {
+            const auto word = static_cast<std::size_t>(bit / 64);
+            return word < mask.size() && ((mask[word] >> (bit % 64)) & 1LL) != 0;
+        };
+        const int section = local_y / 16;
+        if (!lit(section + 1)) {
+            return 0;
+        }
+        std::size_t index = 0;
+        for (int below = 1; below <= section; ++below) {
+            if (lit(below)) ++index;
+        }
+        if (index >= updates.size()) {
+            return 0;
+        }
+        const auto& array = updates[index];
+        const int cell = ((local_y % 16) * 16 + z) * 16 + x;
+        const auto byte = static_cast<std::size_t>(cell / 2);
+        if (byte >= array.size()) {
+            return 0;
+        }
+        return (cell & 1) == 0 ? (array[byte] & 0x0F) : (array[byte] >> 4);
+    }
+
     // The numbers the game reads from a block state for lighting: how much light it emits,
     // how much it removes (BlockBehaviour.getLightDampening, floored at one) and whether
     // sunlight passes straight down through it.
@@ -43,6 +83,20 @@ namespace terila::world {
         std::unordered_map<std::int32_t, LightBlock> blocks_;
         bool emits_ = false;
     };
+
+    // Light properties of every block state of this build, keyed by state id. The generator
+    // asks the caller for this table instead of guessing: emission and dampening are read
+    // from the game's own block data, so a window, a slab or a tuft of grass lets light
+    // through the way it does in the game.
+    using LightTable = std::unordered_map<std::int32_t, LightBlock>;
+
+    inline LightRules rules_from(const LightTable& table) {
+        LightRules rules;
+        for (const auto& [state, block] : table) {
+            rules.set(state, block);
+        }
+        return rules;
+    }
 
     // Sky top of a column in a world that already carries player edits. The generator knows
     // the top of the untouched terrain; a block dug out of it lets the sky further down and a
@@ -122,16 +176,19 @@ namespace terila::world {
                 }
             }
 
-            // Everything above the highest source is plain daylight, everything below the
-            // lowest one by more than the reach of light is dark: the band is all the engine
-            // has to look at.
-            const int top_band = std::clamp(max_source, chunk.min_y, world_top);
             // Block light comes from sources the terrain does not tell us about (torches a
             // player placed), so a world that has any keeps the whole height in the band.
             // A chunk that holds no emitter needs no block light pass, and keeping its band
             // as low as the sky allows is what keeps a generated chunk cheap: the terrain
             // itself never places a light source, only the player does.
             const bool sources = rules.has_emitters() && holds_emitter(chunk, rules);
+            // Everything above the highest source is plain daylight, everything below the
+            // lowest one by more than the reach of light is dark: the band is all the engine
+            // has to look at. A lamp reaches above that line too, so a chunk that holds one
+            // keeps the whole column.
+            const int top_band = sources
+                ? world_top
+                : std::clamp(max_source, chunk.min_y, world_top);
             const int bottom_band = sources
                 ? chunk.min_y
                 : std::clamp(min_source - kRadius - 2, chunk.min_y, world_top);

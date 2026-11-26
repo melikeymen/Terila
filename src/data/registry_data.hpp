@@ -10,10 +10,24 @@
 
 namespace terila::data {
 
+    // What the game reads from a block state for lighting and for walking into it, joined
+    // to the state ids the chunk format carries.
+    struct BlockLightInfo {
+        std::uint8_t emission = 0;
+        std::uint8_t dampening = 15;
+        bool sky_down = false;
+        bool collides = true;
+    };
+
     struct DimensionInfo {
         std::int32_t min_y = -64;
         std::int32_t height = 384;
         std::int32_t logical_height = 384;
+        // The darkness a monster needs to appear here: a range of light levels it tests the
+        // raw brightness against, and the block light above which it never spawns.
+        int monster_spawn_light_min = 0;
+        int monster_spawn_light_max = 7;
+        int monster_spawn_block_light_limit = 0;
     };
 
     // One variant of a block, as listed by blocks/state_ids.json.
@@ -42,6 +56,8 @@ namespace terila::data {
 
         std::unordered_map<std::string, std::int32_t> block_state_ids;
         std::unordered_map<std::string, std::vector<BlockStateInfo>> block_states;
+        // Per state: light emission, light dampening and the collision answer.
+        std::unordered_map<std::int32_t, BlockLightInfo> block_light;
         // Keyed by state id because a dig names the block it hits, not the block kind.
         std::unordered_map<std::int32_t, BlockBreakInfo> block_break_info;
         // Which tags each block answers to, and what each tool item is good at.

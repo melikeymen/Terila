@@ -1,10 +1,10 @@
 #pragma once
 
 // The natural population of the world: who lives where, and how much of it the world may
-// hold. Every tick the chunks around the players are offered to the categories that still
-// have room, the biome's own weighted list picks a species, that species' placement and
-// light rules decide whether it may stand at the spot, and only then does the mob exist.
-// The caps scale with the area that is actually spawnable, and nothing spawns in peaceful.
+// hold. A cycle offers the loaded chunks around the players to the categories that still
+// have room, the biome's own weighted list picks a species at a random spot in the chunk,
+// and that species' placement and light rules decide whether it may stand there. The caps
+// scale with the area that is actually spawnable, and nothing spawns in peaceful.
 
 #include "entity/difficulty.hpp"
 #include "entity/mob.hpp"
@@ -29,17 +29,32 @@ namespace terila::entity {
     using SpawnBlock = world::terrain::BlockKind;
     using world::terrain::BlockKind;
 
-    // What the cycle needs from the world; the server wires these to its generator. Nothing
-    // here reaches into chunks.
+    // What the cycle needs from the world; the server wires these to its generator and its
+    // chunk cache. Nothing here reaches into chunks.
     struct SpawnWorld {
         std::function<int(std::int32_t x, std::int32_t z)> biome_index = {};
         std::function<int(std::int32_t x, std::int32_t z)> surface_y = {};
+        // One above the topmost non air block of a column: the height a spawn position is
+        // drawn under, which the game takes from its surface heightmap.
+        std::function<int(std::int32_t x, std::int32_t z)> height_at = {};
         std::function<bool(std::int32_t x, std::int32_t z)> is_water = {};
+        // Stored light of a position, or -1 when that column is not loaded. An unloaded
+        // column is never spawned in, which is what keeps the cycle off terrain nobody has.
         std::function<int(std::int32_t x, std::int32_t y, std::int32_t z)> block_light = {};
         std::function<int(std::int32_t x, std::int32_t y, std::int32_t z)> sky_light = {};
         std::function<SpawnBlock(std::int32_t x, std::int32_t y, std::int32_t z)> block_kind = {};
+        // A state with a collision box, for the box a mob of its size would occupy.
+        std::function<bool(std::int32_t x, std::int32_t y, std::int32_t z)> collides = {};
+        // The game's animals tag: what an animal may stand on.
+        std::function<bool(std::int32_t x, std::int32_t y, std::int32_t z)> animals_spawnable = {};
         std::int32_t min_y = -64;
-        int sea_level = 63;
+        int world_top = 319;
+        std::int32_t sea_level = 63;
+        // The dimension type's darkness window for monsters: the raw brightness it compares
+        // against, and the block light above which nothing hostile appears.
+        int monster_spawn_light_min = 0;
+        int monster_spawn_light_max = 7;
+        int monster_spawn_block_light_limit = 0;
     };
 
     class Population {
@@ -53,10 +68,16 @@ namespace terila::entity {
             has_spawn_point_ = true;
         }
 
+        // Level#getSkyDarken of the moment: the sky light the sun does not deliver any more.
+        // The server hands over the clock's own value; without it the cycle falls back to
+        // the day/night flag it is called with.
+        void set_sky_darkening(int darkening) { sky_darkening_ = darkening; }
+
         // The population a fresh world starts with. The cycle below does the work; this walks
         // a wider disc once so the first player does not meet an empty world.
         std::size_t initial(MobManager& mobs, std::int32_t center_x, std::int32_t center_z,
             double radius, std::uint32_t& rng, bool night) {
+            sky_darkening_ = sky_darkening_ >= 0 ? sky_darkening_ : (night ? kNightSkyDarken : 0);
             std::size_t spawned = 0;
             for (int attempt = 0; attempt < kInitialAttempts; ++attempt) {
                 const double angle = static_cast<double>(random(rng) % 360) *
@@ -83,24 +104,26 @@ namespace terila::entity {
             if (!refresh_chunks(players)) {
                 return;
             }
-            const auto& chunks = chunks_;
+            sky_darkening_ = sky_darkening_ >= 0 ? sky_darkening_
+                                                 : (night ? kNightSkyDarken : 0);
 
             std::array<std::size_t, 8> counts{};
             count_categories(mobs, counts);
+            count_local(mobs, players);
 
             // The room a category has: its per-chunk maximum scaled to the spawnable area.
             // 289 is 17 squared, the area the maximum is written for.
-            const auto capacity = [size = chunks.size()](data::MobCategory category) {
+            const auto capacity = [size = chunks_.size()](data::MobCategory category) {
                 const int per_chunk = max_instances(category);
                 if (per_chunk <= 0) {
                     return std::size_t{ 0 };
                 }
-                return static_cast<std::size_t>(per_chunk) * size / 289u;
+                return static_cast<std::size_t>(per_chunk) * size / kMagicNumber;
             };
 
-            const std::size_t window = std::min<std::size_t>(kChunksPerTick, chunks.size());
+            const std::size_t window = std::min<std::size_t>(kChunksPerTick, chunks_.size());
             for (std::size_t i = 0; i < window; ++i) {
-                const auto [cx, cz] = chunks[(chunk_cursor_ + i) % chunks.size()];
+                const auto [cx, cz] = chunks_[(chunk_cursor_ + i) % chunks_.size()];
                 for (const auto category : kCategories) {
                     if (difficulty_ == Difficulty::Peaceful &&
                         category == data::MobCategory::Monster) {
@@ -110,11 +133,14 @@ namespace terila::entity {
                     if (counts[slot] >= capacity(category)) {
                         continue;
                     }
-                    attempt_chunk(mobs, players, cx, cz, category, night, rng, game_time,
-                        counts[slot], capacity(category));
+                    if (!can_spawn_locally(cx, cz, category)) {
+                        continue;
+                    }
+                    spawn_chunk(mobs, players, cx, cz, category, rng, counts[slot],
+                        capacity(category), game_time);
                 }
             }
-            chunk_cursor_ = (chunk_cursor_ + window) % chunks.size();
+            chunk_cursor_ = (chunk_cursor_ + window) % chunks_.size();
             age_local_ticks(players);
             bound_local_time(chunk_set_);
         }
@@ -148,19 +174,22 @@ namespace terila::entity {
 
     private:
         static constexpr int kSpawnChunkRadius = 8;
+        static constexpr int kMagicNumber = 17 * 17;
         // The local time only matters near players, so the map is trimmed back to the chunks
         // that are being visited once it grows past this.
         static constexpr std::size_t kMaxTrackedChunks = 4096;
         static constexpr std::size_t kChunksPerTick = 32;
         // The starting population is a convenience: the cycle fills the world around the
-        // players anyway, so this only has to put something in front of the first join
-        // without holding up the listen.
+        // players anyway, so this only has to put something in front of the first join.
         static constexpr int kInitialAttempts = 160;
         static constexpr double kMinPlayerDistance = 24.0;
         static constexpr double kMinSpawnPointDistance = 24.0;
         static constexpr int kNightSkyDarken = 11;
+        static constexpr int kMaxSpawnClusterSize = 4;
         static constexpr int kUndergroundWaterMaxY = 30;
         static constexpr int kWaterFloorSearch = 12;
+        static constexpr int kGroupsPerChunk = 3;
+        static constexpr int kGroupDrift = 6;
 
         static constexpr std::array<data::MobCategory, 7> kCategories = {
             data::MobCategory::Monster,
@@ -175,6 +204,18 @@ namespace terila::entity {
         static std::uint32_t random(std::uint32_t& rng) {
             rng = rng * 1664525u + 1013904223u;
             return rng >> 8;
+        }
+
+        static int random_between(std::uint32_t& rng, int low, int high) {
+            if (high <= low) {
+                return low;
+            }
+            return low + static_cast<int>(random(rng) %
+                static_cast<std::uint32_t>(high - low + 1));
+        }
+
+        static float random_float(std::uint32_t& rng) {
+            return static_cast<float>(random(rng) & 0x00FFFFFFu) / 16777216.0f;
         }
 
         static std::uint64_t chunk_key(std::int32_t cx, std::int32_t cz) {
@@ -221,9 +262,8 @@ namespace terila::entity {
                 }));
         }
 
-        // Rebuilds the spawnable chunk list only when a player changed chunk, and counts the
-        // living mobs in it in one pass. Both used to cost a full rebuild and a player loop
-        // per mob, every tick.
+        // Rebuilds the spawnable chunk list only when a player changed chunk. Both used to
+        // cost a full rebuild and a player loop per mob, every tick.
         bool refresh_chunks(const std::vector<PlayerPos>& players) {
             std::vector<std::pair<std::int32_t, std::int32_t>> centers;
             centers.reserve(players.size());
@@ -272,19 +312,47 @@ namespace terila::entity {
             }
         }
 
-        bool near_player_or_spawn(const std::vector<PlayerPos>& players, double x,
-            double z) const {
-            for (const auto& player : players) {
-                if (distance_squared(x, z, player.x, player.z) <
-                    kMinPlayerDistance * kMinPlayerDistance) {
+        // The per player count the local cap is written against: a player who is standing in
+        // a crowd has no room left around them, no matter what the global count says.
+        void count_local(const MobManager& mobs, const std::vector<PlayerPos>& players) {
+            local_counts_.assign(players.size(), std::array<std::size_t, 8>{});
+            for (std::size_t index = 0; index < players.size(); ++index) {
+                const auto& player = players[index];
+                for (const auto& mob : mobs.mobs()) {
+                    if (mob.dead || mob.persistent) {
+                        continue;
+                    }
+                    const double dx = mob.x - player.x;
+                    const double dz = mob.z - player.z;
+                    if (dx * dx + dz * dz > kPlayerSpawnRange * kPlayerSpawnRange) {
+                        continue;
+                    }
+                    ++local_counts_[index][static_cast<std::size_t>(mob.category())];
+                }
+            }
+        }
+
+        bool can_spawn_locally(std::int32_t cx, std::int32_t cz,
+            data::MobCategory category) const {
+            const int per_chunk = max_instances(category);
+            if (per_chunk <= 0) {
+                return false;
+            }
+            bool near_a_player = false;
+            for (std::size_t index = 0; index < player_chunks_.size(); ++index) {
+                const auto [player_cx, player_cz] = player_chunks_[index];
+                if (std::abs(player_cx - cx) > kSpawnChunkRadius ||
+                    std::abs(player_cz - cz) > kSpawnChunkRadius) {
+                    continue;
+                }
+                near_a_player = true;
+                if (index >= local_counts_.size() ||
+                    local_counts_[index][static_cast<std::size_t>(category)] <
+                        static_cast<std::size_t>(per_chunk)) {
                     return true;
                 }
             }
-            if (has_spawn_point_ && distance_squared(x, z,
-                static_cast<double>(spawn_x_), static_cast<double>(spawn_z_)) <
-                kMinSpawnPointDistance * kMinSpawnPointDistance) {
-                return true;
-            }
+            (void)near_a_player;
             return false;
         }
 
@@ -295,7 +363,6 @@ namespace terila::entity {
         }
 
         // A world can be explored for days; the counter per chunk must not follow it forever.
-        // Once the map is over the bound, chunks nobody is near any more are dropped.
         void bound_local_time(const std::unordered_set<std::uint64_t>& live) {
             if (local_time_.size() <= kMaxTrackedChunks) {
                 return;
@@ -325,61 +392,109 @@ namespace terila::entity {
             }
         }
 
-        void attempt_chunk(MobManager& mobs, const std::vector<PlayerPos>& players,
-            std::int32_t cx, std::int32_t cz, data::MobCategory category, bool night,
-            std::uint32_t& rng, std::int64_t game_time, std::size_t& count,
-            std::size_t limit) {
-            if (count >= limit) {
+        // One chunk of one category: a random spot in the column, then up to three groups of
+        // drifting positions around it. Every position re-picks the species, which is what
+        // makes a herd one species and the next group another.
+        void spawn_chunk(MobManager& mobs, const std::vector<PlayerPos>& players,
+            std::int32_t cx, std::int32_t cz, data::MobCategory category, std::uint32_t& rng,
+            std::size_t& count, std::size_t limit, std::int64_t game_time) {
+            const std::int32_t start_x = cx * 16 + random_between(rng, 0, 15);
+            const std::int32_t start_z = cz * 16 + random_between(rng, 0, 15);
+            const int top = height_at(start_x, start_z);
+            const int start_y = random_between(rng, world_.min_y, std::max(world_.min_y, top));
+            if (start_y < world_.min_y + 1) {
                 return;
             }
-            const auto start_x = cx * 16 + static_cast<std::int32_t>(random(rng) % 16);
-            const auto start_z = cz * 16 + static_cast<std::int32_t>(random(rng) % 16);
-            if (near_player_or_spawn(players, start_x + 0.5, start_z + 0.5)) {
-                return;
-            }
-
-            const int biome = world_.biome_index ? world_.biome_index(start_x, start_z) : -1;
-            const auto* list = list_for(biome);
-            if (list == nullptr) {
-                return;
-            }
-            const auto* entry = pick(list, category, rng);
-            if (entry == nullptr) {
-                return;
-            }
-            const auto* spec = data::find_mob_by_name(std::string(entry->type));
-            if (spec == nullptr || spec->category != category) {
+            // A full block at the spot is a redstone conductor: nothing is placed inside one.
+            if (kind_at(start_x, start_y, start_z) == SpawnBlock::Solid) {
                 return;
             }
 
-            // The threat level is what a naturally spawned mob is created with; it is
-            // computed here so the equipment work has a single source for it.
-            if (category == data::MobCategory::Monster) {
-                (void)threat_level(difficulty_, game_time, local_ticks(cx, cz),
-                    moon_brightness_);
-            }
+            int cluster = 0;
+            for (int group = 0; group < kGroupsPerChunk; ++group) {
+                std::int32_t x = start_x;
+                std::int32_t z = start_z;
+                const data::BiomeSpawn* entry = nullptr;
+                const data::MobSpec* spec = nullptr;
+                int pack = 0;
+                int placed = 0;
+                const int positions = static_cast<int>(
+                    std::ceil(random_float(rng) * static_cast<float>(kMaxSpawnClusterSize)));
 
-            const int pack = entry->min_count +
-                static_cast<int>(random(rng) % static_cast<std::uint32_t>(
-                    entry->max_count - entry->min_count + 1));
+                for (int i = 0; i < positions; ++i) {
+                    x += random_between(rng, 0, kGroupDrift - 1) -
+                        random_between(rng, 0, kGroupDrift - 1);
+                    z += random_between(rng, 0, kGroupDrift - 1) -
+                        random_between(rng, 0, kGroupDrift - 1);
+                    if (!far_enough_from_players(players, x, start_y, z)) {
+                        continue;
+                    }
+                    if (has_spawn_point_ && distance_squared(static_cast<double>(x) + 0.5,
+                        static_cast<double>(z) + 0.5, static_cast<double>(spawn_x_),
+                        static_cast<double>(spawn_z_)) <
+                        kMinSpawnPointDistance * kMinSpawnPointDistance) {
+                        continue;
+                    }
+                    if (chunk_set_.count(chunk_key(x >> 4, z >> 4)) == 0) {
+                        continue;
+                    }
 
-            for (int i = 0; i < pack && count < limit; ++i) {
-                const double x = static_cast<double>(start_x) + 0.5 +
-                    static_cast<double>(static_cast<int>(random(rng) % 7)) - 3.0;
-                const double z = static_cast<double>(start_z) + 0.5 +
-                    static_cast<double>(static_cast<int>(random(rng) % 7)) - 3.0;
-                if (near_player_or_spawn(players, x, z)) {
-                    continue;
-                }
-                const bool baby = category != data::MobCategory::Monster &&
-                    (random(rng) % 100) < 5;
-                if (place(mobs, *spec, x, z, baby, night, rng)) {
+                    if (entry == nullptr) {
+                        const int biome = world_.biome_index ? world_.biome_index(x, z) : -1;
+                        const auto* list = list_for(biome);
+                        if (list == nullptr) {
+                            break;
+                        }
+                        entry = pick(list, category, rng);
+                        if (entry == nullptr) {
+                            break;
+                        }
+                        spec = data::find_mob_by_name(std::string(entry->type));
+                        if (spec == nullptr || spec->category != category) {
+                            break;
+                        }
+                        pack = random_between(rng, entry->min_count, entry->max_count);
+                        if (category == data::MobCategory::Monster) {
+                            (void)threat_level(difficulty_, game_time,
+                                local_ticks(cx, cz), moon_brightness_);
+                        }
+                    }
+
+                    if (!place_at(mobs, *spec, x, start_y, z, rng)) {
+                        continue;
+                    }
+                    ++cluster;
+                    ++placed;
                     ++count;
+                    if (cluster >= kMaxSpawnClusterSize || count >= limit) {
+                        return;
+                    }
+                    if (placed >= pack) {
+                        break;
+                    }
                 }
             }
         }
 
+        bool far_enough_from_players(const std::vector<PlayerPos>& players, std::int32_t x,
+            std::int32_t y, std::int32_t z) const {
+            for (const auto& player : players) {
+                const double dx = static_cast<double>(x) + 0.5 - player.x;
+                const double dy = static_cast<double>(y) - player.y;
+                const double dz = static_cast<double>(z) + 0.5 - player.z;
+                if (dx * dx + dy * dy + dz * dz <=
+                    kMinPlayerDistance * kMinPlayerDistance) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // The population a fresh world starts with. The biome's own list decides which
+        // category a spot is offered to, and the same placement rules apply as in the cycle,
+        // so nothing appears inside a hill or on a block its species cannot stand on.
         bool place_any(MobManager& mobs, double x, double z, bool night, std::uint32_t& rng) {
+            (void)night;
             const int biome = world_.biome_index
                 ? world_.biome_index(static_cast<std::int32_t>(std::floor(x)),
                     static_cast<std::int32_t>(std::floor(z)))
@@ -389,9 +504,9 @@ namespace terila::entity {
                 return false;
             }
 
-            // The initial pass fills the surface first, which is what a starting world needs;
-            // the monster rule of the cycle keeps it populated afterwards. A flooded column
-            // is offered to the water categories instead, so an ocean starts with fish.
+            // The starting pass fills the surface first, which is what a starting world needs;
+            // a flooded column is offered to the water categories instead, so an ocean starts
+            // with fish.
             const bool water = world_.is_water && world_.is_water(
                 static_cast<std::int32_t>(std::floor(x)),
                 static_cast<std::int32_t>(std::floor(z)));
@@ -414,7 +529,11 @@ namespace terila::entity {
                 static_cast<std::size_t>(max_instances(category))) {
                 return false;
             }
-            return place(mobs, *spec, x, z, false, night, rng);
+
+            const auto bx = static_cast<std::int32_t>(std::floor(x));
+            const auto bz = static_cast<std::int32_t>(std::floor(z));
+            const int y = spawn_y(*spec, bx, bz, rng);
+            return place_at(mobs, *spec, bx, y, bz, rng);
         }
 
         const data::BiomeSpawn* pick(const data::BiomeSpawnList* list,
@@ -445,20 +564,151 @@ namespace terila::entity {
             return nullptr;
         }
 
-        // One spawn: the position, the placement rule, the light rule, then the mob.
-        bool place(MobManager& mobs, const data::MobSpec& spec, double x, double z, bool baby,
-            bool night, std::uint32_t& rng) {
-            const auto bx = static_cast<std::int32_t>(std::floor(x));
-            const auto bz = static_cast<std::int32_t>(std::floor(z));
-            const int y = spawn_y(spec, bx, bz, rng);
-            if (!place_allowed(spec, bx, y, bz)) {
+        // One spawn: the position, the placement rule, the light rule, the box the mob would
+        // fill, and only then the mob.
+        bool place_at(MobManager& mobs, const data::MobSpec& spec, std::int32_t x,
+            std::int32_t y, std::int32_t z, std::uint32_t& rng) {
+            if (!placement_ok(spec, x, y, z)) {
                 return false;
             }
-            if (!light_allowed(spec, bx, y, bz, night)) {
+            if (!light_ok(spec, x, y, z, rng)) {
                 return false;
             }
-            return mobs.spawn_at(std::string(spec.id), x, static_cast<double>(y), z, baby,
-                false);
+            if (!box_clear(spec, x, y, z)) {
+                return false;
+            }
+            return mobs.spawn_at(std::string(spec.id), static_cast<double>(x) + 0.5,
+                static_cast<double>(y), static_cast<double>(z) + 0.5, false, false);
+        }
+
+        // SpawnPlacements: on ground wants the block below to own the spawn and both cells the
+        // mob fills to be empty; in water wants the fluid itself and no full block above it.
+        bool placement_ok(const data::MobSpec& spec, std::int32_t x, std::int32_t y,
+            std::int32_t z) {
+            switch (spec.placement) {
+            case data::SpawnPlacement::InWater:
+                return kind_at(x, y, z) == SpawnBlock::Water &&
+                    kind_at(x, y + 1, z) != SpawnBlock::Solid;
+            case data::SpawnPlacement::InLava:
+                return false;
+            case data::SpawnPlacement::OnGround: {
+                const SpawnBlock below = kind_at(x, y - 1, z);
+                if (below != SpawnBlock::Solid && below != SpawnBlock::Soil) {
+                    return false;
+                }
+                return empty_spawn_block(x, y, z) && empty_spawn_block(x, y + 1, z);
+            }
+            case data::SpawnPlacement::NoRestrictions:
+            default:
+                return empty_spawn_block(x, y, z);
+            }
+        }
+
+        // NaturalSpawner.isValidEmptySpawnBlock: no full collision box, no fluid, and not a
+        // block the game forbids spawning inside.
+        SpawnBlock kind_at(std::int32_t x, std::int32_t y, std::int32_t z) const {
+            if (world_.block_kind) {
+                return world_.block_kind(x, y, z);
+            }
+            const int surface = world_.surface_y ? world_.surface_y(x, z) : 64;
+            if (y < surface) {
+                return y == surface - 1 ? SpawnBlock::Soil : SpawnBlock::Solid;
+            }
+            return SpawnBlock::Air;
+        }
+
+        bool empty_spawn_block(std::int32_t x, std::int32_t y, std::int32_t z) const {
+            const SpawnBlock kind = kind_at(x, y, z);
+            return kind == SpawnBlock::Air || kind == SpawnBlock::Plant;
+        }
+
+        int height_at(std::int32_t x, std::int32_t z) const {
+            if (world_.height_at) {
+                return world_.height_at(x, z);
+            }
+            if (world_.surface_y) {
+                return world_.surface_y(x, z);
+            }
+            return world_.sea_level + 1;
+        }
+
+        // The light test of a species. A monster reads the stored sky and block light the way
+        // the game does: the sky alone may already rule it out, then the block light limit,
+        // and the brightness left after the sun's darkening is compared to a random value
+        // from the dimension's window. An animal only asks for a raw brightness above eight.
+        bool light_ok(const data::MobSpec& spec, std::int32_t x, std::int32_t y,
+            std::int32_t z, std::uint32_t& rng) const {
+            if (spec.light == data::SpawnLight::Any) {
+                return true;
+            }
+            const int sky = world_.sky_light ? world_.sky_light(x, y, z) : 15;
+            const int block = world_.block_light ? world_.block_light(x, y, z) : 0;
+            if (sky < 0 || block < 0) {
+                return false;
+            }
+            // GlowSquid.checkGlowSquidSpawnRules: the one underground water creature of the
+            // overworld only appears in dark water well below the sea.
+            if (spec.category == data::MobCategory::UndergroundWaterCreature) {
+                if (y > world_.sea_level - 33) {
+                    return false;
+                }
+                if (std::max(sky, block) != 0) {
+                    return false;
+                }
+                return kind_at(x, y, z) == SpawnBlock::Water;
+            }
+            if (spec.light == data::SpawnLight::Bright) {
+                if (world_.animals_spawnable) {
+                    if (!world_.animals_spawnable(x, y - 1, z)) {
+                        return false;
+                    }
+                }
+                else if (kind_at(x, y - 1, z) != SpawnBlock::Soil) {
+                    return false;
+                }
+                return std::max(sky, block) > 8;
+            }
+
+            // Monster.isDarkEnoughToSpawn.
+            if (sky > static_cast<int>(random(rng) % 32u)) {
+                return false;
+            }
+            if (world_.monster_spawn_block_light_limit < 15 &&
+                block > world_.monster_spawn_block_light_limit) {
+                return false;
+            }
+            const int brightness = std::max(block, sky - sky_darkening_);
+            const int window = random_between(rng, world_.monster_spawn_light_min,
+                world_.monster_spawn_light_max);
+            return brightness <= window;
+        }
+
+        // noCollision of the box a mob of this size would occupy, in whole blocks.
+        bool box_clear(const data::MobSpec& spec, std::int32_t x, std::int32_t y,
+            std::int32_t z) const {
+            const double half = static_cast<double>(spec.width) * 0.5;
+            const double center_x = static_cast<double>(x) + 0.5;
+            const double center_z = static_cast<double>(z) + 0.5;
+            const int min_x = static_cast<int>(std::floor(center_x - half));
+            const int max_x = static_cast<int>(std::ceil(center_x + half)) - 1;
+            const int min_z = static_cast<int>(std::floor(center_z - half));
+            const int max_z = static_cast<int>(std::ceil(center_z + half)) - 1;
+            const int max_y = static_cast<int>(std::ceil(
+                static_cast<double>(y) + static_cast<double>(spec.height))) - 1;
+
+            for (int by = y; by <= max_y; ++by) {
+                for (int bx = min_x; bx <= max_x; ++bx) {
+                    for (int bz = min_z; bz <= max_z; ++bz) {
+                        const bool solid = world_.collides
+                            ? world_.collides(bx, by, bz)
+                            : kind_at(bx, by, bz) == SpawnBlock::Solid;
+                        if (solid) {
+                            return false;
+                        }
+                    }
+                }
+            }
+            return true;
         }
 
         // The block a mob would stand in. Monsters and cave water sample below the surface,
@@ -502,96 +752,7 @@ namespace terila::entity {
         }
 
         static constexpr int kMaxStepUp = 4;
-
-        SpawnBlock kind_at(std::int32_t x, std::int32_t y, std::int32_t z) const {
-            if (world_.block_kind) {
-                return world_.block_kind(x, y, z);
-            }
-            const int surface = world_.surface_y ? world_.surface_y(x, z) : 64;
-            if (world_.is_water && world_.is_water(x, z)) {
-                return y <= surface ? SpawnBlock::Water : SpawnBlock::Air;
-            }
-            if (y < surface) {
-                return y == surface - 1 ? SpawnBlock::Soil : SpawnBlock::Solid;
-            }
-            return SpawnBlock::Air;
-        }
-
-        bool place_allowed(const data::MobSpec& spec, std::int32_t x, std::int32_t y,
-            std::int32_t z) const {
-            const SpawnBlock here = kind_at(x, y, z);
-            const SpawnBlock below = kind_at(x, y - 1, z);
-            const SpawnBlock above = kind_at(x, y + 1, z);
-
-            switch (spec.placement) {
-            case data::SpawnPlacement::InWater: {
-                if (here != SpawnBlock::Water) {
-                    return false;
-                }
-                if (above == SpawnBlock::Solid || above == SpawnBlock::Soil) {
-                    return false;
-                }
-                if (spec.category == data::MobCategory::UndergroundWaterCreature) {
-                    if (y > kUndergroundWaterMaxY) {
-                        return false;
-                    }
-                    // Underground means under a roof: open water is the surface category's.
-                    const SpawnBlock roof = kind_at(x, y + 3, z);
-                    if (roof != SpawnBlock::Solid && roof != SpawnBlock::Soil) {
-                        return false;
-                    }
-                }
-                if (spec.category == data::MobCategory::WaterAmbient) {
-                    if (above != SpawnBlock::Water || below != SpawnBlock::Water) {
-                        return false;
-                    }
-                    if (y < world_.sea_level - 13 || y > world_.sea_level) {
-                        return false;
-                    }
-                }
-                return true;
-            }
-            case data::SpawnPlacement::InLava:
-                return false;
-            case data::SpawnPlacement::OnGround: {
-                if (here != SpawnBlock::Air) {
-                    return false;
-                }
-                if (above != SpawnBlock::Air && above != SpawnBlock::Plant) {
-                    return false;
-                }
-                if (below != SpawnBlock::Solid && below != SpawnBlock::Soil) {
-                    return false;
-                }
-                // The animals tag: an animal stands on a surface it can graze, not on stone.
-                if (spec.light != data::SpawnLight::Dark && below != SpawnBlock::Soil) {
-                    return false;
-                }
-                return true;
-            }
-            case data::SpawnPlacement::NoRestrictions:
-            default:
-                // Nothing is required of the position, but nothing lives inside a fluid
-                // either; the species still has to stand on something that is not water.
-                return here == SpawnBlock::Air && below != SpawnBlock::Water;
-            }
-        }
-
-        bool light_allowed(const data::MobSpec& spec, std::int32_t x, std::int32_t y,
-            std::int32_t z, bool night) const {
-            if (spec.light == data::SpawnLight::Any) {
-                return true;
-            }
-            const int sky = world_.sky_light ? world_.sky_light(x, y, z) : 15;
-            const int block = world_.block_light ? world_.block_light(x, y, z) : 0;
-            const int sky_now = night ? std::max(0, sky - kNightSkyDarken) : sky;
-            const int brightness = std::max(sky_now, block);
-
-            if (spec.light == data::SpawnLight::Dark) {
-                return block == 0 && brightness < 8;
-            }
-            return brightness > 8;
-        }
+        static constexpr double kPlayerSpawnRange = 128.0;
 
         SpawnWorld world_;
         Difficulty difficulty_ = Difficulty::Normal;
@@ -599,6 +760,7 @@ namespace terila::entity {
         std::int32_t spawn_z_ = 0;
         bool has_spawn_point_ = false;
         float moon_brightness_ = 0.0f;
+        int sky_darkening_ = -1;
         std::size_t chunk_cursor_ = 0;
         std::size_t chunk_list_builds_ = 0;
         std::vector<std::pair<std::int32_t, std::int32_t>> player_chunks_;
@@ -607,6 +769,7 @@ namespace terila::entity {
         std::array<const data::BiomeSpawnList*, kBiomeCount> biome_lists_{};
         bool biome_lists_ready_ = false;
         std::unordered_map<std::uint64_t, std::int64_t> local_time_;
+        std::vector<std::array<std::size_t, 8>> local_counts_;
     };
 
 } // namespace terila::entity

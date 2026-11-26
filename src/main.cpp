@@ -5,6 +5,7 @@
 #endif
 #include "log/logger.hpp"
 #include "network/connection.hpp"
+#include "data/block_light_loader.hpp"
 #include "data/recipe_book.hpp"
 #include "data/registry_data.hpp"
 #include "data/registry_loader.hpp"
@@ -329,6 +330,9 @@ int main() {
     terila::data::load_command_tree(data.command_tree_payload, "commands/tree.nbt");
 
     terila::data::load_blocks(data, "blocks/state_ids.json");
+    // The light engine is fed the game's own block data, so a window, a slab or a tuft of
+    // grass lets light through the way it does in the game.
+    terila::data::load_block_light(data, "blocks/minecraft.json");
     // After the state ids: breaking is answered per state, not per block kind.
     terila::data::load_block_break_info(data, "blocks/minecraft.json");
     // The other half of "how long does this dig take": which tags a block is in, and how
@@ -369,6 +373,38 @@ int main() {
         }
         LOG_INFO(Config, "chunk cache: {} columns per dimension", capacity);
     }
+
+    // The port is taken before the world is built: a server that answers a login only after
+    // its terrain is ready looks dead to everyone who tries, and the game itself listens
+    // first and prepares the spawn area afterwards. Work still runs on this thread, so a
+    // client that connects now waits in the backlog instead of being refused.
+    asio::io_context io;
+    std::error_code ec;
+
+    asio::ip::address bind_addr = asio::ip::make_address(srv.bind_address, ec);
+    if (ec) {
+        LOG_FATAL(Network, "invalid bind address '{}': {}", srv.bind_address, ec.message());
+        return 7;
+    }
+
+    asio::ip::tcp::endpoint endpoint(bind_addr, srv.port);
+    asio::ip::tcp::acceptor acceptor(io);
+
+    acceptor.open(endpoint.protocol(), ec);
+#ifndef _WIN32
+    // On Windows SO_REUSEADDR lets a second process bind a port that is already listening,
+    // so two servers would answer at once; there it stays off.
+    if (!ec) acceptor.set_option(asio::ip::tcp::acceptor::reuse_address(true), ec);
+#endif
+    if (!ec) acceptor.bind(endpoint, ec);
+    if (!ec) acceptor.listen(asio::socket_base::max_listen_connections, ec);
+
+    if (ec) {
+        LOG_FATAL(Network, "failed to bind to {}:{} — {}", srv.bind_address, srv.port, ec.message());
+        return 7;
+    }
+
+    LOG_INFO(Network, "listening on {}:{}", srv.bind_address, srv.port);
 
     // One terrain generator decides where the ground is, so mobs stand on the surface
     // instead of the old flat layer.
@@ -415,9 +451,17 @@ int main() {
     // generator the turned form of every state a template can hold.
     const terila::world::worldgen::StateRotator rotate_state =
         terila::world::worldgen::template_rotator(data);
+    // The light engine is fed the game's own block data: every state says how much light it
+    // emits, how much it takes away, and whether it has a collision box the spawner respects.
+    terila::world::LightTable light_table;
+    light_table.reserve(data.block_light.size());
+    for (const auto& [state, info] : data.block_light) {
+        light_table.emplace(state, terila::world::LightBlock{
+            info.emission, info.dampening, info.sky_down });
+    }
     if (!world_terrain.init(world_type, data.overworld.min_y, data.overworld.height / 16,
             world_seed, resolve_block_id, resolve_biome_id, resolve_state_text,
-            terila::world::worldgen::DimensionKind::Overworld, rotate_state)) {
+            terila::world::worldgen::DimensionKind::Overworld, rotate_state, &light_table)) {
         LOG_FATAL(Data, "{} world generator failed to initialise",
             terila::world::world_type_name(world_type));
         return 7;
@@ -466,16 +510,65 @@ int main() {
     spawn_world.is_water = [&world_terrain](std::int32_t x, std::int32_t z) {
         return world_terrain.surface_height(x, z) + 1 <= world_terrain.sea_level();
         };
-    spawn_world.block_light = [](std::int32_t, std::int32_t, std::int32_t) { return 0; };
-    spawn_world.sky_light = [&world_terrain](std::int32_t x, std::int32_t y, std::int32_t z) {
-        // Everything above the column's sky top sees the sky; underneath it is roofed.
-        return y > world_terrain.sky_top(x, z) ? 15 : 0;
+    spawn_world.height_at = [&world_terrain](std::int32_t x, std::int32_t z) {
+        return world_terrain.sky_top(x, z) + 1;
+        };
+    // The stored light of a column, read out of the chunk the clients already received. An
+    // unloaded column reports -1, and the spawner skips it: the game never spawns in terrain
+    // nobody holds either.
+    const auto stored_light = [](std::int32_t x, std::int32_t y, std::int32_t z,
+        terila::world::LightLayer layer) -> int {
+        auto& cache = terila::world::WorldContext::shared().chunks();
+        const auto* entry = cache.find(x >> 4, z >> 4);
+        if (entry == nullptr) {
+            return -1;
+        }
+        return terila::world::light_level_at(entry->chunk, x, y, z, layer);
+    };
+    spawn_world.block_light = [stored_light](std::int32_t x, std::int32_t y, std::int32_t z) {
+        return stored_light(x, y, z, terila::world::LightLayer::Block);
+        };
+    spawn_world.sky_light = [stored_light](std::int32_t x, std::int32_t y, std::int32_t z) {
+        return stored_light(x, y, z, terila::world::LightLayer::Sky);
         };
     spawn_world.sea_level = world_terrain.sea_level();
+    spawn_world.min_y = data.overworld.min_y;
+    spawn_world.world_top = data.overworld.min_y + data.overworld.height - 1;
+    spawn_world.monster_spawn_light_min = data.overworld.monster_spawn_light_min;
+    spawn_world.monster_spawn_light_max = data.overworld.monster_spawn_light_max;
+    spawn_world.monster_spawn_block_light_limit = data.overworld.monster_spawn_block_light_limit;
     // SpawnPlacements asks three things of a position: is it empty, what is below it, and is
     // that surface the animals tag. The world generator answers with one classification.
     spawn_world.block_kind = [&world_terrain](std::int32_t x, std::int32_t y,
         std::int32_t z) { return world_terrain.block_kind_at(x, y, z); };
+    // The box a mob would fill is tested against the states that actually collide, and the
+    // animal rule against the game's own animals tag, not against a guessed block kind.
+    std::unordered_set<std::int32_t> colliding_states;
+    colliding_states.reserve(data.block_light.size());
+    for (const auto& [state, info] : data.block_light) {
+        if (info.collides) colliding_states.insert(state);
+    }
+    std::unordered_set<std::int32_t> animals_states;
+    for (const auto& [name, variants] : data.block_states) {
+        const auto tags = data.block_tags.find(name);
+        if (tags == data.block_tags.end() ||
+            tags->second.count("minecraft:animals_spawnable_on") == 0) {
+            continue;
+        }
+        for (const auto& variant : variants) {
+            animals_states.insert(variant.id);
+        }
+    }
+    spawn_world.collides = [&world_terrain, &colliding_states](std::int32_t x, std::int32_t y,
+        std::int32_t z) {
+        return colliding_states.count(world_terrain.state_at(x, y, z)) != 0;
+        };
+    spawn_world.animals_spawnable = [&world_terrain, &animals_states](std::int32_t x,
+        std::int32_t y, std::int32_t z) {
+        return animals_states.count(world_terrain.state_at(x, y, z)) != 0;
+        };
+    LOG_DEBUG(Entity, "spawn world: {} colliding states, {} animal surfaces",
+        colliding_states.size(), animals_states.size());
     spawner.set_world(spawn_world);
     spawner.set_spawn_point(spawn.x, spawn.z);
     spawner.set_difficulty(world_difficulty);
@@ -499,15 +592,13 @@ int main() {
     auto clock = std::make_shared<terila::world::WorldClock>();
     clock->set_time_of_day(terila::world::WorldClock::kNoon);
 
+    // The starting population is placed on the first tick that has a joined player, not
+    // while the server boots: a mob only exists in a chunk somebody holds, which is what the
+    // game does, and the light a spawn is tested against only exists once its chunk does.
     std::uint32_t population_rng = static_cast<std::uint32_t>(world_terrain.seed()) ^ 0x5EED5EEDu;
+    bool population_started = false;
     spawner.set_moon_brightness(clock->sky_darken());
-    const std::size_t spawned = spawner.initial(mobs, spawn.x, spawn.z, 96.0,
-        population_rng, clock->night());
-    LOG_INFO(Entity, "spawned {} mobs around ({}, {}), each from the spawn list of its own biome",
-        spawned, spawn.x, spawn.z);
-    if (spawned == 0) {
-        LOG_WARN(Entity, "the biome spawn list produced nothing — check the entity registry");
-    }
+    spawner.set_sky_darkening(clock->sky_darken_level());
 
     // Items whose id doubles as a placeable block, e.g. minecraft:stone.
     std::unordered_map<std::int32_t, std::int32_t> item_block_state;
@@ -742,35 +833,6 @@ int main() {
         }
     }
 
-    // Network
-    asio::io_context io;
-    std::error_code ec;
-
-    asio::ip::address bind_addr = asio::ip::make_address(srv.bind_address, ec);
-    if (ec) {
-        LOG_FATAL(Network, "invalid bind address '{}': {}", srv.bind_address, ec.message());
-        return 7;
-    }
-
-    asio::ip::tcp::endpoint endpoint(bind_addr, srv.port);
-    asio::ip::tcp::acceptor acceptor(io);
-
-    acceptor.open(endpoint.protocol(), ec);
-#ifndef _WIN32
-    // On Windows SO_REUSEADDR lets a second process bind a port that is already listening,
-    // so two servers would answer at once; there it stays off.
-    if (!ec) acceptor.set_option(asio::ip::tcp::acceptor::reuse_address(true), ec);
-#endif
-    if (!ec) acceptor.bind(endpoint, ec);
-    if (!ec) acceptor.listen(asio::socket_base::max_listen_connections, ec);
-
-    if (ec) {
-        LOG_FATAL(Network, "failed to bind to {}:{} — {}", srv.bind_address, srv.port, ec.message());
-        return 7;
-    }
-
-    LOG_INFO(Network, "listening on {}:{}", srv.bind_address, srv.port);
-
     std::vector<std::weak_ptr<terila::network::Connection>> players;
 
     // The simulation edits the overlay itself, so the tick loop collects the changed cells:
@@ -912,6 +974,21 @@ int main() {
             // at all while a player is still receiving a burst of chunks: the io thread
             // belongs to the stream until the view distance is in.
             spawner.set_moon_brightness(clock->sky_darken());
+            spawner.set_sky_darkening(clock->sky_darken_level());
+            if (!population_started && !player_positions.empty() && !streaming) {
+                population_started = true;
+                const auto& first = player_positions.front();
+                const auto center_x = static_cast<std::int32_t>(std::floor(first.x));
+                const auto center_z = static_cast<std::int32_t>(std::floor(first.z));
+                const std::size_t spawned = spawner.initial(mobs, center_x, center_z, 96.0,
+                    population_rng, clock->night());
+                LOG_INFO(Entity, "spawned {} mobs around ({}, {}), each from the spawn list "
+                    "of its own biome", spawned, center_x, center_z);
+                if (spawned == 0) {
+                    LOG_WARN(Entity, "the biome spawn list produced nothing near the first "
+                        "player — check the entity registry and the loaded chunks");
+                }
+            }
             if (!streaming && spawn_cooldown == 0) {
                 spawner.tick(mobs, player_positions, clock->night(), mobs.rng(),
                     clock->game_time);

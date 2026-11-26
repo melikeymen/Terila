@@ -506,9 +506,25 @@ namespace terila::data {
 			}
 
 			if (!ow.is_null()) {
-				if (ow.contains("min_y"))          out.min_y = ow["min_y"].get<std::int32_t>();
-				if (ow.contains("height"))         out.height = ow["height"].get<std::int32_t>();
-				if (ow.contains("logical_height")) out.logical_height = ow["logical_height"].get<std::int32_t>();
+				const auto& body = ow.contains("data") && ow["data"].is_object() ? ow["data"] : ow;
+				if (body.contains("min_y"))          out.min_y = body["min_y"].get<std::int32_t>();
+				if (body.contains("height"))         out.height = body["height"].get<std::int32_t>();
+				if (body.contains("logical_height")) out.logical_height = body["logical_height"].get<std::int32_t>();
+
+				// The darkness window a monster needs: a uniform range, or one fixed value.
+				if (body.contains("monster_spawn_light_level")) {
+					const auto& level = body["monster_spawn_light_level"];
+					if (level.is_number_integer()) {
+						out.monster_spawn_light_min = level.get<int>();
+						out.monster_spawn_light_max = out.monster_spawn_light_min;
+					}
+					else if (level.is_object()) {
+						out.monster_spawn_light_min = level.value("min_inclusive", 0);
+						out.monster_spawn_light_max = level.value("max_inclusive", 7);
+					}
+				}
+				out.monster_spawn_block_light_limit =
+					body.value("monster_spawn_block_light_limit", 0);
 			}
 			else {
 				LOG_WARN(Data, "overworld entry not found in {}", path);

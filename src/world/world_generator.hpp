@@ -45,7 +45,8 @@ namespace terila::world {
             const terrain::IdResolver& block, const terrain::IdResolver& biome,
             const worldgen::StateTextResolver& state = {},
             worldgen::DimensionKind kind = worldgen::DimensionKind::Overworld,
-            const worldgen::StateRotator& rotate = {}) {
+            const worldgen::StateRotator& rotate = {},
+            const LightTable* light_table = nullptr) {
             type_ = type;
             kind_ = kind;
             min_y_ = min_y;
@@ -56,7 +57,7 @@ namespace terila::world {
 
             if (type_ != WorldType::Flat) {
                 ready_ = terrain_.init(min_y, section_count, seed, block, biome, state, kind,
-                    rotate);
+                    rotate, light_table);
                 return ready_;
             }
 
