@@ -60,7 +60,6 @@ namespace terila::entity {
     public:
         void set_world(SpawnWorld world) { world_ = std::move(world); }
         void set_difficulty(Difficulty difficulty) { difficulty_ = difficulty; }
-        void set_moon_brightness(float brightness) { moon_brightness_ = brightness; }
         void set_spawn_point(std::int32_t x, std::int32_t z) {
             spawn_x_ = x;
             spawn_z_ = z;
@@ -102,7 +101,7 @@ namespace terila::entity {
         // is visited so the cost per tick stays flat no matter how far the players have
         // explored.
         void tick(MobManager& mobs, const std::vector<PlayerPos>& players, bool night,
-            std::uint32_t& rng, std::int64_t game_time) {
+            std::uint32_t& rng) {
             if (players.empty()) {
                 return;
             }
@@ -142,7 +141,7 @@ namespace terila::entity {
                         continue;
                     }
                     spawn_chunk(mobs, players, cx, cz, category, rng, counts[slot],
-                        capacity(category), game_time);
+                        capacity(category));
                 }
             }
             chunk_cursor_ = (chunk_cursor_ + window) % chunks_.size();
@@ -157,11 +156,6 @@ namespace terila::entity {
         // How many chunks the local time is being tracked for. Exposed so the bound can be
         // checked without reaching into the map.
         std::size_t tracked_chunks() const noexcept { return local_time_.size(); }
-
-        std::int64_t local_ticks(std::int32_t cx, std::int32_t cz) const {
-            const auto found = local_time_.find(chunk_key(cx, cz));
-            return found == local_time_.end() ? 0 : found->second;
-        }
 
         // The per-category maximum from the game's own category table.
         static int max_instances(data::MobCategory category) noexcept {
@@ -399,7 +393,7 @@ namespace terila::entity {
         // makes a herd one species and the next group another.
         void spawn_chunk(MobManager& mobs, const std::vector<PlayerPos>& players,
             std::int32_t cx, std::int32_t cz, data::MobCategory category, std::uint32_t& rng,
-            std::size_t& count, std::size_t limit, std::int64_t game_time) {
+            std::size_t& count, std::size_t limit) {
             const std::int32_t start_x = cx * 16 + random_between(rng, 0, 15);
             const std::int32_t start_z = cz * 16 + random_between(rng, 0, 15);
             const int top = height_at(start_x, start_z);
@@ -450,10 +444,6 @@ namespace terila::entity {
                             break;
                         }
                         pack = random_between(rng, entry->min_count, entry->max_count);
-                        if (category == data::MobCategory::Monster) {
-                            (void)threat_level(difficulty_, game_time,
-                                local_ticks(cx, cz), moon_brightness_);
-                        }
                     }
 
                     if (!place_at(mobs, *spec, x, start_y, z, rng)) {
@@ -760,7 +750,6 @@ namespace terila::entity {
         std::int32_t spawn_x_ = 0;
         std::int32_t spawn_z_ = 0;
         bool has_spawn_point_ = false;
-        float moon_brightness_ = 0.0f;
         int sky_darkening_ = -1;
         std::size_t chunk_cursor_ = 0;
         std::size_t chunk_list_builds_ = 0;

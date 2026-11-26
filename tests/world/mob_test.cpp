@@ -414,7 +414,7 @@ TEST(PopulationTest, AnimalsNeedGrassAndStayOutOfTheWater) {
     std::uint32_t water_rng = 0x5A5A5Au;
     EXPECT_EQ(water_spawner.initial(flooded, players, 48.0, water_rng, true), 0u);
     for (int tick = 0; tick < 200; ++tick) {
-        water_spawner.tick(flooded, { { 0.0, 64.0, 0.0, 1 } }, true, water_rng, 0);
+        water_spawner.tick(flooded, { { 0.0, 64.0, 0.0, 1 } }, true, water_rng);
     }
     EXPECT_TRUE(flooded.mobs().empty()) << "no land mob spawns inside water";
 }
@@ -452,7 +452,7 @@ TEST(PopulationTest, MonstersOnlyArriveAtNight) {
     day_spawner.set_world(flat_world(world::terrain::kPlains));
     std::uint32_t day_rng = 0xABCDEFu;
     for (int tick = 0; tick < 400; ++tick) {
-        day_spawner.tick(daytime, players, false, day_rng, 0);
+        day_spawner.tick(daytime, players, false, day_rng);
     }
     for (const auto& mob : daytime.mobs()) {
         EXPECT_NE(mob.category(), data::MobCategory::Monster) << "no monsters in daylight";
@@ -464,7 +464,7 @@ TEST(PopulationTest, MonstersOnlyArriveAtNight) {
     spawner.set_world(flat_world(world::terrain::kPlains));
     std::uint32_t night_rng = 0xABCDEFu;
     for (int tick = 0; tick < 400; ++tick) {
-        spawner.tick(mobs, players, true, night_rng, 0);
+        spawner.tick(mobs, players, true, night_rng);
     }
     // The cap is counted over the spawnable chunks; a mob that wandered out of that area is
     // still alive, so only the ones inside it are counted here.
@@ -490,7 +490,7 @@ TEST(PopulationTest, RuntimeSpawnsKeepTheirDistanceFromPlayers) {
     std::uint32_t rng = 0x7654321u;
     const std::vector<entity::PlayerPos> players = { { 0.0, 64.0, 0.0, 1 } };
     for (int tick = 0; tick < 200; ++tick) {
-        spawner.tick(mobs, players, true, rng, 0);
+        spawner.tick(mobs, players, true, rng);
     }
 
     EXPECT_GT(mobs.mobs().size(), 0u);
@@ -512,7 +512,7 @@ TEST(PopulationTest, PeacefulNeverSpawnsAMonster) {
     std::uint32_t rng = 0x13572468u;
     const std::vector<entity::PlayerPos> players = { { 0.0, 64.0, 0.0, 1 } };
     for (int tick = 0; tick < 400; ++tick) {
-        spawner.tick(mobs, players, true, rng, 0);
+        spawner.tick(mobs, players, true, rng);
     }
     for (const auto& mob : mobs.mobs()) {
         EXPECT_NE(mob.category(), data::MobCategory::Monster)
@@ -746,7 +746,7 @@ TEST(PopulationTest, TheLocalTimeMapDoesNotGrowForever) {
     for (int step = 0; step < 600; ++step) {
         const std::vector<entity::PlayerPos> players = {
             { static_cast<double>(step) * 16.0 + 8.0, 64.0, 0.0, 1 } };
-        spawner.tick(mobs, players, true, rng, 0);
+        spawner.tick(mobs, players, true, rng);
     }
 
     EXPECT_GT(spawner.tracked_chunks(), 0u);
@@ -764,13 +764,13 @@ TEST(PopulationTest, TheChunkListIsOnlyRebuiltWhenAPlayerChangesChunk) {
     std::uint32_t rng = 0xFEEDFACEu;
     const std::vector<entity::PlayerPos> still = { { 8.0, 64.0, 8.0, 1 } };
     for (int tick = 0; tick < 50; ++tick) {
-        spawner.tick(mobs, still, true, rng, 0);
+        spawner.tick(mobs, still, true, rng);
     }
     EXPECT_EQ(spawner.chunk_list_builds(), 1u)
         << "standing still does not rebuild the chunk list every tick";
 
     const std::vector<entity::PlayerPos> moved = { { 8.0 + 16.0, 64.0, 8.0, 1 } };
-    spawner.tick(mobs, moved, true, rng, 0);
+    spawner.tick(mobs, moved, true, rng);
     EXPECT_EQ(spawner.chunk_list_builds(), 2u) << "crossing a chunk border rebuilds it";
 }
 

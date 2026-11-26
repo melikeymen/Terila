@@ -1430,7 +1430,7 @@ TEST(PopulationTest, RealTerrainIsSpawnedInItsOwnLight) {
     EXPECT_GT(day_spawned, 0u) << "the starting pass fills the surface it was given";
     const std::size_t day_monsters = check_mobs(true);
     for (int tick = 0; tick < 60; ++tick) {
-        spawner.tick(mobs, players, false, rng, tick);
+        spawner.tick(mobs, players, false, rng);
     }
     ASSERT_FALSE(mobs.mobs().empty()) << "ground under a sky is ground to spawn on";
     check_mobs(true);
@@ -1440,7 +1440,7 @@ TEST(PopulationTest, RealTerrainIsSpawnedInItsOwnLight) {
     spawner.set_sky_darkening(11);
     spawner.initial(mobs, players, 40.0, rng, true);
     for (int tick = 60; tick < 200; ++tick) {
-        spawner.tick(mobs, players, true, rng, tick);
+        spawner.tick(mobs, players, true, rng);
     }
     EXPECT_GT(check_mobs(false), day_monsters)
         << "a dark surface is where the monsters come from";

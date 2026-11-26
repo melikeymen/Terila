@@ -596,7 +596,6 @@ int main() {
     // game does, and the light a spawn is tested against only exists once its chunk does.
     std::uint32_t population_rng = static_cast<std::uint32_t>(world_terrain.seed()) ^ 0x5EED5EEDu;
     bool population_started = false;
-    spawner.set_moon_brightness(clock->sky_darken());
     spawner.set_sky_darkening(clock->sky_darken_level());
 
     // Items whose id doubles as a placeable block, e.g. minecraft:stone.
@@ -972,7 +971,6 @@ int main() {
             // real noise work, so it runs ten times a second instead of every tick, and not
             // at all while a player is still receiving a burst of chunks: the io thread
             // belongs to the stream until the view distance is in.
-            spawner.set_moon_brightness(clock->sky_darken());
             spawner.set_sky_darkening(clock->sky_darken_level());
             if (!population_started && !player_positions.empty() && !streaming) {
                 population_started = true;
@@ -988,8 +986,7 @@ int main() {
                 }
             }
             if (!streaming && spawn_cooldown == 0) {
-                spawner.tick(mobs, player_positions, clock->night(), mobs.rng(),
-                    clock->game_time);
+                spawner.tick(mobs, player_positions, clock->night(), mobs.rng());
                 spawn_cooldown = 10;
             }
             else if (spawn_cooldown > 0) {
