@@ -604,8 +604,10 @@ namespace terila::entity {
             if (!box_clear(spec, x, y, z)) {
                 return false;
             }
+            // The difficulty of the spot decides what the monster was given to wear.
             return mobs.spawn_at(std::string(spec.id), static_cast<double>(x) + 0.5,
-                static_cast<double>(y), static_cast<double>(z) + 0.5, false, false);
+                static_cast<double>(y), static_cast<double>(z) + 0.5, false, false,
+                threat_at(local_ticks(x >> 4, z >> 4)));
         }
 
         // SpawnPlacements: on ground wants the block below to own the spawn and both cells the

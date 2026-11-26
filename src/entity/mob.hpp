@@ -232,11 +232,15 @@ namespace terila::entity {
         // surface first: /summon names a position, not a column.
         // A position that came from a command or a save is where the entity is wanted, so it
         // is persistent unless the caller says otherwise.
+        // A natural spawn also carries the difficulty of the position it appeared in: the
+        // armour a monster was given stays with it, so the threat level has to reach here.
         bool spawn_at(const std::string& type_name, double x, double y, double z,
-            bool baby = false, bool persistent = true) {
+            bool baby = false, bool persistent = true,
+            const ThreatLevel& level = ThreatLevel{}) {
             if (!spawn(type_name, x, z, baby, persistent)) {
                 return false;
             }
+            equip_from_difficulty(mobs_.back(), level);
             mobs_.back().y = y;
             mobs_.back().vy = 0.0;
             mobs_.back().on_ground = false;
@@ -454,6 +458,54 @@ namespace terila::entity {
         static constexpr int    kLoveTicks = 600;
         static constexpr int    kBreedCooldown = 600;
         static constexpr int    kFeedingAgeBoost = 240;   // 10% of the 24000 tick childhood
+
+        // Mob#populateDefaultEquipmentSlots. The special multiplier decides whether an
+        // armoured monster appears at all, the world's own setting decides how far down the
+        // body the armour reaches, and the tier is bumped up to three times. Only the total
+        // armour points matter to a mob here, so the pieces are summed instead of kept per
+        // slot.
+        static constexpr float kArmorChance = 0.15f;
+        static constexpr float kArmorTierChance = 0.1087f;
+        // Feet, legs, chest, head, for leather, copper, gold, chainmail, iron and diamond.
+        static constexpr int kArmorPoints[6][4] = {
+            { 1, 2, 3, 1 },
+            { 1, 3, 4, 2 },
+            { 1, 3, 5, 2 },
+            { 1, 4, 5, 2 },
+            { 2, 5, 6, 2 },
+            { 3, 6, 8, 3 },
+        };
+
+        void equip_from_difficulty(Mob& mob, const ThreatLevel& level) {
+            if (!mob.is_monster()) {
+                return;
+            }
+            const float special = level.special_multiplier();
+            if (random_float() >= kArmorChance * special) {
+                return;
+            }
+
+            int tier = static_cast<int>(next_random() % 3u);
+            for (int i = 0; i < 3; ++i) {
+                if (random_float() < kArmorTierChance) {
+                    ++tier;
+                }
+            }
+            const float partial = level.base == Difficulty::Hard ? 0.1f : 0.25f;
+            int points = 0;
+            for (int slot = 0; slot < 4; ++slot) {
+                if (slot > 0 && random_float() < partial) {
+                    break;
+                }
+                points += kArmorPoints[tier][slot];
+            }
+            mob.armor += static_cast<float>(points);
+        }
+
+        // The game's own float draw: the top bits of the next value, in 0..1.
+        float random_float() {
+            return static_cast<float>(next_random()) / 16777216.0f;
+        }
 
         void grow_up(Mob& mob) {
             mob.baby = false;

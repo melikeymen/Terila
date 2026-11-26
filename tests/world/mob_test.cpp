@@ -41,6 +41,44 @@ namespace {
         return world_view;
     }
 
+    // Fills a flat plains world around a five by five grid of players, one tick at a time,
+    // with nothing but the difficulty, the world's age and the moon to tell the runs apart.
+    void run_the_cycle(entity::MobManager& mobs, entity::Difficulty difficulty,
+        std::int64_t game_time, float moon) {
+        entity::Population spawner;
+        spawner.set_world(flat_world(world::terrain::kPlains));
+        spawner.set_difficulty(difficulty);
+        spawner.set_game_time(game_time);
+        spawner.set_moon_brightness(moon);
+
+        std::vector<entity::PlayerPos> players;
+        for (int i = 0; i < 5; ++i) {
+            for (int j = 0; j < 5; ++j) {
+                entity::PlayerPos player;
+                player.x = static_cast<double>(i) * 64.0;
+                player.y = 64.0;
+                player.z = static_cast<double>(j) * 64.0;
+                player.id = static_cast<std::int32_t>(players.size()) + 1;
+                players.push_back(player);
+            }
+        }
+
+        std::uint32_t rng = 0x51A5E5u;
+        for (int tick = 0; tick < 300; ++tick) {
+            spawner.tick(mobs, players, true, rng);
+        }
+    }
+
+    std::size_t count_monsters(const entity::MobManager& mobs, bool armoured_only) {
+        return static_cast<std::size_t>(std::count_if(mobs.mobs().begin(), mobs.mobs().end(),
+            [armoured_only](const entity::Mob& mob) {
+                if (mob.category() != data::MobCategory::Monster) {
+                    return false;
+                }
+                return !armoured_only || (mob.spec != nullptr && mob.armor > mob.spec->armor);
+            }));
+    }
+
 } // namespace
 
 TEST(MobDataTest, AttributesComeFromTheGameData) {
@@ -119,6 +157,38 @@ TEST(MobTest, SpawnUsesTheSpecAndStandsOnTheGround) {
     EXPECT_DOUBLE_EQ(cow.health, 10.0);
     EXPECT_DOUBLE_EQ(cow.y, 64.0);
     EXPECT_TRUE(cow.on_ground);
+}
+
+TEST(MobTest, TheSpecialMultiplierDecidesWhatAMonsterSpawnsWearing) {
+    // Zombies come with two armour points of their own; anything above that was handed to
+    // them at spawn. Four effective difficulty is where the special multiplier reaches one,
+    // and below two it is zero, so nothing is ever geared there.
+    const auto armoured = [](float effective) {
+        entity::MobManager mobs;
+        make_manager(mobs);
+        const entity::ThreatLevel level{ entity::Difficulty::Hard, effective };
+        for (int i = 0; i < 500; ++i) {
+            mobs.spawn_at("minecraft:zombie", static_cast<double>(i), 64.0, 0.0, false,
+                false, level);
+        }
+        int count = 0;
+        int worst = 0;
+        for (const auto& mob : mobs.mobs()) {
+            const auto points = static_cast<int>(mob.armor - mob.spec->armor);
+            if (points > 0) {
+                ++count;
+                worst = std::max(worst, points);
+            }
+        }
+        EXPECT_LE(worst, 15) << "a full diamond set is the most a spawn carries";
+        return count;
+    };
+
+    EXPECT_EQ(armoured(1.5f), 0) << "a fresh normal world arms nobody";
+    // Fifteen percent of five hundred is seventy five; the bounds are wide enough that only
+    // a change to the rule moves them.
+    EXPECT_GT(armoured(4.0f), 40);
+    EXPECT_LT(armoured(4.0f), 110);
 }
 
 TEST(MobTest, AMobWalksWhereItIsLooking) {
@@ -635,32 +705,8 @@ TEST(PopulationTest, AMoreDangerousWorldCarriesMoreMonsters) {
                                     float moon) {
         entity::MobManager mobs;
         make_manager(mobs);
-        entity::Population spawner;
-        spawner.set_world(flat_world(world::terrain::kPlains));
-        spawner.set_difficulty(difficulty);
-        spawner.set_game_time(game_time);
-        spawner.set_moon_brightness(moon);
-
-        std::vector<entity::PlayerPos> players;
-        for (int i = 0; i < 5; ++i) {
-            for (int j = 0; j < 5; ++j) {
-                entity::PlayerPos player;
-                player.x = static_cast<double>(i) * 64.0;
-                player.y = 64.0;
-                player.z = static_cast<double>(j) * 64.0;
-                player.id = static_cast<std::int32_t>(players.size()) + 1;
-                players.push_back(player);
-            }
-        }
-
-        std::uint32_t rng = 0x51A5E5u;
-        for (int tick = 0; tick < 60; ++tick) {
-            spawner.tick(mobs, players, true, rng);
-        }
-        return static_cast<std::size_t>(std::count_if(mobs.mobs().begin(), mobs.mobs().end(),
-            [](const entity::Mob& mob) {
-                return mob.category() == data::MobCategory::Monster;
-            }));
+        run_the_cycle(mobs, difficulty, game_time, moon);
+        return count_monsters(mobs, false);
     };
 
     const std::size_t fresh = monsters_after(entity::Difficulty::Normal, 0, 0.0f);
@@ -668,6 +714,22 @@ TEST(PopulationTest, AMoreDangerousWorldCarriesMoreMonsters) {
     EXPECT_GT(fresh, 0u) << "a fresh world still gets its share";
     EXPECT_GT(grown, fresh) << "the older, harder world carries more"
         << " (fresh " << fresh << ", grown " << grown << ")";
+}
+
+TEST(PopulationTest, OnlyADangerousWorldArmoursItsMonsters) {
+    // The special multiplier is zero below the middle of the scale and full at its top, so a
+    // fresh normal world gears nobody and an old hard one hands out what it has earned.
+    const auto armoured = [](entity::Difficulty difficulty, std::int64_t game_time, float moon) {
+        entity::MobManager mobs;
+        make_manager(mobs);
+        run_the_cycle(mobs, difficulty, game_time, moon);
+        return count_monsters(mobs, true);
+    };
+
+    EXPECT_EQ(armoured(entity::Difficulty::Normal, 0, 0.0f), 0u)
+        << "nothing is geared below the special multiplier";
+    EXPECT_GT(armoured(entity::Difficulty::Hard, 72000 + 1440000, 1.0f), 3u)
+        << "a full share gears a real part of the population";
 }
 
 TEST(DifficultyTest, PeacefulRemovesTheMonstersThatWereAlreadyThere) {
