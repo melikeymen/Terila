@@ -54,7 +54,8 @@ namespace terila::entity {
         // The share of a chunk's monster spawn budget the world has earned: none while the
         // world is peaceful, a quarter at the bottom of the scale, all of it once the scale
         // is full. Vanilla spends the same budget at every difficulty; here the threat level
-        // is what a world of that age and that moon is allowed to place.
+        // is what a world of that age and that moon is allowed to place, both in the cycle
+        // and in the population a fresh world starts with.
         float monster_share() const noexcept {
             if (base == Difficulty::Peaceful) {
                 return 0.0f;

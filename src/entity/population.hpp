@@ -163,23 +163,12 @@ namespace terila::entity {
         // checked without reaching into the map.
         std::size_t tracked_chunks() const noexcept { return local_time_.size(); }
 
-        std::int64_t local_ticks(std::int32_t cx, std::int32_t cz) const {
-            const auto found = local_time_.find(chunk_key(cx, cz));
-            return found == local_time_.end() ? 0 : found->second;
-        }
-
         // How many groups of monsters a chunk is worth. The game spends the same three
         // everywhere; the threat level of this chunk, which grows with the world's age, the
         // time this part of it has been lived in and the moon, decides how much of that
         // budget it gets. A peaceful world earns none, so nothing hostile is placed.
         int monster_groups(std::int32_t cx, std::int32_t cz) const {
-            const auto level = threat_level(difficulty_, game_time_, local_ticks(cx, cz),
-                moon_brightness_);
-            if (level.base == Difficulty::Peaceful) {
-                return 0;
-            }
-            const float budget = static_cast<float>(kGroupsPerChunk) * level.monster_share();
-            return std::max(1, static_cast<int>(std::ceil(budget)));
+            return groups_for(threat_at(local_ticks(cx, cz)));
         }
 
         // The per-category maximum from the game's own category table.
@@ -213,6 +202,9 @@ namespace terila::entity {
         static constexpr int kUndergroundWaterMaxY = 30;
         static constexpr int kWaterFloorSearch = 12;
         static constexpr int kGroupsPerChunk = 3;
+        // The share of the starting pass that is offered to monsters when the world is at the
+        // top of the threat scale.
+        static constexpr int kInitialMonsterPercent = 30;
         static constexpr int kGroupDrift = 6;
 
         static constexpr std::array<data::MobCategory, 7> kCategories = {
@@ -236,6 +228,20 @@ namespace terila::entity {
             }
             return low + static_cast<int>(random(rng) %
                 static_cast<std::uint32_t>(high - low + 1));
+        }
+
+        std::int64_t local_ticks(std::int32_t cx, std::int32_t cz) const {
+            const auto found = local_time_.find(chunk_key(cx, cz));
+            return found == local_time_.end() ? 0 : found->second;
+        }
+
+        ThreatLevel threat_at(std::int64_t local_ticks) const {
+            return threat_level(difficulty_, game_time_, local_ticks, moon_brightness_);
+        }
+
+        static int groups_for(const ThreatLevel& level) {
+            const float budget = static_cast<float>(kGroupsPerChunk) * level.monster_share();
+            return static_cast<int>(std::ceil(budget));
         }
 
         static float random_float(std::uint32_t& rng) {
@@ -523,12 +529,17 @@ namespace terila::entity {
 
             // The starting pass fills the surface first, which is what a starting world needs;
             // a flooded column is offered to the water categories instead, so an ocean starts
-            // with fish.
+            // with fish. The threat level decides how often a land spot is offered to
+            // monsters, so a peaceful world starts without any and an old hard one starts
+            // with its full share. Nothing has been lived in yet, so the local time is zero.
             const bool water = world_.is_water && world_.is_water(bx, bz);
+            const float share = threat_at(0).monster_share();
+            const int monster_percent = static_cast<int>(
+                static_cast<float>(kInitialMonsterPercent) * share + 0.5f);
             const auto category = water
                 ? ((random(rng) % 100) < 60 ? data::MobCategory::WaterCreature
                     : data::MobCategory::WaterAmbient)
-                : (random(rng) % 100) < 30
+                : static_cast<int>(random(rng) % 100) < monster_percent
                 ? data::MobCategory::Monster
                 : (random(rng) % 2) == 0 ? data::MobCategory::Creature
                 : data::MobCategory::Ambient;

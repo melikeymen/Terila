@@ -601,6 +601,33 @@ TEST(PopulationTest, MonsterGroupsFollowTheWorldsThreatLevel) {
     EXPECT_LT(spawner.monster_groups(0, 0), 3);
 }
 
+TEST(PopulationTest, AStartingWorldOnlyStartsWithTheMonstersItEarned) {
+    const auto monsters_at_start = [](entity::Difficulty difficulty, std::int64_t game_time,
+                                       float moon) {
+        entity::MobManager mobs;
+        make_manager(mobs);
+        entity::Population spawner;
+        spawner.set_world(flat_world(world::terrain::kPlains));
+        spawner.set_difficulty(difficulty);
+        spawner.set_game_time(game_time);
+        spawner.set_moon_brightness(moon);
+
+        const std::vector<entity::PlayerPos> players = { { 0.0, 64.0, 0.0, 1 } };
+        std::uint32_t rng = 0x1A17u;
+        const std::size_t spawned = spawner.initial(mobs, players, 160.0, rng, true);
+        EXPECT_GT(spawned, 0u) << "the pass still fills the world";
+        return static_cast<std::size_t>(std::count_if(mobs.mobs().begin(), mobs.mobs().end(),
+            [](const entity::Mob& mob) {
+                return mob.category() == data::MobCategory::Monster;
+            }));
+    };
+
+    // The same rule as the cycle: a peaceful world is handed nothing hostile, an old hard
+    // one is handed its full share.
+    EXPECT_EQ(monsters_at_start(entity::Difficulty::Peaceful, 72000 + 1440000, 1.0f), 0u);
+    EXPECT_GT(monsters_at_start(entity::Difficulty::Hard, 72000 + 1440000, 1.0f), 0u);
+}
+
 TEST(PopulationTest, AMoreDangerousWorldCarriesMoreMonsters) {
     // Same seed, same terrain, same night, same players: only the threat level differs, so a
     // different monster count can only come from the budget it decides.
