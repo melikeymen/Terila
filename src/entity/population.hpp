@@ -48,7 +48,6 @@ namespace terila::entity {
         // The game's animals tag: what an animal may stand on.
         std::function<bool(std::int32_t x, std::int32_t y, std::int32_t z)> animals_spawnable = {};
         std::int32_t min_y = -64;
-        int world_top = 319;
         std::int32_t sea_level = 63;
         // The dimension type's darkness window for monsters: the raw brightness it compares
         // against, and the block light above which nothing hostile appears.
@@ -338,21 +337,18 @@ namespace terila::entity {
             if (per_chunk <= 0) {
                 return false;
             }
-            bool near_a_player = false;
             for (std::size_t index = 0; index < player_chunks_.size(); ++index) {
                 const auto [player_cx, player_cz] = player_chunks_[index];
                 if (std::abs(player_cx - cx) > kSpawnChunkRadius ||
                     std::abs(player_cz - cz) > kSpawnChunkRadius) {
                     continue;
                 }
-                near_a_player = true;
                 if (index >= local_counts_.size() ||
                     local_counts_[index][static_cast<std::size_t>(category)] <
                         static_cast<std::size_t>(per_chunk)) {
                     return true;
                 }
             }
-            (void)near_a_player;
             return false;
         }
 

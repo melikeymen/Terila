@@ -533,7 +533,6 @@ int main() {
         };
     spawn_world.sea_level = world_terrain.sea_level();
     spawn_world.min_y = data.overworld.min_y;
-    spawn_world.world_top = data.overworld.min_y + data.overworld.height - 1;
     spawn_world.monster_spawn_light_min = data.overworld.monster_spawn_light_min;
     spawn_world.monster_spawn_light_max = data.overworld.monster_spawn_light_max;
     spawn_world.monster_spawn_block_light_limit = data.overworld.monster_spawn_block_light_limit;

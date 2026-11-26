@@ -6,11 +6,16 @@
 #include "world/light_engine.hpp"
 #include "world/world_context.hpp"
 
+#include "entity/mob.hpp"
+#include "entity/population.hpp"
+
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <future>
 #include <iostream>
+#include <map>
 #include <utility>
 #include <unordered_map>
 #include <vector>
@@ -26,6 +31,8 @@
 #include <string_view>
 
 using namespace terila::world;
+
+namespace entity = terila::entity;
 
 // Skips a test whose worldgen settings are not on disk.
 #define REQUIRE_VANILLA_DATA()                                              if (!vanilla_data_available()) {                                            GTEST_SKIP() << "input/ with the worldgen settings is missing";     }
@@ -1306,6 +1313,127 @@ TEST(TerrainGeneratorGpuTest, DeviceFieldMatchesTheCpuInEveryDimension) {
                 from_device.sections[section].block_states) << "section " << section;
         }
     }
+}
+
+// The spawn cycle against terrain the game generated itself: the player stands on real
+// ground, the light comes out of the chunk's own arrays and something has to appear.
+TEST(PopulationTest, RealTerrainIsSpawnedInItsOwnLight) {
+    REQUIRE_VANILLA_DATA();
+    const auto generator = make_generator(1337);
+
+    // Grass, so the animals tag has something to match, close enough to the origin that the
+    // chunks around it still generate inside the test's budget.
+    const auto land = find_column(generator, true);
+    ASSERT_NE(land.biome, -1) << "the seed has to offer a patch of grass";
+
+    const std::int32_t center_cx = land.x >> 4;
+    const std::int32_t center_cz = land.z >> 4;
+    std::map<std::pair<std::int32_t, std::int32_t>, Chunk> chunks;
+    for (std::int32_t dz = -1; dz <= 1; ++dz) {
+        for (std::int32_t dx = -1; dx <= 1; ++dx) {
+            chunks[{ center_cx + dx, center_cz + dz }] =
+                generator.generate(center_cx + dx, center_cz + dz);
+        }
+    }
+
+    const auto chunk_of = [&chunks](std::int32_t x, std::int32_t z) -> const Chunk* {
+        const auto found = chunks.find({ x >> 4, z >> 4 });
+        return found == chunks.end() ? nullptr : &found->second;
+    };
+    const auto stored_light = [&chunk_of](std::int32_t x, std::int32_t y, std::int32_t z,
+        LightLayer layer) {
+        const Chunk* chunk = chunk_of(x, z);
+        return chunk == nullptr ? -1 : light_level_at(*chunk, x, y, z, layer);
+    };
+    const auto column_height = [&generator](double x, double z) {
+        return generator.surface_height(static_cast<std::int32_t>(std::floor(x)),
+            static_cast<std::int32_t>(std::floor(z)));
+    };
+
+    entity::SpawnWorld view;
+    view.biome_index = [&](std::int32_t x, std::int32_t z) { return generator.biome_at(x, z); };
+    view.surface_y = [&](std::int32_t x, std::int32_t z) {
+        return generator.surface_height(x, z) + 1;
+    };
+    view.height_at = [&](std::int32_t x, std::int32_t z) { return generator.sky_top(x, z) + 1; };
+    view.is_water = [&](std::int32_t x, std::int32_t z) {
+        return generator.surface_height(x, z) < generator.sea_level();
+    };
+    view.block_light = [&](std::int32_t x, std::int32_t y, std::int32_t z) {
+        return stored_light(x, y, z, LightLayer::Block);
+    };
+    view.sky_light = [&](std::int32_t x, std::int32_t y, std::int32_t z) {
+        return stored_light(x, y, z, LightLayer::Sky);
+    };
+    view.block_kind = [&](std::int32_t x, std::int32_t y, std::int32_t z) {
+        return generator.kind_at(x, y, z);
+    };
+    view.min_y = generator.min_y();
+    view.sea_level = generator.sea_level();
+
+    entity::MobManager mobs;
+    mobs.set_ground_resolver([&column_height](double x, double z) {
+        return static_cast<double>(column_height(x, z)) + 1.0;
+    });
+    mobs.set_water_resolver([&generator, &column_height](double x, double z) {
+        return column_height(x, z) < generator.sea_level();
+    });
+
+    entity::Population spawner;
+    spawner.set_world(view);
+    spawner.set_difficulty(entity::Difficulty::Normal);
+
+    const double player_x = static_cast<double>(land.x) + 0.5;
+    const double player_y = static_cast<double>(land.height) + 1.0;
+    const double player_z = static_cast<double>(land.z) + 0.5;
+    const std::vector<entity::PlayerPos> players = { { player_x, player_y, player_z, 1 } };
+
+    std::uint32_t rng = 0x5EED1234u;
+    spawner.set_sky_darkening(0);
+    const std::size_t day_spawned = spawner.initial(mobs, land.x, land.z, 40.0, rng, false);
+    EXPECT_GT(day_spawned, 0u) << "the starting pass fills the surface it was given";
+    for (int tick = 0; tick < 60; ++tick) {
+        spawner.tick(mobs, players, false, rng, tick);
+    }
+    ASSERT_FALSE(mobs.mobs().empty()) << "ground under a sky is ground to spawn on";
+
+    for (const auto& mob : mobs.mobs()) {
+        // Every position the cycle chose has to be a column somebody generated.
+        EXPECT_NE(chunk_of(static_cast<std::int32_t>(std::floor(mob.x)),
+                      static_cast<std::int32_t>(std::floor(mob.z))), nullptr)
+            << mob.type_name << " left the loaded chunks";
+        // A mob on the ground stands on ground: the position is not floating or buried.
+        ASSERT_NE(mob.spec, nullptr);
+        if (mob.spec->placement == entity::data::SpawnPlacement::OnGround) {
+            const auto below = generator.kind_at(
+                static_cast<std::int32_t>(std::floor(mob.x)),
+                static_cast<std::int32_t>(std::floor(mob.y)) - 1,
+                static_cast<std::int32_t>(std::floor(mob.z)));
+            EXPECT_TRUE(below == entity::SpawnBlock::Solid || below == entity::SpawnBlock::Soil)
+                << mob.type_name << " stands in mid air";
+        }
+        // A monster in the day is only where the stored sky light does not reach it.
+        if (mob.category() == entity::data::MobCategory::Monster) {
+            EXPECT_LE(stored_light(static_cast<std::int32_t>(std::floor(mob.x)),
+                          static_cast<std::int32_t>(std::floor(mob.y)),
+                          static_cast<std::int32_t>(std::floor(mob.z)), LightLayer::Sky), 8)
+                << "daylight keeps the surface safe";
+        }
+    }
+
+    // The night the clock reports darkens the same terrain enough for the monsters.
+    const std::size_t before = mobs.mobs().size();
+    spawner.set_sky_darkening(11);
+    spawner.initial(mobs, land.x, land.z, 40.0, rng, true);
+    for (int tick = 60; tick < 200; ++tick) {
+        spawner.tick(mobs, players, true, rng, tick);
+    }
+    std::size_t monsters = 0;
+    for (const auto& mob : mobs.mobs()) {
+        if (mob.category() == entity::data::MobCategory::Monster) ++monsters;
+    }
+    EXPECT_GT(monsters, 0u) << "a dark surface is where the monsters come from";
+    EXPECT_GT(mobs.mobs().size(), before);
 }
 
 TEST(TerrainGeneratorGpuTest, AutoBackendKeepsTheSameChunk) {

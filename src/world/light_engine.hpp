@@ -13,16 +13,19 @@ namespace terila::world {
 
     enum class LightLayer : std::uint8_t { Sky, Block };
 
-    // The nibble a client would read out of a chunk's light arrays. The payloads are written
+    // The nibble a client would read out of a chunk's light arrays, for a block position of
+    // the world (the chunk it belongs to is the caller's to find). The payloads are written
     // in section order and only for sections that carry light, so the array of a section is
     // found by counting the lit sections below it.
     inline int light_level_at(const Chunk& chunk, std::int32_t x, std::int32_t y,
         std::int32_t z, LightLayer layer) {
         const int local_y = y - chunk.min_y;
         const int height = chunk.section_count * 16;
-        if (local_y < 0 || local_y >= height || x < 0 || x > 15 || z < 0 || z > 15) {
+        if (local_y < 0 || local_y >= height) {
             return 0;
         }
+        const int local_x = x & 15;
+        const int local_z = z & 15;
         const auto& mask = layer == LightLayer::Sky ? chunk.light.sky_y_mask
                                                     : chunk.light.block_y_mask;
         const auto& updates = layer == LightLayer::Sky ? chunk.light.sky_updates
@@ -43,7 +46,7 @@ namespace terila::world {
             return 0;
         }
         const auto& array = updates[index];
-        const int cell = ((local_y % 16) * 16 + z) * 16 + x;
+        const int cell = ((local_y % 16) * 16 + local_z) * 16 + local_x;
         const auto byte = static_cast<std::size_t>(cell / 2);
         if (byte >= array.size()) {
             return 0;
