@@ -977,12 +977,11 @@ int main() {
             if (!population_started && !player_positions.empty() && !streaming) {
                 population_started = true;
                 const auto& first = player_positions.front();
-                const auto center_x = static_cast<std::int32_t>(std::floor(first.x));
-                const auto center_z = static_cast<std::int32_t>(std::floor(first.z));
-                const std::size_t spawned = spawner.initial(mobs, center_x, center_z, 96.0,
+                const std::size_t spawned = spawner.initial(mobs, player_positions, 96.0,
                     population_rng, clock->night());
                 LOG_INFO(Entity, "spawned {} mobs around ({}, {}), each from the spawn list "
-                    "of its own biome", spawned, center_x, center_z);
+                    "of its own biome", spawned, static_cast<std::int32_t>(std::floor(first.x)),
+                    static_cast<std::int32_t>(std::floor(first.z)));
                 if (spawned == 0) {
                     LOG_WARN(Entity, "the biome spawn list produced nothing near the first "
                         "player — check the entity registry and the loaded chunks");

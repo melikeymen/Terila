@@ -1328,9 +1328,11 @@ TEST(PopulationTest, RealTerrainIsSpawnedInItsOwnLight) {
 
     const std::int32_t center_cx = land.x >> 4;
     const std::int32_t center_cz = land.z >> 4;
+    // Two chunks out in every direction: the rules keep spawns 24 blocks away, so a smaller
+    // grid would leave nothing but the player's own reach.
     std::map<std::pair<std::int32_t, std::int32_t>, Chunk> chunks;
-    for (std::int32_t dz = -1; dz <= 1; ++dz) {
-        for (std::int32_t dx = -1; dx <= 1; ++dx) {
+    for (std::int32_t dz = -2; dz <= 2; ++dz) {
+        for (std::int32_t dx = -2; dx <= 2; ++dx) {
             chunks[{ center_cx + dx, center_cz + dz }] =
                 generator.generate(center_cx + dx, center_cz + dz);
         }
@@ -1375,9 +1377,6 @@ TEST(PopulationTest, RealTerrainIsSpawnedInItsOwnLight) {
     mobs.set_ground_resolver([&column_height](double x, double z) {
         return static_cast<double>(column_height(x, z)) + 1.0;
     });
-    mobs.set_water_resolver([&generator, &column_height](double x, double z) {
-        return column_height(x, z) < generator.sea_level();
-    });
 
     entity::Population spawner;
     spawner.set_world(view);
@@ -1388,51 +1387,63 @@ TEST(PopulationTest, RealTerrainIsSpawnedInItsOwnLight) {
     const double player_z = static_cast<double>(land.z) + 0.5;
     const std::vector<entity::PlayerPos> players = { { player_x, player_y, player_z, 1 } };
 
+    // Everything a mob was placed at, judged in one pass: no spawn leaves the columns
+    // somebody generated, no ground mob floats, no monster stands in daylight, and nothing
+    // lands inside the player's reach. Returns the monsters seen.
+    const auto check_mobs = [&](bool daylight) {
+        std::size_t outside = 0;
+        std::size_t floating = 0;
+        std::size_t close = 0;
+        std::size_t lit_monsters = 0;
+        std::size_t monsters = 0;
+        for (const auto& mob : mobs.mobs()) {
+            const auto x = static_cast<std::int32_t>(std::floor(mob.x));
+            const auto y = static_cast<std::int32_t>(std::floor(mob.y));
+            const auto z = static_cast<std::int32_t>(std::floor(mob.z));
+            if (chunk_of(x, z) == nullptr) ++outside;
+            if (mob.spec != nullptr &&
+                mob.spec->placement == entity::data::SpawnPlacement::OnGround) {
+                const auto below = generator.kind_at(x, y - 1, z);
+                if (below != entity::SpawnBlock::Solid && below != entity::SpawnBlock::Soil) {
+                    ++floating;
+                }
+            }
+            const double dx = mob.x - player_x;
+            const double dy = mob.y - player_y;
+            const double dz = mob.z - player_z;
+            if (dx * dx + dy * dy + dz * dz <= 24.0 * 24.0) ++close;
+            if (mob.category() == entity::data::MobCategory::Monster) {
+                ++monsters;
+                if (daylight && stored_light(x, y, z, LightLayer::Sky) > 8) ++lit_monsters;
+            }
+        }
+        EXPECT_EQ(outside, 0u) << "a mob was placed in a column nobody generated";
+        EXPECT_EQ(floating, 0u) << "a ground mob stands in mid air";
+        EXPECT_EQ(close, 0u) << "a mob landed inside the player's reach";
+        EXPECT_EQ(lit_monsters, 0u) << "daylight keeps the surface safe";
+        return monsters;
+    };
+
     std::uint32_t rng = 0x5EED1234u;
     spawner.set_sky_darkening(0);
-    const std::size_t day_spawned = spawner.initial(mobs, land.x, land.z, 40.0, rng, false);
+    const std::size_t day_spawned = spawner.initial(mobs, players, 40.0, rng, false);
     EXPECT_GT(day_spawned, 0u) << "the starting pass fills the surface it was given";
+    const std::size_t day_monsters = check_mobs(true);
     for (int tick = 0; tick < 60; ++tick) {
         spawner.tick(mobs, players, false, rng, tick);
     }
     ASSERT_FALSE(mobs.mobs().empty()) << "ground under a sky is ground to spawn on";
-
-    for (const auto& mob : mobs.mobs()) {
-        // Every position the cycle chose has to be a column somebody generated.
-        EXPECT_NE(chunk_of(static_cast<std::int32_t>(std::floor(mob.x)),
-                      static_cast<std::int32_t>(std::floor(mob.z))), nullptr)
-            << mob.type_name << " left the loaded chunks";
-        // A mob on the ground stands on ground: the position is not floating or buried.
-        ASSERT_NE(mob.spec, nullptr);
-        if (mob.spec->placement == entity::data::SpawnPlacement::OnGround) {
-            const auto below = generator.kind_at(
-                static_cast<std::int32_t>(std::floor(mob.x)),
-                static_cast<std::int32_t>(std::floor(mob.y)) - 1,
-                static_cast<std::int32_t>(std::floor(mob.z)));
-            EXPECT_TRUE(below == entity::SpawnBlock::Solid || below == entity::SpawnBlock::Soil)
-                << mob.type_name << " stands in mid air";
-        }
-        // A monster in the day is only where the stored sky light does not reach it.
-        if (mob.category() == entity::data::MobCategory::Monster) {
-            EXPECT_LE(stored_light(static_cast<std::int32_t>(std::floor(mob.x)),
-                          static_cast<std::int32_t>(std::floor(mob.y)),
-                          static_cast<std::int32_t>(std::floor(mob.z)), LightLayer::Sky), 8)
-                << "daylight keeps the surface safe";
-        }
-    }
+    check_mobs(true);
 
     // The night the clock reports darkens the same terrain enough for the monsters.
     const std::size_t before = mobs.mobs().size();
     spawner.set_sky_darkening(11);
-    spawner.initial(mobs, land.x, land.z, 40.0, rng, true);
+    spawner.initial(mobs, players, 40.0, rng, true);
     for (int tick = 60; tick < 200; ++tick) {
         spawner.tick(mobs, players, true, rng, tick);
     }
-    std::size_t monsters = 0;
-    for (const auto& mob : mobs.mobs()) {
-        if (mob.category() == entity::data::MobCategory::Monster) ++monsters;
-    }
-    EXPECT_GT(monsters, 0u) << "a dark surface is where the monsters come from";
+    EXPECT_GT(check_mobs(false), day_monsters)
+        << "a dark surface is where the monsters come from";
     EXPECT_GT(mobs.mobs().size(), before);
 }
 

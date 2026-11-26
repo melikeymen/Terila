@@ -366,9 +366,19 @@ TEST(PopulationTest, TheInitialPopulationHonoursTheCategoryCaps) {
     spawner.set_world(flat_world(world::terrain::kPlains));
     spawner.set_difficulty(entity::Difficulty::Normal);
 
+    // The disc is centred on the player and nothing lands inside its reach, the same rule the
+    // cycle keeps, so the world does not greet a joining player with a cow on their head.
+    const std::vector<entity::PlayerPos> players = { { 0.0, 64.0, 0.0, 1 } };
     std::uint32_t rng = 0x1234567u;
-    const std::size_t spawned = spawner.initial(mobs, 0, 0, 48.0, rng, false);
+    const std::size_t spawned = spawner.initial(mobs, players, 48.0, rng, false);
     EXPECT_GT(spawned, 0u);
+    for (const auto& mob : mobs.mobs()) {
+        const double dx = mob.x - players.front().x;
+        const double dy = mob.y - players.front().y;
+        const double dz = mob.z - players.front().z;
+        EXPECT_GT(dx * dx + dy * dy + dz * dz, 24.0 * 24.0)
+            << "the starting pass keeps the player's reach clear";
+    }
 
     std::size_t creatures = 0;
     std::size_t monsters = 0;
@@ -392,7 +402,8 @@ TEST(PopulationTest, AnimalsNeedGrassAndStayOutOfTheWater) {
     entity::Population sand_spawner;
     sand_spawner.set_world(flat_world(world::terrain::kPlains, entity::SpawnBlock::Solid));
     std::uint32_t sand_rng = 0x5A5A5Au;
-    EXPECT_EQ(sand_spawner.initial(on_sand, 0, 0, 48.0, sand_rng, false), 0u)
+    const std::vector<entity::PlayerPos> players = { { 0.0, 64.0, 0.0, 1 } };
+    EXPECT_EQ(sand_spawner.initial(on_sand, players, 48.0, sand_rng, false), 0u)
         << "an animal wants the animals tag under it";
 
     // A flooded plains column has no ground to stand on, so nothing landbound spawns.
@@ -401,7 +412,7 @@ TEST(PopulationTest, AnimalsNeedGrassAndStayOutOfTheWater) {
     entity::Population water_spawner;
     water_spawner.set_world(flat_world(world::terrain::kPlains, entity::SpawnBlock::Soil, true));
     std::uint32_t water_rng = 0x5A5A5Au;
-    EXPECT_EQ(water_spawner.initial(flooded, 0, 0, 48.0, water_rng, true), 0u);
+    EXPECT_EQ(water_spawner.initial(flooded, players, 48.0, water_rng, true), 0u);
     for (int tick = 0; tick < 200; ++tick) {
         water_spawner.tick(flooded, { { 0.0, 64.0, 0.0, 1 } }, true, water_rng, 0);
     }
@@ -415,14 +426,14 @@ TEST(PopulationTest, WaterMobsOnlySpawnInWater) {
     entity::Population dry_spawner;
     dry_spawner.set_world(flat_world(world::terrain::kOcean));
     std::uint32_t dry_rng = 0xC0FFEEu;
-    EXPECT_EQ(dry_spawner.initial(dry, 0, 0, 48.0, dry_rng, false), 0u);
+    EXPECT_EQ(dry_spawner.initial(dry, { { 0.0, 64.0, 0.0, 1 } }, 48.0, dry_rng, false), 0u);
 
     entity::MobManager wet;
     make_manager(wet);
     entity::Population wet_spawner;
     wet_spawner.set_world(flat_world(world::terrain::kOcean, entity::SpawnBlock::Solid, true));
     std::uint32_t wet_rng = 0xC0FFEEu;
-    EXPECT_GT(wet_spawner.initial(wet, 0, 0, 48.0, wet_rng, false), 0u);
+    EXPECT_GT(wet_spawner.initial(wet, { { 0.0, 64.0, 0.0, 1 } }, 48.0, wet_rng, false), 0u);
     for (const auto& mob : wet.mobs()) {
         const bool water = mob.category() == data::MobCategory::WaterCreature ||
             mob.category() == data::MobCategory::WaterAmbient ||

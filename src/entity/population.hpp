@@ -73,18 +73,24 @@ namespace terila::entity {
         void set_sky_darkening(int darkening) { sky_darkening_ = darkening; }
 
         // The population a fresh world starts with. The cycle below does the work; this walks
-        // a wider disc once so the first player does not meet an empty world.
-        std::size_t initial(MobManager& mobs, std::int32_t center_x, std::int32_t center_z,
+        // a wider disc once so the first player does not meet an empty world. The disc is
+        // centred on the first player and every spot keeps the distance the cycle keeps, so
+        // nothing appears on the player who caused the pass.
+        std::size_t initial(MobManager& mobs, const std::vector<PlayerPos>& players,
             double radius, std::uint32_t& rng, bool night) {
+            if (players.empty()) {
+                return 0;
+            }
             sky_darkening_ = sky_darkening_ >= 0 ? sky_darkening_ : (night ? kNightSkyDarken : 0);
+            const PlayerPos& anchor = players.front();
             std::size_t spawned = 0;
             for (int attempt = 0; attempt < kInitialAttempts; ++attempt) {
                 const double angle = static_cast<double>(random(rng) % 360) *
                     3.14159265358979323846 / 180.0;
                 const double distance = radius * static_cast<double>(random(rng) % 1000) / 1000.0;
-                const double x = static_cast<double>(center_x) + 0.5 + std::cos(angle) * distance;
-                const double z = static_cast<double>(center_z) + 0.5 + std::sin(angle) * distance;
-                if (place_any(mobs, x, z, night, rng)) {
+                const double x = anchor.x + std::cos(angle) * distance;
+                const double z = anchor.z + std::sin(angle) * distance;
+                if (place_any(mobs, players, x, z, rng)) {
                     ++spawned;
                 }
             }
@@ -422,13 +428,7 @@ namespace terila::entity {
                         random_between(rng, 0, kGroupDrift - 1);
                     z += random_between(rng, 0, kGroupDrift - 1) -
                         random_between(rng, 0, kGroupDrift - 1);
-                    if (!far_enough_from_players(players, x, start_y, z)) {
-                        continue;
-                    }
-                    if (has_spawn_point_ && distance_squared(static_cast<double>(x) + 0.5,
-                        static_cast<double>(z) + 0.5, static_cast<double>(spawn_x_),
-                        static_cast<double>(spawn_z_)) <
-                        kMinSpawnPointDistance * kMinSpawnPointDistance) {
+                    if (!far_from_players_and_spawn(players, x, start_y, z)) {
                         continue;
                     }
                     if (chunk_set_.count(chunk_key(x >> 4, z >> 4)) == 0) {
@@ -472,7 +472,9 @@ namespace terila::entity {
             }
         }
 
-        bool far_enough_from_players(const std::vector<PlayerPos>& players, std::int32_t x,
+        // NaturalSpawner.isRightDistanceToPlayerAndSpawnPoint: outside the reach of every
+        // player and outside the world's own spawn area.
+        bool far_from_players_and_spawn(const std::vector<PlayerPos>& players, std::int32_t x,
             std::int32_t y, std::int32_t z) const {
             for (const auto& player : players) {
                 const double dx = static_cast<double>(x) + 0.5 - player.x;
@@ -483,19 +485,23 @@ namespace terila::entity {
                     return false;
                 }
             }
-            return true;
+            if (!has_spawn_point_) {
+                return true;
+            }
+            return distance_squared(static_cast<double>(x) + 0.5, static_cast<double>(z) + 0.5,
+                static_cast<double>(spawn_x_), static_cast<double>(spawn_z_)) >=
+                kMinSpawnPointDistance * kMinSpawnPointDistance;
         }
 
         // The population a fresh world starts with. The biome's own list decides which
         // category a spot is offered to, and the same placement rules apply as in the cycle,
         // so nothing appears inside a hill or on a block its species cannot stand on.
-        bool place_any(MobManager& mobs, double x, double z, bool night, std::uint32_t& rng) {
-            (void)night;
-            const int biome = world_.biome_index
-                ? world_.biome_index(static_cast<std::int32_t>(std::floor(x)),
-                    static_cast<std::int32_t>(std::floor(z)))
-                : -1;
-            const auto* list = list_for(biome);
+        bool place_any(MobManager& mobs, const std::vector<PlayerPos>& players, double x,
+            double z, std::uint32_t& rng) {
+            const auto bx = static_cast<std::int32_t>(std::floor(x));
+            const auto bz = static_cast<std::int32_t>(std::floor(z));
+            const auto* list = list_for(
+                world_.biome_index ? world_.biome_index(bx, bz) : -1);
             if (list == nullptr) {
                 return false;
             }
@@ -503,9 +509,7 @@ namespace terila::entity {
             // The starting pass fills the surface first, which is what a starting world needs;
             // a flooded column is offered to the water categories instead, so an ocean starts
             // with fish.
-            const bool water = world_.is_water && world_.is_water(
-                static_cast<std::int32_t>(std::floor(x)),
-                static_cast<std::int32_t>(std::floor(z)));
+            const bool water = world_.is_water && world_.is_water(bx, bz);
             const auto category = water
                 ? ((random(rng) % 100) < 60 ? data::MobCategory::WaterCreature
                     : data::MobCategory::WaterAmbient)
@@ -526,9 +530,10 @@ namespace terila::entity {
                 return false;
             }
 
-            const auto bx = static_cast<std::int32_t>(std::floor(x));
-            const auto bz = static_cast<std::int32_t>(std::floor(z));
             const int y = spawn_y(*spec, bx, bz, rng);
+            if (!far_from_players_and_spawn(players, bx, y, bz)) {
+                return false;
+            }
             return place_at(mobs, *spec, bx, y, bz, rng);
         }
 
