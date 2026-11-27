@@ -111,6 +111,34 @@ namespace terila::commands {
             (void)state;
             return false;
         }
+        // The block an edit replaces breaks first in a destroy mode, so it drops the item
+        // a player's pick would have dropped.
+        virtual void drop_block(std::int32_t x, std::int32_t y, std::int32_t z,
+            std::int32_t state) {
+            (void)x;
+            (void)y;
+            (void)z;
+            (void)state;
+        }
+        // Where a player respawns after dying, and where a joining player starts.
+        virtual bool set_spawn_point(std::int32_t entity, double x, double y, double z,
+            float yaw, float pitch) {
+            (void)entity;
+            (void)x;
+            (void)y;
+            (void)z;
+            (void)yaw;
+            (void)pitch;
+            return false;
+        }
+        virtual bool set_world_spawn(double x, double y, double z, float yaw, float pitch) {
+            (void)x;
+            (void)y;
+            (void)z;
+            (void)yaw;
+            (void)pitch;
+            return false;
+        }
 
         virtual std::int64_t game_time() const = 0;
         virtual std::int64_t time_of_day() const = 0;

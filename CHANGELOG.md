@@ -5,6 +5,21 @@ All notable changes to Terila, newest first. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- `/setblock ... destroy` and `/fill ... destroy` break the block they replace through
+  the same drop path a player's pick uses, so the item lands on the ground instead of
+  vanishing
+- `/clone <begin> <end> <destination> [replace|masked|filtered <block>]
+  [force|move|normal]`: the game's 32768-block ceiling, a copy that overlaps its own
+  source refused unless forced, `move` emptying the source, and `masked`/`filtered`
+  choosing which source cells are copied
+- `/spawnpoint [<targets>] [<pos>] [<rotation>]` and `/setworldspawn [<pos>]
+  [<rotation>]`: a point and facing are kept by the connection that owns the player, and
+  the world point is one shared value every joining player reads
+- A joining player now starts at the world point when a command set one, and dies back
+  into their own spawn instead of the surface above the world column
+
 ### Fixed
 
 - The server reads `ServerboundPlayerAbilities` instead of ignoring it, so a creative or

@@ -66,6 +66,8 @@ namespace terila::commands {
         install_edit(*this);
         install_world_state(*this);
         install_damage(*this);
+        install_clone(*this);
+        install_spawn(*this);
     }
 
     namespace {

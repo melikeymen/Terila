@@ -25,6 +25,12 @@ namespace {
         int player_limit = 20;
         std::map<std::tuple<std::int32_t, std::int32_t, std::int32_t>, std::int32_t> blocks;
         std::vector<std::pair<std::int32_t, float>> damages;
+        std::vector<std::tuple<std::int32_t, std::int32_t, std::int32_t, std::int32_t>> drops;
+        std::vector<std::tuple<double, double, double>> spawn_points;
+        bool world_spawn_set = false;
+        double world_spawn_x = 0.0;
+        double world_spawn_y = 0.0;
+        double world_spawn_z = 0.0;
         int world_difficulty = 2;
         int default_mode = 0;
         std::vector<std::pair<std::int32_t, std::int32_t>> gifts;
@@ -126,6 +132,25 @@ namespace {
         bool set_block_state(std::int32_t x, std::int32_t y, std::int32_t z,
             std::int32_t state) override {
             blocks[std::make_tuple(x, y, z)] = state;
+            return true;
+        }
+
+        void drop_block(std::int32_t x, std::int32_t y, std::int32_t z,
+            std::int32_t state) override {
+            drops.emplace_back(x, y, z, state);
+        }
+
+        bool set_spawn_point(std::int32_t, double x, double y, double z, float,
+            float) override {
+            spawn_points.emplace_back(x, y, z);
+            return true;
+        }
+
+        bool set_world_spawn(double x, double y, double z, float, float) override {
+            world_spawn_set = true;
+            world_spawn_x = x;
+            world_spawn_y = y;
+            world_spawn_z = z;
             return true;
         }
 
@@ -558,4 +583,98 @@ TEST(CommandDispatchTest, DamageAppliesToEveryTarget) {
     ASSERT_EQ(harness.game.damages.size(), 2u);
     EXPECT_FLOAT_EQ(harness.game.damages[0].second, 5.0f);
     EXPECT_EQ(harness.game.damages[1].first, 2);
+}
+
+TEST(CommandDispatchTest, SetBlockDestroyDropsTheBlockItReplaces) {
+    Harness harness;
+    harness.game.blocks[std::make_tuple(0, 64, 0)] = 1;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "setblock 0 64 0 oak_stairs destroy", scope).ok);
+    ASSERT_EQ(harness.game.drops.size(), 1u);
+    EXPECT_EQ(std::get<3>(harness.game.drops[0]), 1);
+    EXPECT_EQ(harness.game.blocks[std::make_tuple(0, 64, 0)], 2);
+}
+
+TEST(CommandDispatchTest, FillDestroyDropsEveryBlockItReplaces) {
+    Harness harness;
+    harness.game.blocks[std::make_tuple(0, 64, 0)] = 1;
+    harness.game.blocks[std::make_tuple(1, 64, 0)] = 1;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "fill 0 64 0 1 64 0 minecraft:stone destroy",
+        scope).ok);
+    EXPECT_EQ(harness.game.drops.size(), 2u);
+    EXPECT_EQ(harness.game.blocks[std::make_tuple(0, 64, 0)], 1);
+}
+
+TEST(CommandDispatchTest, CloneCopiesTheRegion) {
+    Harness harness;
+    harness.game.blocks[std::make_tuple(0, 64, 0)] = 1;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    const auto result = harness.registry.run(origin, "clone 0 64 0 0 64 0 5 64 5", scope);
+
+    EXPECT_TRUE(result.ok);
+    EXPECT_EQ(result.count, 1);
+    EXPECT_EQ(harness.game.blocks[std::make_tuple(5, 64, 5)], 1);
+}
+
+TEST(CommandDispatchTest, CloneMaskedSkipsAir) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_FALSE(harness.registry.run(origin, "clone 0 64 0 1 64 1 5 64 5 masked", scope).ok);
+    ASSERT_FALSE(harness.replies.empty());
+    EXPECT_NE(harness.replies.front().find("No blocks"), std::string::npos);
+}
+
+TEST(CommandDispatchTest, CloneMoveEmptiesItsSource) {
+    Harness harness;
+    harness.game.blocks[std::make_tuple(0, 64, 0)] = 1;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "clone 0 64 0 0 64 0 5 64 5 move", scope).ok);
+    EXPECT_EQ(harness.game.blocks[std::make_tuple(5, 64, 5)], 1);
+    EXPECT_EQ(harness.game.blocks[std::make_tuple(0, 64, 0)], 0);
+}
+
+TEST(CommandDispatchTest, CloneRefusesToOverlapItsOwnSource) {
+    Harness harness;
+    harness.game.blocks[std::make_tuple(0, 64, 0)] = 1;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_FALSE(harness.registry.run(origin, "clone 0 64 0 2 64 2 1 64 1", scope).ok);
+    ASSERT_FALSE(harness.replies.empty());
+    EXPECT_NE(harness.replies.front().find("overlap"), std::string::npos);
+}
+
+TEST(CommandDispatchTest, SpawnpointSetsThePlayersRespawn) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "spawnpoint @s ~ ~ ~", scope).ok);
+    ASSERT_EQ(harness.game.spawn_points.size(), 1u);
+    EXPECT_DOUBLE_EQ(std::get<0>(harness.game.spawn_points[0]), 0.5);
+    EXPECT_DOUBLE_EQ(std::get<1>(harness.game.spawn_points[0]), 64.0);
+    EXPECT_DOUBLE_EQ(std::get<2>(harness.game.spawn_points[0]), 0.5);
+}
+
+TEST(CommandDispatchTest, SetWorldSpawnMovesTheJoiningPoint) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "setworldspawn 10 70 10", scope).ok);
+    EXPECT_TRUE(harness.game.world_spawn_set);
+    EXPECT_DOUBLE_EQ(harness.game.world_spawn_x, 10.5);
+    EXPECT_DOUBLE_EQ(harness.game.world_spawn_y, 70.0);
+    EXPECT_DOUBLE_EQ(harness.game.world_spawn_z, 10.5);
 }

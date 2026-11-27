@@ -58,6 +58,10 @@ namespace terila::network {
         // death itself, which is what lets it reach a creative player too.
         using Killer = std::function<bool(const std::string& cause)>;
 
+        // /spawnpoint names a point the owning connection keeps for its own respawn.
+        using SpawnSetter = std::function<bool(double x, double y, double z, float yaw,
+            float pitch)>;
+
         void set_view_distance(int chunks) { view_distance_ = chunks > 0 ? chunks : 10; }
 
         // minecraft:player is a registry entry too, and add_entity takes its id.
@@ -221,6 +225,22 @@ namespace terila::network {
             if (it != players_.end()) {
                 it->second.slay = std::move(killer);
             }
+        }
+
+        void set_spawn_setter(std::int32_t entity_id, SpawnSetter setter)
+        {
+            const auto it = players_.find(entity_id);
+            if (it != players_.end()) {
+                it->second.set_spawn = std::move(setter);
+            }
+        }
+
+        bool set_spawn_location(std::int32_t entity_id, double x, double y, double z,
+            float yaw, float pitch)
+        {
+            const auto it = players_.find(entity_id);
+            return it != players_.end() && it->second.set_spawn &&
+                it->second.set_spawn(x, y, z, yaw, pitch);
         }
 
         // Applies an unconditional death. False when nobody with that id is online, or when
@@ -436,6 +456,7 @@ namespace terila::network {
             Runner run;
             Damager hurt;
             Killer slay;
+            SpawnSetter set_spawn;
             Teleporter teleport;
             Traveler travel;
             Messenger message;

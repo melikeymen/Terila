@@ -471,6 +471,12 @@ int main() {
     // there, which on a mountainous seed is a peak the player has to jump down from.
     const auto spawn = world_terrain.spawn_point();
     const int spawn_surface = spawn.surface_y;
+    // Where a joining player starts. /setworldspawn replaces this while the server runs,
+    // so the accept path reads one shared value instead of a copy taken at boot.
+    auto world_spawn = std::make_shared<terila::world::SpawnPoint>();
+    world_spawn->x = spawn.x + 0.5;
+    world_spawn->z = spawn.z + 0.5;
+    world_spawn->y = static_cast<double>(spawn_surface + 1);
     LOG_INFO(Chunk, "{} world ready: seed {} (level-seed '{}'), spawn at ({}, {}) stands on y={}, sea level {}",
         terila::world::world_type_name(world_type), world_terrain.seed(),
         srv.random_seed() ? std::string("random") : srv.level_seed,
@@ -915,7 +921,7 @@ int main() {
 
     auto do_accept = [&](auto&& self) -> void {
         acceptor.async_accept(
-            [&acceptor, &data, &mobs, &world, &falling, &fluids, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, fluid_items, world_type, world_seed, &spawn, &srv, &players, &player_hub, &chunk_stores, &next_player_entity_id, &world_terrain, clock, &world_difficulty, &default_gamemode, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
+            [&acceptor, &data, &mobs, &world, &falling, &fluids, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, fluid_items, world_type, world_seed, world_spawn, &srv, &players, &player_hub, &chunk_stores, &next_player_entity_id, &world_terrain, clock, &world_difficulty, &default_gamemode, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
                 if (error) {
                     LOG_ERROR(Network, "accept failed: {} ({})", error.message(), error.value());
                     self(self);
@@ -929,7 +935,7 @@ int main() {
                 auto conn = std::make_shared<terila::network::Connection>(std::move(socket), data, mobs,
                     world, falling, fluids, item_block_state, player_hub, chunk_stores, &drops, block_state_item,
                     item_entity_type, &recipes, menu_blocks, furnace_states, furnace_item_id,
-                    fluid_items, world_seed, world_type, spawn.x, spawn.z, srv.view_distance,
+                    fluid_items, world_seed, world_type, world_spawn, srv.view_distance,
                     srv.simulation_distance, static_cast<int>(srv.max_players),
                     next_player_entity_id++, *default_gamemode, world_difficulty,
                     default_gamemode, srv.hardcore, clock, world_terrain.sea_level());

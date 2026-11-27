@@ -18,12 +18,14 @@
 #include "commands/registry.hpp"
 #include "world/world_context.hpp"
 #include "world/chunk_jobs.hpp"
+#include "world/spawn_point.hpp"
 #include "world/world_clock.hpp"
 #include "world/world_generator.hpp"
 #include "world/trf/trf_store.hpp"
 
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -64,7 +66,7 @@ namespace terila::network {
             std::int32_t furnace_item_id,
             FluidItems fluid_items,
             std::uint32_t world_seed, terila::world::WorldType world_type,
-            std::int32_t spawn_x, std::int32_t spawn_z,
+            std::shared_ptr<terila::world::SpawnPoint> world_spawn,
             int view_distance, int simulation_distance, int max_players,
             std::int32_t entity_id, int gamemode,
             std::shared_ptr<terila::entity::Difficulty> world_difficulty,
@@ -77,14 +79,28 @@ namespace terila::network {
               recipes_(recipes), menu_blocks_(menu_blocks), furnace_states_(furnace_states),
               furnace_item_id_(furnace_item_id), fluid_items_(fluid_items),
               world_seed_(world_seed),
-              world_type_(world_type),               spawn_x_(spawn_x), spawn_z_(spawn_z),
+              world_type_(world_type),
+              world_spawn_(std::move(world_spawn)),
               terrain_(&terila::world::WorldContext::shared().generator()),
               view_distance_(view_distance), simulation_distance_(simulation_distance),
               max_players_(max_players), entity_id_(entity_id), gamemode_(gamemode),
-              hardcore_(hardcore), clock_(std::move(clock)), sea_level_(sea_level),
+              hardcore_(hardcore),               clock_(std::move(clock)), sea_level_(sea_level),
               world_difficulty_(std::move(world_difficulty)),
               default_gamemode_(std::move(default_gamemode))
-        {}
+        {
+            // A joining player takes the world's own point until a command gives them a
+            // personal one.
+            if (world_spawn_) {
+                spawn_x_ = static_cast<std::int32_t>(std::floor(world_spawn_->x));
+                spawn_z_ = static_cast<std::int32_t>(std::floor(world_spawn_->z));
+                spawn_y_ = world_spawn_->y;
+                spawn_exact_ = world_spawn_->exact;
+                if (world_spawn_->exact) {
+                    yaw_ = world_spawn_->yaw;
+                    pitch_ = world_spawn_->pitch;
+                }
+            }
+        }
 
         void start();
 
@@ -391,6 +407,9 @@ namespace terila::network {
         // A command acts on another player through the hub; these are the local half of
         // that path, and the bridge in connection_commands.cpp chooses between them.
         bool teleport_player(double x, double y, double z, float yaw, float pitch);
+        // /spawnpoint: where this player respawns, which is theirs until the world spawn
+        // moves them again.
+        bool apply_spawn_point(double x, double y, double z, float yaw, float pitch);
         // Moves this player to another dimension and streams that world instead. False when
         // the dimension is the one already loaded, or when its generator is unavailable.
         bool enter_dimension(terila::world::DimensionKind kind, double x, double y, double z,
@@ -432,6 +451,11 @@ namespace terila::network {
         // Block column every player starts at, chosen by the world generator.
         std::int32_t spawn_x_ = 8;
         std::int32_t spawn_z_ = 8;
+        double spawn_y_ = 0.0;
+        // True once a command named the exact point; until then the surface above the
+        // column is the spawn.
+        bool spawn_exact_ = false;
+        std::shared_ptr<terila::world::SpawnPoint> world_spawn_;
         // Points at the shared generator of the dimension this player is standing in.
         terila::world::DimensionKind dimension_ = terila::world::DimensionKind::Overworld;
         terila::world::WorldGenerator* terrain_ = nullptr;

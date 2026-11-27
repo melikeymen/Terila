@@ -14,11 +14,12 @@ namespace terila::commands {
         // line into an unbounded amount of work.
         constexpr std::int64_t kMaxFillVolume = 32768;
 
-        // 0 replace, 1 keep, 2 outline, 3 hollow.
+        // 0 replace, 1 keep, 2 outline, 3 hollow, 4 destroy.
         constexpr int kReplace = 0;
         constexpr int kKeep = 1;
         constexpr int kOutline = 2;
         constexpr int kHollow = 3;
+        constexpr int kDestroy = 4;
 
         bool resolve_block_coords(const Position& position, const Origin& origin,
             std::int32_t& x, std::int32_t& y, std::int32_t& z) {
@@ -66,6 +67,11 @@ namespace terila::commands {
                 origin.say("Could not set the block");
                 return Result{ 0, false };
             }
+            // `destroy` breaks the block it replaces first, so its item drops the way a
+            // player's pick would have dropped it.
+            if (mode == kDestroy && existing != 0) {
+                origin.game->drop_block(x, y, z, existing);
+            }
 
             if (!origin.game->set_block_state(x, y, z, block->id)) {
                 origin.say("Could not set the block");
@@ -77,6 +83,7 @@ namespace terila::commands {
 
         Result run_setblock(Exec& exec) { return set_one_block(exec, kReplace); }
         Result run_setblock_keep(Exec& exec) { return set_one_block(exec, kKeep); }
+        Result run_setblock_destroy(Exec& exec) { return set_one_block(exec, kDestroy); }
 
         Result run_fill(Exec& exec, int mode) {
             Origin& origin = exec.origin;
@@ -137,11 +144,16 @@ namespace terila::commands {
                         }
 
                         const std::int32_t existing = origin.game->block_state_at(x, y, z);
-                        if (existing < 0 || existing == state) {
+                        // A destroy still breaks the block it puts back, so the same state
+                        // is a real change there and only a no-op everywhere else.
+                        if (existing < 0 || (existing == state && mode != kDestroy)) {
                             continue;
                         }
                         if (mode == kKeep && existing != 0) {
                             continue;
+                        }
+                        if (mode == kDestroy && existing != 0) {
+                            origin.game->drop_block(x, y, z, existing);
                         }
                         if (!origin.game->set_block_state(x, y, z, state)) {
                             continue;
@@ -164,6 +176,7 @@ namespace terila::commands {
         Result run_fill_keep(Exec& exec) { return run_fill(exec, kKeep); }
         Result run_fill_outline(Exec& exec) { return run_fill(exec, kOutline); }
         Result run_fill_hollow(Exec& exec) { return run_fill(exec, kHollow); }
+        Result run_fill_destroy(Exec& exec) { return run_fill(exec, kDestroy); }
 
     } // namespace
 
@@ -174,6 +187,7 @@ namespace terila::commands {
         state.executes(run_setblock);
         state.literal("replace").executes(run_setblock);
         state.literal("keep").executes(run_setblock_keep);
+        state.literal("destroy").executes(run_setblock_destroy);
 
         Node& fill = registry.root().literal("fill", Capability::Operator);
         Node& corners = fill.argument("from", Parser::position())
@@ -184,6 +198,7 @@ namespace terila::commands {
         filled.literal("keep").executes(run_fill_keep);
         filled.literal("outline").executes(run_fill_outline);
         filled.literal("hollow").executes(run_fill_hollow);
+        filled.literal("destroy").executes(run_fill_destroy);
     }
 
 } // namespace terila::commands

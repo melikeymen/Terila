@@ -63,6 +63,8 @@ namespace terila::commands {
     void install_edit(Registry& registry);
     void install_world_state(Registry& registry);
     void install_damage(Registry& registry);
+    void install_clone(Registry& registry);
+    void install_spawn(Registry& registry);
 
     // Resolves a selector against the players the origin can see, with the error the command
     // should report when nothing matched.

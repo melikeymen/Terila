@@ -113,7 +113,9 @@ namespace terila::network {
 
         player_x_ = spawn_x_ + 0.5;
         player_z_ = spawn_z_ + 0.5;
-        player_y_ = static_cast<double>(terrain_->surface_height(spawn_x_, spawn_z_) + 1);
+        player_y_ = spawn_exact_
+            ? spawn_y_
+            : static_cast<double>(terrain_->surface_height(spawn_x_, spawn_z_) + 1);
 
         out.clear();
         if (terila::protocol::write_player_position(out, next_teleport_id_++, player_x_, player_y_,

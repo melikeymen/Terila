@@ -209,6 +209,32 @@ namespace terila::network {
             return connection_.set_block_state(terila::world::BlockPos{ x, y, z }, state);
         }
 
+        void drop_block(std::int32_t x, std::int32_t y, std::int32_t z,
+            std::int32_t state) override {
+            connection_.spawn_block_drop(terila::world::BlockPos{ x, y, z }, state);
+        }
+
+        bool set_spawn_point(std::int32_t entity, double x, double y, double z, float yaw,
+            float pitch) override {
+            if (entity == connection_.entity_id_ || connection_.hub_ == nullptr) {
+                return connection_.apply_spawn_point(x, y, z, yaw, pitch);
+            }
+            return connection_.hub_->set_spawn_location(entity, x, y, z, yaw, pitch);
+        }
+
+        bool set_world_spawn(double x, double y, double z, float yaw, float pitch) override {
+            if (connection_.world_spawn_ == nullptr) {
+                return false;
+            }
+            connection_.world_spawn_->x = x;
+            connection_.world_spawn_->y = y;
+            connection_.world_spawn_->z = z;
+            connection_.world_spawn_->yaw = yaw;
+            connection_.world_spawn_->pitch = pitch;
+            connection_.world_spawn_->exact = true;
+            return true;
+        }
+
         std::int64_t game_time() const override {
             return connection_.clock_ ? connection_.clock_->game_time : 0;
         }
@@ -299,6 +325,16 @@ namespace terila::network {
             hub_->move(entity_id_,
                 PlayerHub::Position{ player_x_, player_y_, player_z_, yaw_, pitch_, dimension_ });
         }
+        return true;
+    }
+
+    bool Connection::apply_spawn_point(double x, double y, double z, float yaw, float pitch) {
+        spawn_x_ = static_cast<std::int32_t>(std::floor(x));
+        spawn_z_ = static_cast<std::int32_t>(std::floor(z));
+        spawn_y_ = y;
+        spawn_exact_ = true;
+        yaw_ = yaw;
+        pitch_ = pitch;
         return true;
     }
 

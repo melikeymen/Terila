@@ -202,8 +202,9 @@ namespace terila::network {
             // center, then the chunks wrapped in a batch.
             const double spawn_x = spawn_x_ + 0.5;
             const double spawn_z = spawn_z_ + 0.5;
-            const double spawn_y =
-                static_cast<double>(terrain_->surface_height(spawn_x_, spawn_z_) + 1);
+            const double spawn_y = spawn_exact_
+                ? spawn_y_
+                : static_cast<double>(terrain_->surface_height(spawn_x_, spawn_z_) + 1);
             if (!terila::protocol::write_player_position(out, next_teleport_id_++,
                 spawn_x, spawn_y, spawn_z, 0.0, 0.0, 0.0, 0.0f, 0.0f)) {
                 LOG_ERROR(Network, "player_position failed");
@@ -329,6 +330,13 @@ namespace terila::network {
                 });
                 // /kill from another player's connection arrives here; the health and the
                 // death screen belong to this one.
+                hub_->set_spawn_setter(entity_id_, [weak_self](double x, double y,
+                    double z, float yaw, float pitch) {
+                    if (const auto connection = weak_self.lock()) {
+                        return connection->apply_spawn_point(x, y, z, yaw, pitch);
+                    }
+                    return false;
+                });
                 hub_->set_killer(entity_id_, [weak_self](const std::string& cause) {
                     if (const auto connection = weak_self.lock()) {
                         return connection->kill_player(cause);
