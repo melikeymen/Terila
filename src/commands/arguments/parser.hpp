@@ -3,6 +3,7 @@
 #include "commands/cursor.hpp"
 #include "commands/arguments/text.hpp"
 #include "commands/arguments/value.hpp"
+#include "data/registry_data.hpp"
 #include "item/item_parser.hpp"
 
 #include <algorithm>
@@ -26,7 +27,8 @@ namespace terila::commands {
         Position,
         Rotation,
         ItemStack,
-        ResourceLocation
+        ResourceLocation,
+        BlockState
     };
 
     // One argument of a command. The wire name is the registry id the client knows the
@@ -45,6 +47,10 @@ namespace terila::commands {
         // The item ids and component registry /give needs, filled in by the registry.
         const std::unordered_map<std::string, std::int32_t>* item_ids = nullptr;
         const item::ComponentIds* components = nullptr;
+        // The block tables /setblock and /fill resolve their state against.
+        const std::unordered_map<std::string, std::vector<data::BlockStateInfo>>* block_states =
+            nullptr;
+        const std::unordered_map<std::string, std::int32_t>* block_state_ids = nullptr;
 
         static Parser integer(std::int64_t min, bool has_max = false, std::int64_t max = 0) {
             Parser parser;
@@ -154,6 +160,13 @@ namespace terila::commands {
             Parser parser;
             parser.kind = ParserKind::ResourceLocation;
             parser.wire = "minecraft:resource_location";
+            return parser;
+        }
+
+        static Parser block_state() {
+            Parser parser;
+            parser.kind = ParserKind::BlockState;
+            parser.wire = "minecraft:block_state";
             return parser;
         }
 
@@ -285,6 +298,13 @@ namespace terila::commands {
                 }
                 return Value{ std::move(stack) };
             }
+            case ParserKind::BlockState: {
+                const auto value = read_block_state(cursor);
+                if (!value) {
+                    return std::nullopt;
+                }
+                return Value{ *value };
+            }
             case ParserKind::ResourceLocation: {
                 const auto word = cursor.word();
                 if (!word) {
@@ -385,6 +405,91 @@ namespace terila::commands {
             rotation.yaw = static_cast<float>(yaw);
             rotation.pitch = static_cast<float>(pitch);
             return rotation;
+        }
+
+        // `<id>` or `<id>[<property>=<value>,...]`, matched against the variant table of
+        // the block so the world gets a state id it can store.
+        std::optional<BlockStateValue> read_block_state(Cursor& cursor) const {
+            const auto token = read_item_token(cursor);
+            if (!token) {
+                return std::nullopt;
+            }
+            if (block_states == nullptr || block_state_ids == nullptr) {
+                cursor.fail(Problem::Failed, "the block registry is not loaded");
+                return std::nullopt;
+            }
+
+            std::string name = *token;
+            std::vector<std::pair<std::string, std::string>> wanted;
+            const auto open = name.find('[');
+            if (open != std::string::npos) {
+                if (name.size() < open + 2 || name.back() != ']') {
+                    cursor.fail(Problem::Invalid, "expected ']' after the block properties");
+                    return std::nullopt;
+                }
+                std::string_view list(name.data() + open + 1, name.size() - open - 2);
+                while (!list.empty()) {
+                    const auto comma = list.find(',');
+                    const std::string_view pair = trim(list.substr(0, comma));
+                    if (!pair.empty()) {
+                        const auto eq = pair.find('=');
+                        if (eq == std::string_view::npos) {
+                            cursor.fail(Problem::Invalid, "expected name=value in the block state");
+                            return std::nullopt;
+                        }
+                        wanted.emplace_back(lower(trim(pair.substr(0, eq))),
+                            lower(trim(pair.substr(eq + 1))));
+                    }
+                    if (comma == std::string_view::npos) {
+                        break;
+                    }
+                    list.remove_prefix(comma + 1);
+                }
+                name.resize(open);
+            }
+
+            std::string id = lower(name);
+            if (id.find(':') == std::string::npos) {
+                id = "minecraft:" + id;
+            }
+
+            const auto variants = block_states->find(id);
+            if (variants == block_states->end()) {
+                cursor.fail(Problem::Invalid, "unknown block '" + id + "'");
+                return std::nullopt;
+            }
+
+            std::int32_t chosen = -1;
+            if (wanted.empty()) {
+                const auto single = block_state_ids->find(id);
+                if (single != block_state_ids->end()) {
+                    chosen = single->second;
+                }
+            }
+            else {
+                // The first variant that carries every property the line named; properties
+                // the line left out keep whatever that variant defaults them to.
+                for (const auto& variant : variants->second) {
+                    bool matches = true;
+                    for (const auto& [key, value] : wanted) {
+                        const auto it = variant.properties.find(key);
+                        if (it == variant.properties.end() || it->second != value) {
+                            matches = false;
+                            break;
+                        }
+                    }
+                    if (matches) {
+                        chosen = variant.id;
+                        break;
+                    }
+                }
+            }
+
+            if (chosen < 0) {
+                cursor.fail(Problem::Invalid, "no state of '" + id + "' has those properties");
+                return std::nullopt;
+            }
+            return BlockStateValue{ chosen, id };
         }
 
         // The item argument may carry quoted text and component brackets, so it is read

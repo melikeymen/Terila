@@ -63,6 +63,9 @@ namespace terila::commands {
         install_kill(*this);
         install_query(*this);
         install_say(*this);
+        install_edit(*this);
+        install_world_state(*this);
+        install_damage(*this);
     }
 
     namespace {
@@ -119,6 +122,13 @@ namespace terila::commands {
         Parser parser = Parser::item_stack();
         parser.item_ids = &data_.item_ids;
         parser.components = &components_;
+        return parser;
+    }
+
+    Parser Registry::block_state_parser() const {
+        Parser parser = Parser::block_state();
+        parser.block_states = &data_.block_states;
+        parser.block_state_ids = &data_.block_state_ids;
         return parser;
     }
 

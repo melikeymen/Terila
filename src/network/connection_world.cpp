@@ -46,6 +46,20 @@ namespace terila::network {
         }
     }
 
+    bool Connection::set_block_state(const terila::world::BlockPos& pos, std::int32_t state) {
+        if (state < 0 || !inside_world(pos.y)) {
+            return false;
+        }
+        world_.set(pos, state, dimension_);
+        // Sand that lost its support and water that just found a gap are both the same
+        // question: the simulations are told about every edit a command makes.
+        falling_.block_changed(pos);
+        fluids_.block_changed(pos);
+        persist_block_change(pos);
+        send_world_block(pos, state);
+        return true;
+    }
+
     void Connection::send_block_change(const terila::world::BlockPos& pos, std::int32_t state,
         std::int32_t sequence) {
         std::vector<std::uint8_t> out;

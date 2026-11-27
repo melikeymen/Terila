@@ -493,8 +493,12 @@ int main() {
     mobs.set_entity_type_ids(&data.entity_type_ids);
 
     const auto configured_difficulty = terila::entity::difficulty_from(srv.difficulty);
-    const auto world_difficulty = configured_difficulty.value_or(
-        terila::entity::Difficulty::Normal);
+    // Shared, because /difficulty changes the value the spawner and the mobs read while the
+    // server is running.
+    auto world_difficulty = std::make_shared<terila::entity::Difficulty>(
+        configured_difficulty.value_or(terila::entity::Difficulty::Normal));
+    // /defaultgamemode changes the mode a player joining the world starts in.
+    auto default_gamemode = std::make_shared<int>(srv.gamemode);
     if (!configured_difficulty) {
         LOG_WARN(Config, "unknown difficulty '{}', using normal", srv.difficulty);
     }
@@ -570,7 +574,7 @@ int main() {
         colliding_states.size(), animals_states.size());
     spawner.set_world(spawn_world);
     spawner.set_spawn_point(spawn.x, spawn.z);
-    spawner.set_difficulty(world_difficulty);
+    spawner.set_difficulty(*world_difficulty);
 
     // Undead keep out of the sun: a column whose sky top is above the mob is shaded.
     mobs.set_shade_resolver([&world_terrain](double x, double y, double z) {
@@ -911,7 +915,7 @@ int main() {
 
     auto do_accept = [&](auto&& self) -> void {
         acceptor.async_accept(
-            [&acceptor, &data, &mobs, &world, &falling, &fluids, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, fluid_items, world_type, world_seed, &spawn, &srv, &players, &player_hub, &chunk_stores, &next_player_entity_id, &world_terrain, clock, &world_difficulty, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
+            [&acceptor, &data, &mobs, &world, &falling, &fluids, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, fluid_items, world_type, world_seed, &spawn, &srv, &players, &player_hub, &chunk_stores, &next_player_entity_id, &world_terrain, clock, &world_difficulty, &default_gamemode, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
                 if (error) {
                     LOG_ERROR(Network, "accept failed: {} ({})", error.message(), error.value());
                     self(self);
@@ -927,8 +931,8 @@ int main() {
                     item_entity_type, &recipes, menu_blocks, furnace_states, furnace_item_id,
                     fluid_items, world_seed, world_type, spawn.x, spawn.z, srv.view_distance,
                     srv.simulation_distance, static_cast<int>(srv.max_players),
-                    next_player_entity_id++, srv.gamemode, static_cast<int>(world_difficulty),
-                    srv.hardcore, clock, world_terrain.sea_level());
+                    next_player_entity_id++, *default_gamemode, world_difficulty,
+                    default_gamemode, srv.hardcore, clock, world_terrain.sea_level());
                 conn->start();
                 players.push_back(conn);
                 self(self);
@@ -995,7 +999,8 @@ int main() {
             else if (spawn_cooldown > 0) {
                 --spawn_cooldown;
             }
-            mobs.tick(player_positions, world_difficulty, clock->night());
+            spawner.set_difficulty(*world_difficulty);
+            mobs.tick(player_positions, *world_difficulty, clock->night());
 
             // The mobs that landed a hit this tick: only the owning connection can take the
             // damage, so the hub routes it by entity id.

@@ -3,8 +3,10 @@
 #include "commands/registry.hpp"
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -21,6 +23,10 @@ namespace {
         std::vector<std::string> broadcasts;
         std::int64_t world_seed = 12345;
         int player_limit = 20;
+        std::map<std::tuple<std::int32_t, std::int32_t, std::int32_t>, std::int32_t> blocks;
+        std::vector<std::pair<std::int32_t, float>> damages;
+        int world_difficulty = 2;
+        int default_mode = 0;
         std::vector<std::pair<std::int32_t, std::int32_t>> gifts;
         std::vector<std::string> teleports;
         std::vector<std::pair<std::int32_t, int>> modes;
@@ -95,6 +101,34 @@ namespace {
         std::int64_t seed() const override { return world_seed; }
         int max_players() const override { return player_limit; }
 
+        bool damage(std::int32_t entity, float amount, std::string_view) override {
+            damages.emplace_back(entity, amount);
+            return true;
+        }
+
+        int difficulty() const override { return world_difficulty; }
+        bool set_difficulty(int level) override {
+            world_difficulty = level;
+            return true;
+        }
+        int default_gamemode() const override { return default_mode; }
+        bool set_default_gamemode(int mode) override {
+            default_mode = mode;
+            return true;
+        }
+
+        std::int32_t block_state_at(std::int32_t x, std::int32_t y,
+            std::int32_t z) const override {
+            const auto it = blocks.find(std::make_tuple(x, y, z));
+            return it == blocks.end() ? 0 : it->second;
+        }
+
+        bool set_block_state(std::int32_t x, std::int32_t y, std::int32_t z,
+            std::int32_t state) override {
+            blocks[std::make_tuple(x, y, z)] = state;
+            return true;
+        }
+
         std::int64_t game_time() const override { return clock; }
         std::int64_t time_of_day() const override { return day; }
         bool night() const override { return is_night; }
@@ -121,6 +155,24 @@ namespace {
                 { "minecraft:gamemode", 17 },
                 { "minecraft:message", 20 },
                 { "minecraft:resource_location", 21 },
+                { "minecraft:block_state", 22 },
+                { "brigadier:double", 4 },
+            };
+            terila::data::BlockStateInfo stone;
+            stone.id = 1;
+            terila::data::BlockStateInfo stairs_north;
+            stairs_north.id = 2;
+            stairs_north.properties = { { "facing", "north" }, { "half", "bottom" } };
+            terila::data::BlockStateInfo stairs_south;
+            stairs_south.id = 3;
+            stairs_south.properties = { { "facing", "south" }, { "half", "bottom" } };
+            data.block_states = {
+                { "minecraft:stone", { stone } },
+                { "minecraft:oak_stairs", { stairs_north, stairs_south } },
+            };
+            data.block_state_ids = {
+                { "minecraft:stone", 1 },
+                { "minecraft:oak_stairs", 2 },
             };
             data.item_ids = { { "minecraft:stone", 1 }, { "minecraft:diamond", 2 } };
             registry.install_all();
@@ -407,4 +459,103 @@ TEST(CommandDispatchTest, VersionNamesTheServer) {
     EXPECT_TRUE(harness.registry.run(origin, "version", scope).ok);
     ASSERT_FALSE(harness.replies.empty());
     EXPECT_NE(harness.replies.front().find("Terila"), std::string::npos);
+}
+
+TEST(CommandDispatchTest, SetBlockWritesTheChosenState) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "setblock 3 64 3 minecraft:stone", scope).ok);
+    ASSERT_EQ(harness.game.blocks.size(), 1u);
+    EXPECT_EQ(harness.game.blocks[std::make_tuple(3, 64, 3)], 1);
+}
+
+TEST(CommandDispatchTest, SetBlockResolvesTheStateProperties) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin,
+        "setblock 0 64 0 oak_stairs[facing=south]", scope).ok);
+    ASSERT_EQ(harness.game.blocks.size(), 1u);
+    EXPECT_EQ(harness.game.blocks[std::make_tuple(0, 64, 0)], 3);
+}
+
+TEST(CommandDispatchTest, SetBlockKeepWillNotOverwriteABlock) {
+    Harness harness;
+    harness.game.blocks[std::make_tuple(0, 64, 0)] = 1;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_FALSE(harness.registry.run(origin, "setblock 0 64 0 minecraft:stone keep", scope).ok);
+    EXPECT_EQ(harness.game.blocks[std::make_tuple(0, 64, 0)], 1);
+}
+
+TEST(CommandDispatchTest, FillWritesEveryCellOfTheRegion) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    const auto result =
+        harness.registry.run(origin, "fill 0 64 0 1 64 1 minecraft:stone", scope);
+
+    EXPECT_TRUE(result.ok);
+    EXPECT_EQ(result.count, 4);
+    EXPECT_EQ(harness.game.blocks.size(), 4u);
+}
+
+TEST(CommandDispatchTest, FillRefusesARegionPastTheLimit) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_FALSE(harness.registry.run(origin, "fill 0 0 0 40 40 40 minecraft:stone", scope).ok);
+    EXPECT_TRUE(harness.game.blocks.empty());
+    ASSERT_FALSE(harness.replies.empty());
+    EXPECT_NE(harness.replies.front().find("too large"), std::string::npos);
+}
+
+TEST(CommandDispatchTest, DifficultySetsTheWorldLevel) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "difficulty hard", scope).ok);
+    EXPECT_EQ(harness.game.world_difficulty, 3);
+    ASSERT_FALSE(harness.replies.empty());
+    EXPECT_NE(harness.replies.front().find("set to hard"), std::string::npos);
+}
+
+TEST(CommandDispatchTest, DifficultyWithoutAnArgumentReportsIt) {
+    Harness harness;
+    harness.game.world_difficulty = 1;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "difficulty", scope).ok);
+    ASSERT_FALSE(harness.replies.empty());
+    EXPECT_NE(harness.replies.front().find("The difficulty is easy"), std::string::npos);
+}
+
+TEST(CommandDispatchTest, DefaultGamemodeChangesTheJoiningMode) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "defaultgamemode creative", scope).ok);
+    EXPECT_EQ(harness.game.default_mode, 1);
+}
+
+TEST(CommandDispatchTest, DamageAppliesToEveryTarget) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    const auto result = harness.registry.run(origin, "damage @a 5", scope);
+
+    EXPECT_TRUE(result.ok);
+    ASSERT_EQ(harness.game.damages.size(), 2u);
+    EXPECT_FLOAT_EQ(harness.game.damages[0].second, 5.0f);
+    EXPECT_EQ(harness.game.damages[1].first, 2);
 }

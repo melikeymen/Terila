@@ -40,6 +40,7 @@ namespace terila::commands {
 
         // The parsers that need registry data carry it with them.
         Parser item_parser() const;
+        Parser block_state_parser() const;
         std::int32_t parser_id(std::string_view wire, std::int32_t fallback) const;
 
     private:
@@ -59,6 +60,9 @@ namespace terila::commands {
     void install_kill(Registry& registry);
     void install_query(Registry& registry);
     void install_say(Registry& registry);
+    void install_edit(Registry& registry);
+    void install_world_state(Registry& registry);
+    void install_damage(Registry& registry);
 
     // Resolves a selector against the players the origin can see, with the error the command
     // should report when nothing matched.

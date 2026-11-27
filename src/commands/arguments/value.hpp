@@ -37,8 +37,15 @@ namespace terila::commands {
         item::ComponentsPtr components;
     };
 
+    // A block written as `<id>` or `<id>[<property>=<value>,...]`, resolved to the state id
+    // the world stores.
+    struct BlockStateValue {
+        std::int32_t id = -1;
+        std::string name;
+    };
+
     using Value = std::variant<std::monostate, bool, std::int64_t, double, std::string,
-        Position, RotationValue, Selector, ItemStackValue>;
+        Position, RotationValue, Selector, ItemStackValue, BlockStateValue>;
 
     // The values a matched line bound, in the order the grammar declared them.
     struct Args {

@@ -3,6 +3,53 @@
 All notable changes to Terila, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v0.25.0] — 2026-11-27
+
+### Added
+
+- `/kill [<targets>]`, `/seed`, `/list`, `/version`, `/help [<command>]` with its `/?`
+  spelling, `/say <message>`, `/me <action>`, `/setblock <pos> <block>
+  [replace|keep]`, `/fill <from> <to> <block> [replace|keep|outline|hollow]`,
+  `/difficulty [peaceful|easy|normal|hard]`, `/defaultgamemode <gamemode>` and
+  `/damage <target> <amount> [<damageType>]`
+- `@e` names every entity the source can see: a connection hands the command layer its
+  live mobs next to the player list, so `/kill @e` and `/damage` reach a zombie
+- `/kill` is not a damage hit: it reaches a creative player as well, through the owning
+  connection's own death path, while `/damage` keeps armour and game mode in the way
+- A block argument reading `<id>` or `<id>[<property>=<value>,...]`: the property list is
+  matched against the block's own variant table, and a state no variant carries is
+  refused before anything is written
+- A `minecraft:message` argument beside the generic greedy string, so chat commands carry
+  the parser the client expects; the wire tree no longer writes a reading mode for a
+  parser that has no such property
+- `/help` is generated from the registry itself: the top-level names, and the executable
+  forms of one command written as `/give <item> <count>`
+- `/fill` holds the game's own 32768-block ceiling, and `outline`/`hollow` decide per cell
+  whether it is shell, interior or untouched
+- A command that edits the world goes through one path: the state lands in the shared
+  overlay, the falling and fluid simulations are told about the cell, the column is
+  queued for saving and every client holding it receives the block update
+- The world difficulty and the default game mode are one shared value the server loop
+  reads: `/difficulty` changes what the spawner and the mobs tick see and broadcasts
+  `change_difficulty` to every client, `/defaultgamemode` changes the mode a joining
+  player starts in
+- A naturally spawned monster wears the armour its chunk's threat level earned: the
+  difficulty's special multiplier decides the chance, the tier and whether only some slots
+  are filled, and the per-slot defence points are summed into the one armour scalar the
+  damage path already reads
+- `WorldClock::moon_phase()` and `moon_brightness()`: the eight phases counted from a full
+  moon, and the brightness the monster rule reads in place of the old darkening stand-in
+
+### Changed
+
+- The natural spawner counts monster groups from the world's threat level: peaceful
+  spawns none, and any other level earns `ceil(3 * share)` groups while the peaceful
+  categories keep their own count
+- The first population of a world follows the same share, so a fresh normal world starts
+  with the monsters it earned instead of a fixed percentage
+- `spawn_at` takes the threat level of the chunk the mob is born in, which is what the
+  population's own placement passes in
+
 ## [v0.24.0] — 2026-11-24
 
 ### Added

@@ -66,7 +66,9 @@ namespace terila::network {
             std::uint32_t world_seed, terila::world::WorldType world_type,
             std::int32_t spawn_x, std::int32_t spawn_z,
             int view_distance, int simulation_distance, int max_players,
-            std::int32_t entity_id, int gamemode, int difficulty, bool hardcore,
+            std::int32_t entity_id, int gamemode,
+            std::shared_ptr<terila::entity::Difficulty> world_difficulty,
+            std::shared_ptr<int> default_gamemode, bool hardcore,
             std::shared_ptr<terila::world::WorldClock> clock, int sea_level)
             : socket_(std::move(socket)), keep_alive_timer_(socket_.get_executor()), data_(data),
               mobs_(mobs), world_(world), falling_(falling), fluids_(fluids), item_block_state_(item_block_state),
@@ -79,8 +81,9 @@ namespace terila::network {
               terrain_(&terila::world::WorldContext::shared().generator()),
               view_distance_(view_distance), simulation_distance_(simulation_distance),
               max_players_(max_players), entity_id_(entity_id), gamemode_(gamemode),
-              difficulty_(difficulty), hardcore_(hardcore),
-              clock_(std::move(clock)), sea_level_(sea_level)
+              hardcore_(hardcore), clock_(std::move(clock)), sea_level_(sea_level),
+              world_difficulty_(std::move(world_difficulty)),
+              default_gamemode_(std::move(default_gamemode))
         {}
 
         void start();
@@ -120,6 +123,9 @@ namespace terila::network {
         // The block simulation moved a block in the shared overlay: tell this client when it
         // already holds the column, and save a column it touched once per cascade.
         void send_world_block(const terila::world::BlockPos& pos, std::int32_t state);
+        // A command edits the world: the state goes into the shared overlay, the falling and
+        // fluid simulations hear about it, and every running client is told.
+        bool set_block_state(const terila::world::BlockPos& pos, std::int32_t state);
         void persist_chunk_edits(std::int32_t cx, std::int32_t cz);
 
         bool joined() const { return joined_; }
@@ -507,7 +513,10 @@ namespace terila::network {
         float pitch_ = 0.0f;
         int gamemode_ = 1;
         // 0 peaceful, 1 easy, 2 normal, 3 hard, the same numbering the packet uses.
-        int difficulty_ = 2;
+        // Shared with the server loop: /difficulty changes the value the spawner and the
+        // mobs read, and /defaultgamemode changes what a joining player starts in.
+        std::shared_ptr<terila::entity::Difficulty> world_difficulty_;
+        std::shared_ptr<int> default_gamemode_;
         bool hardcore_ = false;
         float health_ = 20.0f;
         std::int32_t food_ = 20;

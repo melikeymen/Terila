@@ -71,6 +71,47 @@ namespace terila::commands {
         virtual std::int64_t seed() const { return 0; }
         virtual int max_players() const { return 0; }
 
+        // A hit that follows the damage rules, which is what /damage asks for: armour, the
+        // game mode and invulnerability all still apply.
+        virtual bool damage(std::int32_t entity, float amount, std::string_view cause) {
+            (void)entity;
+            (void)amount;
+            (void)cause;
+            return false;
+        }
+
+        // The world difficulty as the protocol numbers it (0 peaceful .. 3 hard).
+        virtual int difficulty() const { return 2; }
+        virtual bool set_difficulty(int level) {
+            (void)level;
+            return false;
+        }
+
+        // The game mode a player joining the world starts in.
+        virtual int default_gamemode() const { return 0; }
+        virtual bool set_default_gamemode(int mode) {
+            (void)mode;
+            return false;
+        }
+
+        // One block, for the commands that edit the world. A negative state reads as
+        // "outside the world".
+        virtual std::int32_t block_state_at(std::int32_t x, std::int32_t y,
+            std::int32_t z) const {
+            (void)x;
+            (void)y;
+            (void)z;
+            return -1;
+        }
+        virtual bool set_block_state(std::int32_t x, std::int32_t y, std::int32_t z,
+            std::int32_t state) {
+            (void)x;
+            (void)y;
+            (void)z;
+            (void)state;
+            return false;
+        }
+
         virtual std::int64_t game_time() const = 0;
         virtual std::int64_t time_of_day() const = 0;
         virtual bool night() const = 0;

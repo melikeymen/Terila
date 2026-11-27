@@ -1,11 +1,13 @@
 #include "network/connection.hpp"
 
 #include "commands/registry.hpp"
+#include "entity/difficulty.hpp"
 #include "entity/mob_data.hpp"
 #include "protocol/chat.hpp"
 #include "protocol/play.hpp"
 #include "protocol/player_state.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -145,6 +147,67 @@ namespace terila::network {
 
         std::int64_t seed() const override { return connection_.world_seed_; }
         int max_players() const override { return connection_.max_players_; }
+
+        bool damage(std::int32_t entity, float amount, std::string_view cause) override {
+            if (connection_.mobs_.find(entity) != nullptr) {
+                return connection_.mobs_.damage(entity,
+                    static_cast<std::int32_t>(std::max(1.0f, amount)), 0.0f);
+            }
+            const std::string reason(cause);
+            if (entity == connection_.entity_id_ || connection_.hub_ == nullptr) {
+                return connection_.damage_player(amount, reason);
+            }
+            return connection_.hub_->damage_player(entity, amount, reason);
+        }
+
+        int difficulty() const override {
+            return static_cast<int>(*connection_.world_difficulty_);
+        }
+
+        bool set_difficulty(int level) override {
+            if (level < 0 || level > 3 || connection_.world_difficulty_ == nullptr) {
+                return false;
+            }
+            *connection_.world_difficulty_ = static_cast<terila::entity::Difficulty>(level);
+            std::vector<std::uint8_t> out;
+            if (!terila::protocol::write_change_difficulty(out,
+                    static_cast<std::uint8_t>(level), false)) {
+                return false;
+            }
+            if (connection_.hub_) {
+                connection_.hub_->broadcast(out);
+            }
+            else {
+                connection_.send(out);
+            }
+            return true;
+        }
+
+        int default_gamemode() const override {
+            return connection_.default_gamemode_ ? *connection_.default_gamemode_ : 0;
+        }
+
+        bool set_default_gamemode(int mode) override {
+            if (mode < 0 || mode > 3 || connection_.default_gamemode_ == nullptr) {
+                return false;
+            }
+            *connection_.default_gamemode_ = mode;
+            return true;
+        }
+
+        std::int32_t block_state_at(std::int32_t x, std::int32_t y,
+            std::int32_t z) const override {
+            const terila::world::BlockPos pos{ x, y, z };
+            if (!connection_.inside_world(y)) {
+                return -1;
+            }
+            return connection_.state_at(pos);
+        }
+
+        bool set_block_state(std::int32_t x, std::int32_t y, std::int32_t z,
+            std::int32_t state) override {
+            return connection_.set_block_state(terila::world::BlockPos{ x, y, z }, state);
+        }
 
         std::int64_t game_time() const override {
             return connection_.clock_ ? connection_.clock_->game_time : 0;
