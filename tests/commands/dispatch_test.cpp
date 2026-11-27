@@ -28,6 +28,9 @@ namespace {
         std::vector<std::tuple<std::int32_t, std::int32_t, std::int32_t, std::int32_t>> drops;
         std::vector<std::tuple<double, double, double>> spawn_points;
         std::vector<std::pair<std::int32_t, int>> clears;
+        std::vector<std::string> kicked;
+        int weather_kind = 0;
+        std::int64_t weather_ticks = 0;
         bool stop_requested = false;
         bool world_spawn_set = false;
         double world_spawn_x = 0.0;
@@ -149,6 +152,19 @@ namespace {
 
         bool stop_server() override {
             stop_requested = true;
+            return true;
+        }
+
+        int weather() const override { return weather_kind; }
+
+        bool set_weather(int kind, std::int64_t ticks) override {
+            weather_kind = kind;
+            weather_ticks = ticks;
+            return true;
+        }
+
+        bool kick(std::int32_t, std::string_view reason) override {
+            kicked.emplace_back(reason);
             return true;
         }
 
@@ -722,4 +738,47 @@ TEST(CommandDispatchTest, StopAsksTheServerToEnd) {
 
     EXPECT_TRUE(harness.registry.run(origin, "stop", scope).ok);
     EXPECT_TRUE(harness.game.stop_requested);
+}
+
+TEST(CommandDispatchTest, WeatherRainRunsForTheGivenSeconds) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "weather rain 30", scope).ok);
+    EXPECT_EQ(harness.game.weather_kind, 1);
+    EXPECT_EQ(harness.game.weather_ticks, 30 * 20);
+}
+
+TEST(CommandDispatchTest, WeatherClearStopsRainAtOnce) {
+    Harness harness;
+    harness.game.weather_kind = 1;
+    harness.game.weather_ticks = 400;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "weather clear", scope).ok);
+    EXPECT_EQ(harness.game.weather_kind, 0);
+    EXPECT_EQ(harness.game.weather_ticks, 0);
+}
+
+TEST(CommandDispatchTest, WeatherWithoutADurationLastsFiveToFifteenMinutes) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "weather thunder", scope).ok);
+    EXPECT_EQ(harness.game.weather_kind, 2);
+    EXPECT_GE(harness.game.weather_ticks, 300 * 20);
+    EXPECT_LE(harness.game.weather_ticks, 900 * 20);
+}
+
+TEST(CommandDispatchTest, KickClosesTheTargetWithItsReason) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "kick @s go away", scope).ok);
+    ASSERT_EQ(harness.game.kicked.size(), 1u);
+    EXPECT_EQ(harness.game.kicked[0], "go away");
 }

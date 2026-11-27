@@ -261,6 +261,7 @@ namespace terila::network {
             // it shows is the one set_health carried, not the one it guessed.
             send_health();
             send_time();
+            send_weather();
             LOG_INFO(Network, "{} joined the game", username_);
 
             // From here chunks stream in batches, both at spawn and while walking.
@@ -330,6 +331,13 @@ namespace terila::network {
                 });
                 // /kill from another player's connection arrives here; the health and the
                 // death screen belong to this one.
+                hub_->set_kicker(entity_id_, [weak_self](const std::string& reason) {
+                    if (const auto connection = weak_self.lock()) {
+                        connection->kick(reason);
+                        return true;
+                    }
+                    return false;
+                });
                 hub_->set_clearer(entity_id_, [weak_self](std::int32_t item_id,
                     int max_count) {
                     if (const auto connection = weak_self.lock()) {

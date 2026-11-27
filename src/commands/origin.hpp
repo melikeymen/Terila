@@ -153,6 +153,21 @@ namespace terila::commands {
         // can end it.
         virtual bool stop_server() { return false; }
 
+        // 0 clear, 1 rain, 2 thunder, held for the given number of ticks.
+        virtual int weather() const { return 0; }
+        virtual bool set_weather(int kind, std::int64_t ticks) {
+            (void)kind;
+            (void)ticks;
+            return false;
+        }
+
+        // Closes a player's connection with a reason.
+        virtual bool kick(std::int32_t entity, std::string_view reason) {
+            (void)entity;
+            (void)reason;
+            return false;
+        }
+
         virtual std::int64_t game_time() const = 0;
         virtual std::int64_t time_of_day() const = 0;
         virtual bool night() const = 0;

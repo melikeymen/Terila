@@ -108,6 +108,7 @@ target_sources(terila PRIVATE
     "src/commands/commands/spawn_commands.cpp"
     "src/commands/commands/clear.cpp"
     "src/commands/commands/server_control.cpp"
+    "src/commands/commands/weather.cpp"
     "src/network/connection_commands.cpp"
     "src/data/recipe_book.hpp"
     "src/data/recipe_book.cpp"
@@ -444,6 +445,7 @@ add_executable(protocol_tests
     "src/commands/commands/spawn_commands.cpp"
     "src/commands/commands/clear.cpp"
     "src/commands/commands/server_control.cpp"
+    "src/commands/commands/weather.cpp"
     "src/commands/commands/kill.cpp"
     "src/commands/commands/say.cpp"
     "src/commands/commands/server_query.cpp"
@@ -454,6 +456,7 @@ add_executable(protocol_tests
     "src/commands/commands/spawn_commands.cpp"
     "src/commands/commands/clear.cpp"
     "src/commands/commands/server_control.cpp"
+    "src/commands/commands/weather.cpp"
     "src/data/input_store.cpp"
     "src/log/logger.cpp"
 )

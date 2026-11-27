@@ -226,6 +226,29 @@ namespace terila::network {
             return connection_.hub_ != nullptr && connection_.hub_->request_stop();
         }
 
+        int weather() const override {
+            return connection_.weather_ == nullptr
+                ? 0
+                : static_cast<int>(connection_.weather_->kind());
+        }
+
+        bool set_weather(int kind, std::int64_t ticks) override {
+            if (kind < 0 || kind > 2) {
+                return false;
+            }
+            return connection_.set_weather(
+                static_cast<terila::world::Weather::Kind>(kind), ticks);
+        }
+
+        bool kick(std::int32_t entity, std::string_view reason) override {
+            if (entity == connection_.entity_id_) {
+                connection_.kick(reason);
+                return true;
+            }
+            return connection_.hub_ != nullptr &&
+                connection_.hub_->kick_player(entity, std::string(reason));
+        }
+
         bool set_spawn_point(std::int32_t entity, double x, double y, double z, float yaw,
             float pitch) override {
             if (entity == connection_.entity_id_ || connection_.hub_ == nullptr) {

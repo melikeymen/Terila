@@ -62,6 +62,9 @@ namespace terila::network {
         using SpawnSetter = std::function<bool(double x, double y, double z, float yaw,
             float pitch)>;
 
+        // /kick closes the socket the owning connection holds.
+        using Kicker = std::function<bool(const std::string& reason)>;
+
         // /clear works on the inventory the owning connection holds, the way /give does.
         using Clearer = std::function<std::int32_t(std::int32_t item_id, int max_count)>;
 
@@ -254,8 +257,21 @@ namespace terila::network {
                 : 0;
         }
 
-        void set_spawn_setter(std::int32_t entity_id, SpawnSetter setter)
+        void set_kicker(std::int32_t entity_id, Kicker kicker)
         {
+            const auto it = players_.find(entity_id);
+            if (it != players_.end()) {
+                it->second.kick = std::move(kicker);
+            }
+        }
+
+        bool kick_player(std::int32_t entity_id, const std::string& reason)
+        {
+            const auto it = players_.find(entity_id);
+            return it != players_.end() && it->second.kick && it->second.kick(reason);
+        }
+
+        void set_spawn_setter(std::int32_t entity_id, SpawnSetter setter)        {
             const auto it = players_.find(entity_id);
             if (it != players_.end()) {
                 it->second.set_spawn = std::move(setter);
@@ -484,6 +500,7 @@ namespace terila::network {
             Damager hurt;
             Killer slay;
             Clearer clear;
+            Kicker kick;
             SpawnSetter set_spawn;
             Teleporter teleport;
             Traveler travel;

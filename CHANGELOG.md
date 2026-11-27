@@ -23,6 +23,10 @@ All notable changes to Terila, newest first. Format follows
   the owning connection holds, counting what left and stopping at `max_count`
 - `/stop`: closes every connection so their queued edits still flush, then ends the tick
   loop and the process
+- `/weather <clear|rain|thunder> [<duration>]`: a shared rain/thunder state with a tick
+  duration that clears itself, synced to every client with the sky game events and to a
+  joining player with the state it walked into
+- `/kick <targets> [<reason>]`: closes the target's connection with a logged reason
 
 ### Fixed
 

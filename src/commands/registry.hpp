@@ -67,6 +67,7 @@ namespace terila::commands {
     void install_spawn(Registry& registry);
     void install_clear(Registry& registry);
     void install_server_control(Registry& registry);
+    void install_weather(Registry& registry);
 
     // Resolves a selector against the players the origin can see, with the error the command
     // should report when nothing matched.

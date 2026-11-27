@@ -70,6 +70,7 @@ namespace terila::commands {
         install_spawn(*this);
         install_clear(*this);
         install_server_control(*this);
+        install_weather(*this);
     }
 
     namespace {

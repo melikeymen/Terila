@@ -19,6 +19,7 @@
 #include "world/world_context.hpp"
 #include "world/chunk_jobs.hpp"
 #include "world/spawn_point.hpp"
+#include "world/weather.hpp"
 #include "world/world_clock.hpp"
 #include "world/world_generator.hpp"
 #include "world/trf/trf_store.hpp"
@@ -67,6 +68,7 @@ namespace terila::network {
             FluidItems fluid_items,
             std::uint32_t world_seed, terila::world::WorldType world_type,
             std::shared_ptr<terila::world::SpawnPoint> world_spawn,
+            std::shared_ptr<terila::world::Weather> weather,
             int view_distance, int simulation_distance, int max_players,
             std::int32_t entity_id, int gamemode,
             std::shared_ptr<terila::entity::Difficulty> world_difficulty,
@@ -81,6 +83,7 @@ namespace terila::network {
               world_seed_(world_seed),
               world_type_(world_type),
               world_spawn_(std::move(world_spawn)),
+              weather_(std::move(weather)),
               terrain_(&terila::world::WorldContext::shared().generator()),
               view_distance_(view_distance), simulation_distance_(simulation_distance),
               max_players_(max_players), entity_id_(entity_id), gamemode_(gamemode),
@@ -139,6 +142,10 @@ namespace terila::network {
         // The block simulation moved a block in the shared overlay: tell this client when it
         // already holds the column, and save a column it touched once per cascade.
         void send_world_block(const terila::world::BlockPos& pos, std::int32_t state);
+        // The weather as it stands, for a client that just joined.
+        void send_weather();
+        // Applies a weather change and tells everybody, the caller included.
+        bool set_weather(terila::world::Weather::Kind kind, std::int64_t ticks);
         // A command edits the world: the state goes into the shared overlay, the falling and
         // fluid simulations hear about it, and every running client is told.
         bool set_block_state(const terila::world::BlockPos& pos, std::int32_t state);
@@ -146,8 +153,7 @@ namespace terila::network {
 
         bool joined() const { return joined_; }
 
-        // /clear: empties matching stacks and reports how many items left the inventory.
-        // An item of 0 matches every stack; a max_count of 0 means no limit.
+        // /clear: empties matching stacks and reports how many items left the inventory.        // An item of 0 matches every stack; a max_count of 0 means no limit.
         std::int32_t clear_inventory(std::int32_t item_id, int max_count);
         // /kick: the socket closes with a logged reason.
         void kick(std::string_view reason);
@@ -462,6 +468,7 @@ namespace terila::network {
         // column is the spawn.
         bool spawn_exact_ = false;
         std::shared_ptr<terila::world::SpawnPoint> world_spawn_;
+        std::shared_ptr<terila::world::Weather> weather_;
         // Points at the shared generator of the dimension this player is standing in.
         terila::world::DimensionKind dimension_ = terila::world::DimensionKind::Overworld;
         terila::world::WorldGenerator* terrain_ = nullptr;

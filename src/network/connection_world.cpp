@@ -1,5 +1,7 @@
 #include "network/connection.hpp"
 
+#include "network/weather_sync.hpp"
+
 #include "protocol/block.hpp"
 #include "protocol/item.hpp"
 #include "protocol/play.hpp"
@@ -592,6 +594,32 @@ namespace terila::network {
             world_.set(target, fire_state_, dimension_);
             persist_block_change(target);
             send_block_change(target, fire_state_, sequence);
+        }
+        return true;
+    }
+
+    void Connection::send_weather() {
+        if (weather_ == nullptr) {
+            return;
+        }
+        for (const auto& packet : weather_packets(*weather_)) {
+            send(packet);
+        }
+    }
+
+    bool Connection::set_weather(terila::world::Weather::Kind kind, std::int64_t ticks) {
+        if (weather_ == nullptr) {
+            return false;
+        }
+        weather_->set(kind, ticks);
+        // The caller is a connection too, so the broadcast reaches it.
+        for (const auto& packet : weather_packets(*weather_)) {
+            if (hub_ != nullptr) {
+                hub_->broadcast(packet);
+            }
+            else {
+                send(packet);
+            }
         }
         return true;
     }

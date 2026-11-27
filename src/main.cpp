@@ -5,6 +5,7 @@
 #endif
 #include "log/logger.hpp"
 #include "network/connection.hpp"
+#include "network/weather_sync.hpp"
 #include "data/block_light_loader.hpp"
 #include "data/recipe_book.hpp"
 #include "data/registry_data.hpp"
@@ -477,6 +478,9 @@ int main() {
     world_spawn->x = spawn.x + 0.5;
     world_spawn->z = spawn.z + 0.5;
     world_spawn->y = static_cast<double>(spawn_surface + 1);
+    // Rain and thunder belong to the world, so one value is shared by every connection
+    // and by the command that changes it.
+    auto weather = std::make_shared<terila::world::Weather>();
     LOG_INFO(Chunk, "{} world ready: seed {} (level-seed '{}'), spawn at ({}, {}) stands on y={}, sea level {}",
         terila::world::world_type_name(world_type), world_terrain.seed(),
         srv.random_seed() ? std::string("random") : srv.level_seed,
@@ -934,7 +938,7 @@ int main() {
 
     auto do_accept = [&](auto&& self) -> void {
         acceptor.async_accept(
-            [&acceptor, &data, &mobs, &world, &falling, &fluids, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, fluid_items, world_type, world_seed, world_spawn, &srv, &players, &player_hub, &chunk_stores, &next_player_entity_id, &world_terrain, clock, &world_difficulty, &default_gamemode, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
+            [&acceptor, &data, &mobs, &world, &falling, &fluids, &item_block_state, &block_state_item, &drops, &item_entity_type, &recipes, &menu_blocks, &furnace_states, furnace_item_id, fluid_items, world_type, world_seed, world_spawn, &srv, &players, &player_hub, &chunk_stores, &next_player_entity_id, &world_terrain, clock, &world_difficulty, &default_gamemode, weather, self](const asio::error_code& error, asio::ip::tcp::socket socket) {
                 if (error) {
                     LOG_ERROR(Network, "accept failed: {} ({})", error.message(), error.value());
                     self(self);
@@ -948,7 +952,8 @@ int main() {
                 auto conn = std::make_shared<terila::network::Connection>(std::move(socket), data, mobs,
                     world, falling, fluids, item_block_state, player_hub, chunk_stores, &drops, block_state_item,
                     item_entity_type, &recipes, menu_blocks, furnace_states, furnace_item_id,
-                    fluid_items, world_seed, world_type, world_spawn, srv.view_distance,
+                    fluid_items, world_seed, world_type, world_spawn, weather,
+                    srv.view_distance,
                     srv.simulation_distance, static_cast<int>(srv.max_players),
                     next_player_entity_id++, *default_gamemode, world_difficulty,
                     default_gamemode, srv.hardcore, clock, world_terrain.sea_level());
@@ -971,6 +976,11 @@ int main() {
 
             // One game tick per loop pass, the same twenty a second the client expects.
             clock->tick();
+            if (weather->tick()) {
+                for (const auto& packet : terila::network::weather_packets(*weather)) {
+                    player_hub->broadcast(packet);
+                }
+            }
 
             std::vector<terila::entity::PlayerPos> player_positions;
             player_positions.reserve(players.size());
