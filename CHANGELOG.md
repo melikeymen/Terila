@@ -3,6 +3,18 @@
 All notable changes to Terila, newest first. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- The server reads `ServerboundPlayerAbilities` instead of ignoring it, so a creative or
+  spectator player whose client toggles flight is not answered with a stale state
+- An abilities packet is sent only when that belief actually changes. It also overwrites
+  the flying speed the player picked, so answering every toggle used to reset a
+  spectator's scroll-wheel speed to the default before they could feel it
+- Spectator players are told `flying`, `mayfly` and `invulnerable`; a game mode that
+  cannot fly is answered with the truth rather than the claim
+
 ## [v0.25.0] — 2026-11-27
 
 ### Added

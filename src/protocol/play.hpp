@@ -140,19 +140,44 @@ namespace terila::protocol {
     }
 
     // Bit 0 invulnerable, 1 flying, 2 may fly, 3 instabuild. The two floats are the
-    // flying speed and the field of view modifier.
+    // flying speed and the walking speed.
     inline bool write_player_abilities(std::vector<std::uint8_t>& output, std::uint8_t flags,
-        float flying_speed = 0.05f, float fov_modifier = 0.1f)
+        float flying_speed = 0.05f, float walking_speed = 0.1f)
     {
         std::vector<std::uint8_t> payload;
         payload.push_back(flags);
         write_float(payload, flying_speed);
-        write_float(payload, fov_modifier);
+        write_float(payload, walking_speed);
         if (!write_packet(output, packet_ids().play_player_abilities, payload)) {
             LOG_WARN(Protocol, "write_player_abilities: failed");
             return false;
         }
         return true;
+    }
+
+    // What a game mode gives a player, and whether the client asked to fly. Spectators
+    // always fly, creative players fly when they said so, and every other mode grounds
+    // them; the returned byte is the packet's flag field, never anything else.
+    inline std::uint8_t player_ability_flags(int gamemode, bool flying) {
+        switch (gamemode) {
+        case 1:   // creative
+            return static_cast<std::uint8_t>(0x0D | (flying ? 0x02 : 0x00));
+        case 3:   // spectator
+            return 0x07;
+        default:
+            return 0x00;
+        }
+    }
+
+    // ServerboundPlayerAbilitiesPacket carries one flag byte and nothing else: the speed
+    // the player picked with the scroll wheel lives only on their own client, so the
+    // server reads the bit it needs instead of inventing a number to send back.
+    inline std::optional<bool> read_player_abilities(
+        const std::vector<std::uint8_t>& payload) {
+        if (payload.empty()) {
+            return std::nullopt;
+        }
+        return (payload[0] & 0x02) != 0;
     }
 
     inline bool write_chunk_batch_start(std::vector<std::uint8_t>& output)

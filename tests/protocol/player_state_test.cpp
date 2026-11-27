@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "protocol/player_state.hpp"
+#include "protocol/play.hpp"
 
 #include <cstdint>
 #include <cstring>
@@ -119,4 +120,42 @@ TEST(PlayerStateTest, ClientCommandAndInteractAreRead) {
     EXPECT_EQ(parsed->entity_id, 10);
     EXPECT_EQ(parsed->hand, 0);
     EXPECT_TRUE(parsed->secondary);
+}
+
+TEST(PlayerStateTest, PlayerAbilitiesReadTheFlyingBit) {
+    const auto flying = protocol::read_player_abilities({ 0x02 });
+    ASSERT_TRUE(flying.has_value());
+    EXPECT_TRUE(*flying);
+
+    EXPECT_FALSE(*protocol::read_player_abilities({ 0x00 }));
+    EXPECT_FALSE(*protocol::read_player_abilities({ 0x0D }));
+    EXPECT_FALSE(protocol::read_player_abilities({}).has_value());
+}
+
+TEST(PlayerStateTest, SpectatorFliesAndCreativeKeepsTheClientsChoice) {
+    EXPECT_EQ(protocol::player_ability_flags(3, false), 0x07);
+    EXPECT_EQ(protocol::player_ability_flags(3, true), 0x07);
+    EXPECT_EQ(protocol::player_ability_flags(1, false), 0x0D);
+    EXPECT_EQ(protocol::player_ability_flags(1, true), 0x0F);
+    EXPECT_EQ(protocol::player_ability_flags(0, true), 0x00);
+}
+
+TEST(PlayerStateTest, PlayerAbilitiesCarryTheSpeedThePlayerScrolledTo) {
+    protocol::packet_ids().play_player_abilities = 0x30;
+
+    std::vector<std::uint8_t> frame;
+    ASSERT_TRUE(protocol::write_player_abilities(frame, 0x07, 0.2f));
+
+    const auto start = header_size(frame);
+    ASSERT_GT(start, 0u);
+    ASSERT_EQ(frame[start], 0x30);
+    ASSERT_EQ(frame[start + 1], 0x07);
+
+    std::uint32_t bits = 0;
+    for (int i = 0; i < 4; ++i) {
+        bits = (bits << 8) | frame[start + 2 + static_cast<std::size_t>(i)];
+    }
+    float speed = 0.0f;
+    std::memcpy(&speed, &bits, sizeof(speed));
+    EXPECT_FLOAT_EQ(speed, 0.2f);
 }

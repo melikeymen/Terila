@@ -234,6 +234,11 @@ namespace terila::network {
         // --- gamemodes (0 survival, 1 creative, 2 adventure, 3 spectator) -----------
         void handle_change_gamemode(std::int32_t requested);
         void send_gamemode_state();
+        // The client's own flight toggle, and the answer to it: the flag is kept here and
+        // sent back only when it actually changed, because an abilities packet also resets
+        // the flying speed the player picked with the scroll wheel.
+        void apply_client_abilities(bool flying);
+        void send_abilities();
         bool can_break_blocks() const { return gamemode_ == 0 || gamemode_ == 1; }
         bool can_place_blocks() const { return gamemode_ == 0 || gamemode_ == 1; }
         bool instant_break() const { return gamemode_ == 1; }
@@ -512,6 +517,9 @@ namespace terila::network {
         float yaw_ = 0.0f;
         float pitch_ = 0.0f;
         int gamemode_ = 1;
+        // Flight travels both ways: the client toggles it, the mode decides what it may do.
+        bool flying_ = false;
+        float flying_speed_ = 0.05f;
         // 0 peaceful, 1 easy, 2 normal, 3 hard, the same numbering the packet uses.
         // Shared with the server loop: /difficulty changes the value the spawner and the
         // mobs read, and /defaultgamemode changes what a joining player starts in.

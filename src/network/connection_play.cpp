@@ -47,16 +47,37 @@ namespace terila::network {
         }
         out.clear();
 
-        std::uint8_t flags = 0;
-        if (gamemode_ == 1) {
-            flags = 0x0D;   // invulnerable | may fly | instabuild
-        }
-        else if (gamemode_ == 3) {
-            flags = 0x07;   // invulnerable | flying | may fly
-        }
-        if (terila::protocol::write_player_abilities(out, flags)) {
+        // A fresh mode starts grounded, except spectator, which is always flying.
+        flying_ = gamemode_ == 3;
+        send_abilities();
+    }
+
+    // The abilities packet is the only place the client learns what the server believes
+    // about flight. It also overwrites the flying speed the player scrolled to, so it is
+    // sent when that belief changes and not on a timer.
+    void Connection::send_abilities() {
+        std::vector<std::uint8_t> out;
+        const std::uint8_t flags = terila::protocol::player_ability_flags(gamemode_, flying_);
+        if (terila::protocol::write_player_abilities(out, flags, flying_speed_)) {
             send(out);
         }
+    }
+
+    void Connection::apply_client_abilities(bool flying) {
+        // A mode tells the client what it may do, so a claim the mode does not carry is
+        // answered with the truth instead of stored.
+        if (gamemode_ == 3) {
+            flying = true;
+        }
+        else if (gamemode_ != 1) {
+            flying = false;
+        }
+
+        if (flying_ == flying) {
+            return;
+        }
+        flying_ = flying;
+        send_abilities();
     }
 
     void Connection::handle_play(std::int32_t id, const std::vector<std::uint8_t>& payload) {
@@ -94,6 +115,12 @@ namespace terila::network {
             const auto window = terila::protocol::read_varint(payload.data(), payload.size());
             if (window.has_value()) {
                 handle_container_close(window->value);
+            }
+            return;
+        }
+        if (id == ids.play_player_abilities_serverbound) {
+            if (const auto flying = terila::protocol::read_player_abilities(payload)) {
+                apply_client_abilities(*flying);
             }
             return;
         }

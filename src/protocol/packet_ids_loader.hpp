@@ -120,6 +120,9 @@ namespace terila::protocol {
         // Inventory and dropped items
         set(ids.play_container_set_slot, find("play", "clientbound", "minecraft:container_set_slot"), "play_container_set_slot");
         set(ids.play_player_abilities, find("play", "clientbound", "minecraft:player_abilities"), "play_player_abilities");
+        set(ids.play_player_abilities_serverbound,
+            find("play", "serverbound", "minecraft:player_abilities"),
+            "play_player_abilities_serverbound");
         set(ids.play_open_screen, find("play", "clientbound", "minecraft:open_screen"), "play_open_screen");
         set(ids.play_container_set_content, find("play", "clientbound", "minecraft:container_set_content"), "play_container_set_content");
         set(ids.play_container_set_data, find("play", "clientbound", "minecraft:container_set_data"), "play_container_set_data");

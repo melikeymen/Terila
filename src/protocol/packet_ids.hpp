@@ -71,6 +71,7 @@ namespace terila::protocol {
         // Inventory and dropped items
         std::int32_t play_container_set_slot = -1;
         std::int32_t play_player_abilities = -1;
+        std::int32_t play_player_abilities_serverbound = -1;
         std::int32_t play_open_screen = -1;
         std::int32_t play_container_set_content = -1;
         std::int32_t play_container_set_data = -1;
