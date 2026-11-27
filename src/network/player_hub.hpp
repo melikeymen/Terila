@@ -54,6 +54,10 @@ namespace terila::network {
         // apply it: its health, its health packet and its death screen all live there.
         using Damager = std::function<bool(float amount, const std::string& cause)>;
 
+        // /kill does not go through the damage rules; the owning connection applies the
+        // death itself, which is what lets it reach a creative player too.
+        using Killer = std::function<bool(const std::string& cause)>;
+
         void set_view_distance(int chunks) { view_distance_ = chunks > 0 ? chunks : 10; }
 
         // minecraft:player is a registry entry too, and add_entity takes its id.
@@ -209,6 +213,22 @@ namespace terila::network {
             if (it != players_.end()) {
                 it->second.hurt = std::move(damager);
             }
+        }
+
+        void set_killer(std::int32_t entity_id, Killer killer)
+        {
+            const auto it = players_.find(entity_id);
+            if (it != players_.end()) {
+                it->second.slay = std::move(killer);
+            }
+        }
+
+        // Applies an unconditional death. False when nobody with that id is online, or when
+        // the connection behind it is already gone.
+        bool kill(std::int32_t entity_id, const std::string& cause)
+        {
+            const auto it = players_.find(entity_id);
+            return it != players_.end() && it->second.slay && it->second.slay(cause);
         }
 
         // Applies a mob hit. False when nobody with that id is online (or the player is
@@ -415,6 +435,7 @@ namespace terila::network {
             Giver give;
             Runner run;
             Damager hurt;
+            Killer slay;
             Teleporter teleport;
             Traveler travel;
             Messenger message;

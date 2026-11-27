@@ -60,6 +60,59 @@ namespace terila::commands {
         install_teleport(*this);
         install_summon(*this);
         install_message(*this);
+        install_kill(*this);
+        install_query(*this);
+        install_say(*this);
+    }
+
+    namespace {
+
+        // One executable path of a command, arguments written the way /help writes them.
+        void collect_usage(const Node& node, const std::string& path,
+            std::vector<std::string>& out, std::size_t limit) {
+            if (out.size() >= limit) {
+                return;
+            }
+            if (node.executable) {
+                out.push_back(path);
+            }
+            for (const auto& child : node.children) {
+                if (out.size() >= limit) {
+                    return;
+                }
+                if (child->is_argument) {
+                    collect_usage(*child, path + " <" + child->name + ">", out, limit);
+                }
+                else {
+                    collect_usage(*child, path + " " + child->name, out, limit);
+                }
+            }
+        }
+
+    } // namespace
+
+    std::vector<std::string> Registry::command_names() const {
+        std::vector<std::string> names;
+        for (const auto& child : root_.children) {
+            if (!child->is_argument) {
+                names.push_back(child->name);
+            }
+        }
+        std::sort(names.begin(), names.end());
+        return names;
+    }
+
+    std::vector<std::string> Registry::usage_lines(std::string_view command,
+        std::size_t limit) const {
+        std::vector<std::string> lines;
+        for (const auto& child : root_.children) {
+            if (child->is_argument || !equal_ignore_case(child->name, command)) {
+                continue;
+            }
+            collect_usage(*child, "/" + child->name, lines, limit);
+            break;
+        }
+        return lines;
     }
 
     Parser Registry::item_parser() const {
@@ -191,7 +244,11 @@ namespace terila::commands {
                     break;
                 case ParserKind::Text:
                 case ParserKind::GreedyText:
-                    protocol::write_varint(built.properties, node.parser.text_mode);
+                    // Only the brigadier string carries a reading mode; a message argument
+                    // is greedy by definition and its parser has no property bytes.
+                    if (node.parser.wire == "brigadier:string") {
+                        protocol::write_varint(built.properties, node.parser.text_mode);
+                    }
                     break;
                 case ParserKind::PlayerNames:
                 case ParserKind::OnePlayer: {
@@ -227,17 +284,20 @@ namespace terila::commands {
 
     std::vector<Target> targets_of(const Selector& selector, const Origin& origin,
         std::string& error) {
-        std::vector<Target> players;
+        std::vector<Target> candidates;
         if (origin.game != nullptr) {
-            players = origin.game->players();
+            // @e names every entity, so it reads the whole world; a player selector only
+            // reads the list the hub keeps, which is also what a plain name resolves in.
+            candidates = selector.marker == 'e' ? origin.game->entities()
+                                                : origin.game->players();
         }
-        if (players.empty()) {
-            players.push_back(Target{ origin.entity, origin.name, origin.x, origin.y,
+        if (candidates.empty()) {
+            candidates.push_back(Target{ origin.entity, origin.name, origin.x, origin.y,
                 origin.z });
         }
 
         const Target self{ origin.entity, origin.name, origin.x, origin.y, origin.z };
-        auto matches = resolve(selector, self, players);
+        auto matches = resolve(selector, self, candidates);
         if (matches.empty()) {
             error = "No entity was found matching '" + selector.text + "'";
         }

@@ -100,6 +100,52 @@ namespace terila::network {
             return connection_.hub_->message_to(entity, text);
         }
 
+        // The player list plus the mobs this connection already owns, so a selector written
+        // as @e can name a zombie as readily as a player.
+        std::vector<terila::commands::Target> entities() const override {
+            std::vector<terila::commands::Target> out = players();
+            for (const auto& mob : connection_.mobs_.mobs()) {
+                if (mob.dead) {
+                    continue;
+                }
+                out.push_back(terila::commands::Target{ mob.id, mob.type_name, mob.x, mob.y,
+                    mob.z, mob.yaw, mob.pitch });
+            }
+            return out;
+        }
+
+        std::size_t broadcast(std::string_view text) override {
+            std::size_t reached = 0;
+            if (connection_.tell_player(text)) {
+                ++reached;
+            }
+            if (connection_.hub_) {
+                for (const auto id : connection_.hub_->members()) {
+                    if (id == connection_.entity_id_) {
+                        continue;
+                    }
+                    if (connection_.hub_->message_to(id, text)) {
+                        ++reached;
+                    }
+                }
+            }
+            return reached;
+        }
+
+        bool kill(std::int32_t entity, std::string_view cause) override {
+            if (connection_.mobs_.find(entity) != nullptr) {
+                return connection_.mobs_.damage(entity, 100000, 0.0f);
+            }
+            const std::string reason(cause);
+            if (entity == connection_.entity_id_ || connection_.hub_ == nullptr) {
+                return connection_.kill_player(reason);
+            }
+            return connection_.hub_->kill(entity, reason);
+        }
+
+        std::int64_t seed() const override { return connection_.world_seed_; }
+        int max_players() const override { return connection_.max_players_; }
+
         std::int64_t game_time() const override {
             return connection_.clock_ ? connection_.clock_->game_time : 0;
         }

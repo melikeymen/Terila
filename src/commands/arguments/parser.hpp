@@ -106,6 +106,22 @@ namespace terila::commands {
             return parser;
         }
 
+        // Any entity, not only a player: @e reaches the mobs behind it.
+        static Parser entities() {
+            Parser parser = players();
+            parser.players_only = false;
+            return parser;
+        }
+
+        // A chat line: the rest of the command, sent to the client as a component.
+        static Parser message() {
+            Parser parser;
+            parser.kind = ParserKind::GreedyText;
+            parser.wire = "minecraft:message";
+            parser.text_mode = 2;
+            return parser;
+        }
+
         static Parser gamemode() {
             Parser parser;
             parser.kind = ParserKind::Gamemode;

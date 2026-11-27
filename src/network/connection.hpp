@@ -98,7 +98,12 @@ namespace terila::network {
         // A mob hit on this player. False when it did nothing (creative, spectator, already
         // dead).
         bool damage_player(float amount, const std::string& cause);
+        // /kill: an unconditional hit, so a creative player dies to it as well.
+        bool kill_player(const std::string& cause);
         void send_health();
+        // The death screen, the combat message and the state behind them, shared by a hit
+        // that empties the health bar and by /kill.
+        void die(const std::string& cause);
         // Puts the player back at the world spawn after the death screen's respawn button.
         void respawn_player();
         bool dead() const { return dead_; }

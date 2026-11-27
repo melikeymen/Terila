@@ -29,6 +29,11 @@ namespace terila::commands {
 
         std::vector<protocol::CommandNode> wire_tree() const;
 
+        // The top-level names, sorted, and the executable forms under one of them, written
+        // the way /help writes them ("give <item> <count>").
+        std::vector<std::string> command_names() const;
+        std::vector<std::string> usage_lines(std::string_view command, std::size_t limit) const;
+
         Node& root() { return root_; }
         const data::RegistryData& data() const { return data_; }
         const item::ComponentIds& components() const { return components_; }
@@ -51,6 +56,9 @@ namespace terila::commands {
     void install_teleport(Registry& registry);
     void install_summon(Registry& registry);
     void install_message(Registry& registry);
+    void install_kill(Registry& registry);
+    void install_query(Registry& registry);
+    void install_say(Registry& registry);
 
     // Resolves a selector against the players the origin can see, with the error the command
     // should report when nothing matched.

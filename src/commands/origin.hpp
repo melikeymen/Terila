@@ -26,6 +26,9 @@ namespace terila::commands {
         virtual ~GameApi() = default;
 
         virtual std::vector<Target> players() const = 0;
+        // Everything the source can see, players included. A selector written as @e reads
+        // this; @a, @p, @r and a plain name stay on players().
+        virtual std::vector<Target> entities() const { return players(); }
         virtual bool give(std::int32_t entity, std::int32_t item_id, std::int32_t count,
             const item::ComponentsPtr& components) = 0;
         virtual bool teleport(std::int32_t entity, double x, double y, double z,
@@ -51,6 +54,22 @@ namespace terila::commands {
         virtual bool summonable(std::string_view type) const = 0;
         // One line to one player, wherever that player is connected.
         virtual bool tell(std::int32_t entity, std::string_view text) = 0;
+        // One line to everyone, the caller included. Returns how many received it.
+        virtual std::size_t broadcast(std::string_view text) {
+            (void)text;
+            return 0;
+        }
+        // A hit that ignores invulnerability, which is what /kill asks for: a creative
+        // player dies to it the same way a survival one does. False when the target is
+        // already gone.
+        virtual bool kill(std::int32_t entity, std::string_view cause) {
+            (void)entity;
+            (void)cause;
+            return false;
+        }
+        // The world seed and the player limit /list reports.
+        virtual std::int64_t seed() const { return 0; }
+        virtual int max_players() const { return 0; }
 
         virtual std::int64_t game_time() const = 0;
         virtual std::int64_t time_of_day() const = 0;

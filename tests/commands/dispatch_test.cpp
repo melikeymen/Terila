@@ -15,7 +15,12 @@ namespace {
 
     struct FakeGame final : commands::GameApi {
         std::vector<commands::Target> members;
+        std::vector<commands::Target> mobs;
         std::vector<std::string> replies;
+        std::vector<std::int32_t> kills;
+        std::vector<std::string> broadcasts;
+        std::int64_t world_seed = 12345;
+        int player_limit = 20;
         std::vector<std::pair<std::int32_t, std::int32_t>> gifts;
         std::vector<std::string> teleports;
         std::vector<std::pair<std::int32_t, int>> modes;
@@ -70,6 +75,25 @@ namespace {
             messages.push_back(std::to_string(entity) + ":" + std::string(text));
             return true;
         }
+
+        std::vector<commands::Target> entities() const override {
+            std::vector<commands::Target> out = members;
+            out.insert(out.end(), mobs.begin(), mobs.end());
+            return out;
+        }
+
+        bool kill(std::int32_t entity, std::string_view) override {
+            kills.push_back(entity);
+            return true;
+        }
+
+        std::size_t broadcast(std::string_view text) override {
+            broadcasts.emplace_back(text);
+            return members.size();
+        }
+
+        std::int64_t seed() const override { return world_seed; }
+        int max_players() const override { return player_limit; }
 
         std::int64_t game_time() const override { return clock; }
         std::int64_t time_of_day() const override { return day; }
@@ -260,4 +284,127 @@ TEST(CommandDispatchTest, IncompleteCommandIsReported) {
     EXPECT_FALSE(harness.registry.run(origin, "time set", scope).ok);
     ASSERT_FALSE(harness.replies.empty());
     EXPECT_NE(harness.replies.front().find("incomplete"), std::string::npos);
+}
+
+TEST(CommandDispatchTest, KillWithoutATargetKillsTheCaller) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    const auto result = harness.registry.run(origin, "kill", scope);
+
+    EXPECT_TRUE(result.ok);
+    ASSERT_EQ(harness.game.kills.size(), 1u);
+    EXPECT_EQ(harness.game.kills[0], 1);
+    ASSERT_FALSE(harness.replies.empty());
+    EXPECT_NE(harness.replies.front().find("Killed Alex"), std::string::npos);
+}
+
+TEST(CommandDispatchTest, KillWithASelectorKillsEveryMatch) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    const auto result = harness.registry.run(origin, "kill @a", scope);
+
+    EXPECT_TRUE(result.ok);
+    EXPECT_EQ(result.count, 2);
+    EXPECT_EQ(harness.game.kills, (std::vector<std::int32_t>{ 1, 2 }));
+}
+
+TEST(CommandDispatchTest, KillReachesAMobThroughTheWideSelector) {
+    Harness harness;
+    harness.game.mobs.push_back(
+        commands::Target{ 77, "minecraft:zombie", 3.0, 64.0, 0.0, 0.0f, 0.0f });
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    const auto result = harness.registry.run(origin, "kill @e[limit=3]", scope);
+
+    EXPECT_TRUE(result.ok);
+    EXPECT_EQ(result.count, 3);
+    ASSERT_EQ(harness.game.kills.size(), 3u);
+    EXPECT_EQ(harness.game.kills[2], 77);
+}
+
+TEST(CommandDispatchTest, SeedReportsTheWorldSeed) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "seed", scope).ok);
+    ASSERT_FALSE(harness.replies.empty());
+    EXPECT_NE(harness.replies.front().find("12345"), std::string::npos);
+}
+
+TEST(CommandDispatchTest, ListReportsTheOnlinePlayers) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "list", scope).ok);
+    ASSERT_FALSE(harness.replies.empty());
+    EXPECT_NE(harness.replies.front().find("2 of a max of 20"), std::string::npos);
+    EXPECT_NE(harness.replies.front().find("Alex"), std::string::npos);
+}
+
+TEST(CommandDispatchTest, SayReachesEveryPlayer) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "say hello there", scope).ok);
+    ASSERT_EQ(harness.game.broadcasts.size(), 1u);
+    EXPECT_EQ(harness.game.broadcasts[0], "[Alex] hello there");
+}
+
+TEST(CommandDispatchTest, MeAnnouncesAnAction) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "me waves", scope).ok);
+    ASSERT_EQ(harness.game.broadcasts.size(), 1u);
+    EXPECT_EQ(harness.game.broadcasts[0], "* Alex waves");
+}
+
+TEST(CommandDispatchTest, HelpWithoutAnArgumentListsTheCommands) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "help", scope).ok);
+    ASSERT_FALSE(harness.replies.empty());
+    EXPECT_NE(harness.replies.front().find("give"), std::string::npos);
+    EXPECT_NE(harness.replies.front().find("kill"), std::string::npos);
+}
+
+TEST(CommandDispatchTest, HelpWithACommandShowsItsForms) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "help give", scope).ok);
+    ASSERT_FALSE(harness.replies.empty());
+    EXPECT_NE(harness.replies.front().find("/give <item>"), std::string::npos);
+}
+
+TEST(CommandDispatchTest, HelpRefusesAnUnknownCommand) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_FALSE(harness.registry.run(origin, "help nope", scope).ok);
+    ASSERT_FALSE(harness.replies.empty());
+    EXPECT_NE(harness.replies.front().find("No such command"), std::string::npos);
+}
+
+TEST(CommandDispatchTest, VersionNamesTheServer) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "version", scope).ok);
+    ASSERT_FALSE(harness.replies.empty());
+    EXPECT_NE(harness.replies.front().find("Terila"), std::string::npos);
 }

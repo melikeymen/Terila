@@ -327,6 +327,14 @@ namespace terila::network {
                     }
                     return false;
                 });
+                // /kill from another player's connection arrives here; the health and the
+                // death screen belong to this one.
+                hub_->set_killer(entity_id_, [weak_self](const std::string& cause) {
+                    if (const auto connection = weak_self.lock()) {
+                        return connection->kill_player(cause);
+                    }
+                    return false;
+                });
             }
         }
     }

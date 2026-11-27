@@ -50,7 +50,23 @@ namespace terila::network {
         if (health_ > 0.0f) {
             return true;
         }
+        die(cause);
+        return true;
+    }
 
+    // /kill is not a hit the world can refuse: the game mode and the size of the blow are
+    // not consulted, only whether the player is still standing in the world.
+    bool Connection::kill_player(const std::string& cause) {
+        if (!joined_ || dead_) {
+            return false;
+        }
+        health_ = 0.0f;
+        send_health();
+        die(cause);
+        return true;
+    }
+
+    void Connection::die(const std::string& cause) {
         // Dead: the client shows the death screen until it asks to respawn.
         dead_ = true;
         health_ = 0.0f;
@@ -62,7 +78,6 @@ namespace terila::network {
             send(out);
         }
         LOG_INFO(Network, "{} died to {}", username_, cause.empty() ? "a mob" : cause);
-        return true;
     }
 
     // The respawn button sends client_command with action 0. The client throws its world away
