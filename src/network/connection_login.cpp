@@ -330,6 +330,13 @@ namespace terila::network {
                 });
                 // /kill from another player's connection arrives here; the health and the
                 // death screen belong to this one.
+                hub_->set_clearer(entity_id_, [weak_self](std::int32_t item_id,
+                    int max_count) {
+                    if (const auto connection = weak_self.lock()) {
+                        return connection->clear_inventory(item_id, max_count);
+                    }
+                    return 0;
+                });
                 hub_->set_spawn_setter(entity_id_, [weak_self](double x, double y,
                     double z, float yaw, float pitch) {
                     if (const auto connection = weak_self.lock()) {

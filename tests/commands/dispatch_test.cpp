@@ -27,6 +27,8 @@ namespace {
         std::vector<std::pair<std::int32_t, float>> damages;
         std::vector<std::tuple<std::int32_t, std::int32_t, std::int32_t, std::int32_t>> drops;
         std::vector<std::tuple<double, double, double>> spawn_points;
+        std::vector<std::pair<std::int32_t, int>> clears;
+        bool stop_requested = false;
         bool world_spawn_set = false;
         double world_spawn_x = 0.0;
         double world_spawn_y = 0.0;
@@ -138,6 +140,16 @@ namespace {
         void drop_block(std::int32_t x, std::int32_t y, std::int32_t z,
             std::int32_t state) override {
             drops.emplace_back(x, y, z, state);
+        }
+
+        std::int32_t clear_items(std::int32_t, std::int32_t item_id, int max_count) override {
+            clears.emplace_back(item_id, max_count);
+            return 2;
+        }
+
+        bool stop_server() override {
+            stop_requested = true;
+            return true;
         }
 
         bool set_spawn_point(std::int32_t, double x, double y, double z, float,
@@ -677,4 +689,37 @@ TEST(CommandDispatchTest, SetWorldSpawnMovesTheJoiningPoint) {
     EXPECT_DOUBLE_EQ(harness.game.world_spawn_x, 10.5);
     EXPECT_DOUBLE_EQ(harness.game.world_spawn_y, 70.0);
     EXPECT_DOUBLE_EQ(harness.game.world_spawn_z, 10.5);
+}
+
+TEST(CommandDispatchTest, ClearEmptiesTheCallersInventory) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "clear", scope).ok);
+    ASSERT_EQ(harness.game.clears.size(), 1u);
+    EXPECT_EQ(harness.game.clears[0].first, 0);
+    EXPECT_EQ(harness.game.clears[0].second, 0);
+}
+
+TEST(CommandDispatchTest, ClearNamesAnItemAndACount) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "clear @s minecraft:stone 5", scope).ok);
+    ASSERT_EQ(harness.game.clears.size(), 1u);
+    const auto stone = harness.registry.data().item_ids.find("minecraft:stone");
+    ASSERT_NE(stone, harness.registry.data().item_ids.end());
+    EXPECT_EQ(harness.game.clears[0].first, stone->second);
+    EXPECT_EQ(harness.game.clears[0].second, 5);
+}
+
+TEST(CommandDispatchTest, StopAsksTheServerToEnd) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "stop", scope).ok);
+    EXPECT_TRUE(harness.game.stop_requested);
 }

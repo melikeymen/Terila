@@ -214,6 +214,18 @@ namespace terila::network {
             connection_.spawn_block_drop(terila::world::BlockPos{ x, y, z }, state);
         }
 
+        std::int32_t clear_items(std::int32_t entity, std::int32_t item_id,
+            int max_count) override {
+            if (entity == connection_.entity_id_ || connection_.hub_ == nullptr) {
+                return connection_.clear_inventory(item_id, max_count);
+            }
+            return connection_.hub_->clear_items(entity, item_id, max_count);
+        }
+
+        bool stop_server() override {
+            return connection_.hub_ != nullptr && connection_.hub_->request_stop();
+        }
+
         bool set_spawn_point(std::int32_t entity, double x, double y, double z, float yaw,
             float pitch) override {
             if (entity == connection_.entity_id_ || connection_.hub_ == nullptr) {

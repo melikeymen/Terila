@@ -156,6 +156,11 @@ namespace terila::network {
         }
     }
 
+    void Connection::kick(std::string_view reason) {
+        LOG_INFO(Network, "{}[/{}] kicked: {}", username_, remote_, reason);
+        close();
+    }
+
     void Connection::close() {
         if (closed_) {
             return;

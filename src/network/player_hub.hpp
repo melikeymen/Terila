@@ -62,6 +62,17 @@ namespace terila::network {
         using SpawnSetter = std::function<bool(double x, double y, double z, float yaw,
             float pitch)>;
 
+        // /clear works on the inventory the owning connection holds, the way /give does.
+        using Clearer = std::function<std::int32_t(std::int32_t item_id, int max_count)>;
+
+        // /stop asks the process to end, and whoever owns the io loop decides what that
+        // means for sockets and saves.
+        void set_stop_requester(std::function<bool()> requester) {
+            stop_ = std::move(requester);
+        }
+
+        bool request_stop() const { return stop_ && stop_(); }
+
         void set_view_distance(int chunks) { view_distance_ = chunks > 0 ? chunks : 10; }
 
         // minecraft:player is a registry entry too, and add_entity takes its id.
@@ -225,6 +236,22 @@ namespace terila::network {
             if (it != players_.end()) {
                 it->second.slay = std::move(killer);
             }
+        }
+
+        void set_clearer(std::int32_t entity_id, Clearer clearer)
+        {
+            const auto it = players_.find(entity_id);
+            if (it != players_.end()) {
+                it->second.clear = std::move(clearer);
+            }
+        }
+
+        std::int32_t clear_items(std::int32_t entity_id, std::int32_t item_id, int max_count)
+        {
+            const auto it = players_.find(entity_id);
+            return it != players_.end() && it->second.clear
+                ? it->second.clear(item_id, max_count)
+                : 0;
         }
 
         void set_spawn_setter(std::int32_t entity_id, SpawnSetter setter)
@@ -456,6 +483,7 @@ namespace terila::network {
             Runner run;
             Damager hurt;
             Killer slay;
+            Clearer clear;
             SpawnSetter set_spawn;
             Teleporter teleport;
             Traveler travel;
@@ -600,6 +628,7 @@ namespace terila::network {
             return state;
         }
 
+        std::function<bool()> stop_;
         int view_distance_ = 10;
         std::int32_t player_type_id_ = 159;   // registry id of minecraft:player
         std::unordered_map<std::int32_t, Member> players_;

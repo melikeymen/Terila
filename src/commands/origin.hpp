@@ -140,6 +140,19 @@ namespace terila::commands {
             return false;
         }
 
+        // Empties matching stacks in a player's inventory and reports how many items went.
+        // An item of 0 matches every stack; a max_count of 0 means no limit.
+        virtual std::int32_t clear_items(std::int32_t entity, std::int32_t item_id,
+            int max_count) {
+            (void)entity;
+            (void)item_id;
+            (void)max_count;
+            return 0;
+        }
+        // Ends the process after the current tick. False when the build has nobody who
+        // can end it.
+        virtual bool stop_server() { return false; }
+
         virtual std::int64_t game_time() const = 0;
         virtual std::int64_t time_of_day() const = 0;
         virtual bool night() const = 0;

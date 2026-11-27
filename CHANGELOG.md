@@ -19,6 +19,10 @@ All notable changes to Terila, newest first. Format follows
   the world point is one shared value every joining player reads
 - A joining player now starts at the world point when a command set one, and dies back
   into their own spawn instead of the surface above the world column
+- `/clear [<targets>] [<item>] [<max_count>]`: empties matching stacks in the inventory
+  the owning connection holds, counting what left and stopping at `max_count`
+- `/stop`: closes every connection so their queued edits still flush, then ends the tick
+  loop and the process
 
 ### Fixed
 

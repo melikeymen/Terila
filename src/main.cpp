@@ -875,6 +875,19 @@ int main() {
     // they join, which is what lets players see each other and the status
     // response report a real online count.
     auto player_hub = std::make_shared<terila::network::PlayerHub>();
+    // /stop has to close the sockets itself: io.stop() alone would drop the edits still
+    // queued in each connection and skip their final flush.
+    player_hub->set_stop_requester([&io, &players]() {
+        asio::post(io, [&io, &players]() {
+            for (const auto& weak : players) {
+                if (const auto connection = weak.lock()) {
+                    connection->kick("Server stopped");
+                }
+            }
+            io.stop();
+        });
+        return true;
+    });
     player_hub->set_view_distance(srv.view_distance);
     if (const auto it = data.entity_type_ids.find("minecraft:player"); it != data.entity_type_ids.end()) {
         player_hub->set_player_type_id(it->second);

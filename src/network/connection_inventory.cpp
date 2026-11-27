@@ -32,6 +32,32 @@ namespace terila::network {
         }
     }
 
+    std::int32_t Connection::clear_inventory(std::int32_t item_id, int max_count) {
+        std::int32_t removed = 0;
+        for (std::int32_t index = 0; index < kInventorySlots; ++index) {
+            if (max_count > 0 && removed >= max_count) {
+                break;
+            }
+            auto& entry = inventory_[static_cast<std::size_t>(index)];
+            if (entry.count <= 0 || (item_id != 0 && entry.item_id != item_id)) {
+                continue;
+            }
+
+            const std::int32_t taking = max_count > 0
+                ? std::min(entry.count, max_count - removed)
+                : entry.count;
+            removed += taking;
+            entry.count -= taking;
+            if (entry.count <= 0) {
+                entry.item_id = 0;
+                entry.count = 0;
+                entry.components.reset();
+            }
+            send_inventory_slot(kFirstInventorySlot + index);
+        }
+        return removed;
+    }
+
     void Connection::set_inventory_slot(std::int32_t slot, std::int32_t item_id,
         std::int32_t count) {
         const std::int32_t index = slot - kFirstInventorySlot;

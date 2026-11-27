@@ -146,6 +146,12 @@ namespace terila::network {
 
         bool joined() const { return joined_; }
 
+        // /clear: empties matching stacks and reports how many items left the inventory.
+        // An item of 0 matches every stack; a max_count of 0 means no limit.
+        std::int32_t clear_inventory(std::int32_t item_id, int max_count);
+        // /kick: the socket closes with a logged reason.
+        void kick(std::string_view reason);
+
         // True while a burst of chunks (a login or a dimension change) is still being sent.
         // The tick keeps the expensive world sampling of the natural spawner off the io
         // thread until the player is in, so the first view distance arrives first.

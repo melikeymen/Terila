@@ -68,6 +68,8 @@ namespace terila::commands {
         install_damage(*this);
         install_clone(*this);
         install_spawn(*this);
+        install_clear(*this);
+        install_server_control(*this);
     }
 
     namespace {
