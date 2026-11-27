@@ -48,6 +48,23 @@ namespace {
         return nullptr;
     }
 
+    // Every leaf below `node` must be a greedy phrase the client is allowed to send:
+    // a branch that stops at a literal or at an argument the client cannot close is a
+    // line it refuses to build.
+    bool ends_in_a_greedy_phrase(const std::vector<protocol::CommandNode>& nodes,
+        const protocol::CommandNode& node) {
+        if (node.children.empty()) {
+            return node.executable && node.kind == protocol::CommandNode::Argument &&
+                node.parser == 5 && node.properties == std::vector<std::uint8_t>{ 2 };
+        }
+        for (const auto child : node.children) {
+            if (!ends_in_a_greedy_phrase(nodes, nodes[static_cast<std::size_t>(child)])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     // Reads a payload the way ClientboundCommandsPacket.readNode does. The walk only
     // succeeds when every byte is consumed, so one property written with the wrong width
     // shows up here instead of on a client's screen.
@@ -267,6 +284,27 @@ TEST(CommandTreeTest, TheWholeTreeDecodesWithoutALeftoverByte) {
     const auto bytes = protocol::write_command_tree(nodes, 0);
     ASSERT_FALSE(bytes.empty());
     EXPECT_TRUE(walk_tree(bytes));
+}
+
+TEST(CommandTreeTest, ExecuteOffersItsModifiersInsteadOfOnePlaceholder) {
+    const auto data = command_data();
+    const terila::item::ComponentIds components;
+    const auto registry = make_registry(data, components);
+    const auto nodes = registry.wire_tree();
+
+    const auto* execute = find_child(nodes, nodes.front(), "execute");
+    ASSERT_NE(execute, nullptr);
+
+    for (const char* name : { "run", "as", "at", "in", "positioned", "rotated", "align" }) {
+        EXPECT_NE(find_child(nodes, *execute, name), nullptr) << name;
+    }
+
+    const auto* positioned = find_child(nodes, *execute, "positioned");
+    ASSERT_NE(positioned, nullptr);
+    EXPECT_NE(find_child(nodes, *positioned, "as"), nullptr);
+    EXPECT_NE(find_child(nodes, *positioned, "pos"), nullptr);
+
+    EXPECT_TRUE(ends_in_a_greedy_phrase(nodes, *execute));
 }
 
 TEST(CommandTreeTest, RejectsAVeryLongArgumentName) {

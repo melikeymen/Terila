@@ -196,6 +196,20 @@ namespace terila::commands {
             }
         }
 
+        // The chain is read here as one greedy argument, but the client builds the line from
+        // the packet tree before it sends it and will not offer a command as a single
+        // argument. So every branch is spelled out down to a phrase that takes whatever
+        // continues the chain, which is also the only place the client needs to type.
+        Node& wire_tail(Node& node) {
+            Node& rest = node.wire_argument("command", Parser::greedy());
+            rest.executable = true;
+            return rest;
+        }
+
+        Node& wire_targets(Node& node) {
+            return wire_tail(node.wire_argument("targets", Parser::players()));
+        }
+
         Result run_execute(Exec& exec) {
             const auto* text = exec.args.get<std::string>("arguments");
             if (text == nullptr) {
@@ -209,6 +223,23 @@ namespace terila::commands {
     void install_execute(Registry& registry) {
         Node& execute = registry.root().literal("execute");
         execute.argument("arguments", Parser::greedy()).executes(run_execute);
+
+        wire_tail(execute.wire_literal("run"));
+        wire_targets(execute.wire_literal("as"));
+        wire_targets(execute.wire_literal("at"));
+
+        Node& in = execute.wire_literal("in");
+        wire_tail(in.wire_argument("dimension", Parser::resource_location()));
+
+        Node& positioned = execute.wire_literal("positioned");
+        wire_targets(positioned.wire_literal("as"));
+        wire_tail(positioned.wire_argument("pos", Parser::position()));
+
+        Node& rotated = execute.wire_literal("rotated");
+        wire_targets(rotated.wire_literal("as"));
+        wire_tail(rotated.wire_argument("rotation", Parser::rotation()));
+
+        wire_tail(execute.wire_literal("align").wire_argument("axes", Parser::text()));
     }
 
 } // namespace terila::commands

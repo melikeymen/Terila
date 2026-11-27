@@ -494,6 +494,25 @@ TEST(CommandDispatchTest, HelpWithACommandShowsItsForms) {
     EXPECT_NE(harness.replies.front().find("/give <item>"), std::string::npos);
 }
 
+TEST(CommandDispatchTest, HelpExecuteShowsTheModifiersItWasGivenToTheClient) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "help execute", scope).ok);
+    ASSERT_FALSE(harness.replies.empty());
+
+    std::string printed;
+    for (const auto& reply : harness.replies) {
+        printed += reply;
+        printed += '\n';
+    }
+    EXPECT_NE(printed.find("/execute run"), std::string::npos);
+    EXPECT_NE(printed.find("/execute as <targets>"), std::string::npos);
+    EXPECT_NE(printed.find("/execute align <axes>"), std::string::npos);
+    EXPECT_EQ(printed.find("/execute <arguments>"), std::string::npos);
+}
+
 TEST(CommandDispatchTest, HelpRefusesAnUnknownCommand) {
     Harness harness;
     auto origin = harness.origin();

@@ -36,6 +36,11 @@ namespace terila::commands {
         std::vector<std::unique_ptr<Node>> children;
         Executor run;
 
+        // Children that exist only in the packet. A command can parse one greedy argument
+        // here and still tell the client which words it starts with, so what a player sees
+        // while typing is not a single placeholder.
+        std::vector<std::unique_ptr<Node>> wire_children;
+
         Node* find_literal(std::string_view word) const {
             for (const auto& child : children) {
                 if (!child->is_argument && child->name == word) {
@@ -65,6 +70,22 @@ namespace terila::commands {
             child->need = need;
             children.push_back(std::move(child));
             return *children.back();
+        }
+
+        Node& wire_literal(std::string name) {
+            auto child = std::make_unique<Node>();
+            child->name = std::move(name);
+            wire_children.push_back(std::move(child));
+            return *wire_children.back();
+        }
+
+        Node& wire_argument(std::string name, Parser parser) {
+            auto child = std::make_unique<Node>();
+            child->name = std::move(name);
+            child->is_argument = true;
+            child->parser = std::move(parser);
+            wire_children.push_back(std::move(child));
+            return *wire_children.back();
         }
 
         Node& executes(Executor executor) {

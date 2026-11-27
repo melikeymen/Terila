@@ -84,7 +84,11 @@ namespace terila::commands {
             if (node.executable) {
                 out.push_back(path);
             }
-            for (const auto& child : node.children) {
+            // What the player was told to type is what /help should spell out, so the
+            // packet's own shape wins when a command has one.
+            const auto& children = node.wire_children.empty() ? node.children
+                                                              : node.wire_children;
+            for (const auto& child : children) {
                 if (out.size() >= limit) {
                     return;
                 }
@@ -287,7 +291,10 @@ namespace terila::commands {
                 }
             }
 
-            for (const auto& child : node.children) {
+            // A node may describe itself to the client in more detail than it parses.
+            const auto& children = node.wire_children.empty() ? node.children
+                                                              : node.wire_children;
+            for (const auto& child : children) {
                 const auto child_index = emit(*child, false);
                 if (child_index >= 0) {
                     built.children.push_back(child_index);

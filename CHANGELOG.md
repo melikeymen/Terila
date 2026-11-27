@@ -7,6 +7,9 @@ All notable changes to Terila, newest first. Format follows
 
 ### Added
 
+- A contributor license agreement for pull requests: `.github/workflows/cla.yml` asks the
+  authors to sign `CLA.md`, records the signature in `signatures/version1/cla.json` and
+  reports the result as a pull request status
 - `/setblock ... destroy` and `/fill ... destroy` break the block they replace through
   the same drop path a player's pick uses, so the item lands on the ground instead of
   vanishing
@@ -35,6 +38,9 @@ All notable changes to Terila, newest first. Format follows
 
 ### Fixed
 
+- `/execute` is no longer offered to the client as one `arguments` placeholder: its
+  modifiers are spelled out in the command tree, so typing it suggests `run`, `as`, `at`,
+  `in`, `positioned`, `rotated` and `align` while the server still reads the chain itself
 - The commands packet no longer throws the client out on join: a `brigadier:double`
   argument (`/damage`'s amount) now spells its bounds as doubles, so the argument
   properties keep their width and the payload ends where the client expects it
