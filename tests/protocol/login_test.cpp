@@ -1,4 +1,6 @@
 ﻿#include <gtest/gtest.h>
+#include "nbt/nbt_text.hpp"
+#include "protocol/disconnect.hpp"
 #include "protocol/login.hpp"
 #include "protocol/packet.hpp"
 #include "protocol/varint.hpp"
@@ -151,6 +153,63 @@ TEST(LoginTest, WriteLoginSuccessTooLongUsername) {
 
     std::vector<std::uint8_t> out;
     EXPECT_FALSE(write_login_success(out, long_name, uuid, session_id));
+}
+
+// The client is answered either way, so the caller needs to know which of the two kinds of
+// failure it got: a packet still arriving, or a name the server will not take.
+TEST(LoginTest, ReadLoginStartFlagsAnUnusableName) {
+    auto packet = make_login_start_packet("ThisNameIsFarTooLong");
+
+    bool rejected = false;
+    auto result = read_login_start(packet.data(), packet.size(), &rejected);
+
+    EXPECT_FALSE(result.has_value());
+    EXPECT_TRUE(rejected);
+}
+
+TEST(LoginTest, ReadLoginStartLeavesAnIncompletePacketAlone) {
+    auto packet = make_login_start_packet("Steve");
+
+    bool rejected = true;
+    auto result = read_login_start(packet.data(), packet.size() - 3, &rejected);
+
+    EXPECT_FALSE(result.has_value());
+    EXPECT_FALSE(rejected);
+}
+
+// Login carries its reason as a JSON text component, not as the binary tag form the later
+// states use; a quote in the message has to survive as an escape.
+TEST(LoginTest, LoginDisconnectCarriesAJsonComponent) {
+    packet_ids().login_disconnect = 0x00;
+
+    std::vector<std::uint8_t> out;
+    ASSERT_TRUE(write_login_disconnect(out, "Say \"hi\""));
+
+    auto packet = read_packet(out.data(), out.size());
+    ASSERT_TRUE(packet.has_value());
+    EXPECT_EQ(packet->id, 0x00);
+
+    auto json = read_string(packet->payload.data(), packet->payload.size());
+    ASSERT_TRUE(json.has_value());
+    EXPECT_EQ(json->value, "{\"text\":\"Say \\\"hi\\\"\"}");
+}
+
+TEST(LoginTest, ComponentDisconnectCarriesTheTagForm) {
+    packet_ids().play_disconnect = 0x20;
+
+    std::vector<std::uint8_t> out;
+    ASSERT_TRUE(write_component_disconnect(out, packet_ids().play_disconnect, "Bye"));
+
+    auto packet = read_packet(out.data(), out.size());
+    ASSERT_TRUE(packet.has_value());
+    EXPECT_EQ(packet->id, 0x20);
+    EXPECT_EQ(packet->payload, terila::nbt::text_component_nbt("Bye"));
+}
+
+TEST(LoginTest, ComponentDisconnectWithoutAPacketIdWritesNothing) {
+    std::vector<std::uint8_t> out;
+    EXPECT_FALSE(write_component_disconnect(out, -1, "Bye"));
+    EXPECT_TRUE(out.empty());
 }
 
 TEST(LoginTest, WriteLoginSuccessNilUuid) {

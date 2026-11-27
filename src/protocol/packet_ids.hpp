@@ -17,10 +17,12 @@ namespace terila::protocol {
 
         // Login
         std::int32_t login_start = 0x00;
+        std::int32_t login_disconnect = 0x00;
         std::int32_t login_success = 0x02;
         std::int32_t login_acknowledged = 0x03;
 
         // Configuration
+        std::int32_t config_disconnect = -1;
         std::int32_t config_update_enabled_features = 0x0D;
         std::int32_t config_select_known_packs = 0x0F;
         std::int32_t config_registry_data = 0x07;
@@ -42,6 +44,9 @@ namespace terila::protocol {
         std::int32_t play_chunk_batch_start = -1;
         std::int32_t play_chunk_batch_finished = -1;
         std::int32_t play_keep_alive = -1;
+        // The reason the client shows on its disconnect screen; without it a dropped socket
+        // only ever reads as "Connection Lost".
+        std::int32_t play_disconnect = -1;
         std::int32_t play_keep_alive_serverbound = -1;
         std::int32_t play_move_player_pos = -1;
         std::int32_t play_move_player_pos_rot = -1;

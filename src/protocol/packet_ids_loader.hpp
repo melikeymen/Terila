@@ -76,6 +76,7 @@ namespace terila::protocol {
 
         // Login
         set(ids.login_start, find("login", "serverbound", "minecraft:hello"), "login_start");
+        set(ids.login_disconnect, find("login", "clientbound", "minecraft:login_disconnect"), "login_disconnect");
         set(ids.login_success, find("login", "clientbound", "minecraft:login_finished"), "login_success");
         set(ids.login_acknowledged, find("login", "serverbound", "minecraft:login_acknowledged"), "login_acknowledged");
 
@@ -84,6 +85,7 @@ namespace terila::protocol {
         set(ids.config_select_known_packs, find("configuration", "clientbound", "minecraft:select_known_packs"), "config_select_known_packs");
         set(ids.config_registry_data, find("configuration", "clientbound", "minecraft:registry_data"), "config_registry_data");
         set(ids.config_update_tags, find("configuration", "clientbound", "minecraft:update_tags"), "config_update_tags");
+        set(ids.config_disconnect, find("configuration", "clientbound", "minecraft:disconnect"), "config_disconnect");
         set(ids.config_finish, find("configuration", "clientbound", "minecraft:finish_configuration"), "config_finish");
         set(ids.config_client_information_serverbound, find("configuration", "serverbound", "minecraft:client_information"), "config_client_information_serverbound");
         set(ids.config_select_known_packs_serverbound, find("configuration", "serverbound", "minecraft:select_known_packs"), "config_select_known_packs_serverbound");
@@ -104,6 +106,7 @@ namespace terila::protocol {
         set(ids.play_chunk_batch_start, find("play", "clientbound", "minecraft:chunk_batch_start"), "play_chunk_batch_start");
         set(ids.play_chunk_batch_finished, find("play", "clientbound", "minecraft:chunk_batch_finished"), "play_chunk_batch_finished");
         set(ids.play_keep_alive, find("play", "clientbound", "minecraft:keep_alive"), "play_keep_alive");
+        set(ids.play_disconnect, find("play", "clientbound", "minecraft:disconnect"), "play_disconnect");
         set(ids.play_keep_alive_serverbound, find("play", "serverbound", "minecraft:keep_alive"), "play_keep_alive_serverbound");
         set(ids.play_move_player_pos, find("play", "serverbound", "minecraft:move_player_pos"), "play_move_player_pos");
         set(ids.play_move_player_pos_rot, find("play", "serverbound", "minecraft:move_player_pos_rot"), "play_move_player_pos_rot");

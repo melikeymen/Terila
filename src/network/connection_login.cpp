@@ -25,9 +25,20 @@ namespace terila::network {
         const auto& ids = terila::protocol::packet_ids();
 
         if (id == ids.login_start) {
-            auto result = terila::protocol::read_login_start(read_accum_.data(), read_accum_.size());
+            bool rejected = false;
+            auto result = terila::protocol::read_login_start(read_accum_.data(),
+                read_accum_.size(), &rejected);
 
             if (!result.has_value()) {
+                if (rejected) {
+                    // A complete hello with a name the protocol refuses is answered, not
+                    // parked: a socket that says nothing leaves the client on its connecting
+                    // screen until it gives up on its own.
+                    LOG_WARN(Network, "login from {} rejected: unusable player name", remote_);
+                    disconnect_with(
+                        "Invalid username: 3 to 16 characters, letters, digits and underscore");
+                    return;
+                }
                 LOG_WARN(Network, "invalid login start packet");
                 return;
             }
@@ -61,7 +72,7 @@ namespace terila::network {
                 // here instead of joining with an invented UUID.
                 LOG_ERROR(Network, "no UUID available for {}, refusing the login",
                     result->username);
-                close();
+                disconnect_with("This server could not build an identity for that username");
                 return;
             }
             uuid_ = uuid;
@@ -256,6 +267,11 @@ namespace terila::network {
 
             state_ = State::Play;
             joined_ = true;
+            {
+                // The join is done, so the login deadline has nothing left to guard.
+                asio::error_code ignored;
+                login_timer_.cancel(ignored);
+            }
             start_keep_alive();
             // The client starts at full health, but the server has to say so once: the value
             // it shows is the one set_health carried, not the one it guessed.

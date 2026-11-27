@@ -26,7 +26,12 @@ All notable changes to Terila, newest first. Format follows
 - `/weather <clear|rain|thunder> [<duration>]`: a shared rain/thunder state with a tick
   duration that clears itself, synced to every client with the sky game events and to a
   joining player with the state it walked into
-- `/kick <targets> [<reason>]`: closes the target's connection with a logged reason
+- `/kick <targets> [<reason>]`: the client receives the reason in a disconnect packet and
+  the socket closes once it has been written
+- A refused login is answered instead of parked: a hello with a name the protocol will not
+  take, or a connection that never finishes logging in, gets a disconnect packet with the
+  reason and is closed, so the client is never left waiting on a server that stopped
+  talking to it
 
 ### Fixed
 

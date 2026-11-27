@@ -28,6 +28,7 @@ namespace terila::network {
         else if (hs->next_state == 2) {
             state_ = State::Login;
             LOG_DEBUG(Network, "state: Handshake → Login");
+            start_login_timeout();
         }
         else {
             LOG_WARN(Network, "invalid next_state={} in handshake", hs->next_state);

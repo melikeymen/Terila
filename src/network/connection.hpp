@@ -74,7 +74,8 @@ namespace terila::network {
             std::shared_ptr<terila::entity::Difficulty> world_difficulty,
             std::shared_ptr<int> default_gamemode, bool hardcore,
             std::shared_ptr<terila::world::WorldClock> clock, int sea_level)
-            : socket_(std::move(socket)), keep_alive_timer_(socket_.get_executor()), data_(data),
+            : socket_(std::move(socket)), keep_alive_timer_(socket_.get_executor()),
+              login_timer_(socket_.get_executor()), data_(data),
               mobs_(mobs), world_(world), falling_(falling), fluids_(fluids), item_block_state_(item_block_state),
               hub_(std::move(hub)), stores_(stores), store_(stores[0]), drops_(drops),
               block_state_item_(block_state_item), item_entity_type_(item_entity_type),
@@ -155,7 +156,8 @@ namespace terila::network {
 
         // /clear: empties matching stacks and reports how many items left the inventory.        // An item of 0 matches every stack; a max_count of 0 means no limit.
         std::int32_t clear_inventory(std::int32_t item_id, int max_count);
-        // /kick: the socket closes with a logged reason.
+        // /kick: the client receives the reason in a disconnect packet, then the socket
+        // closes.
         void kick(std::string_view reason);
 
         // True while a burst of chunks (a login or a dimension change) is still being sent.
@@ -248,6 +250,12 @@ namespace terila::network {
         void do_read();
         void handle_read(const asio::error_code& error, std::size_t bytes_transferred);
         void handle_packet(std::int32_t id, const std::vector<std::uint8_t>& payload);
+        // Puts the reason into a packet in the shape of the current state and hangs up once it
+        // has been written; a plain close only ever reaches the client as "Connection Lost".
+        void disconnect_with(std::string_view reason);
+        // Vanilla gives a client 600 ticks to get through the login; a peer that never speaks
+        // would otherwise keep its socket, its registry data and its entity id forever.
+        void start_login_timeout();
         void close();
         void do_write();
         void start_keep_alive();
@@ -446,6 +454,11 @@ namespace terila::network {
         bool writing_ = false;
         bool closed_ = false;
         asio::steady_timer keep_alive_timer_;
+        asio::steady_timer login_timer_;
+        // Set while the goodbye packet is on its way: reads stop and the write that empties
+        // the queue is the one that closes the socket.
+        bool closing_ = false;
+        bool hang_up_after_write_ = false;
         std::int64_t next_keep_alive_id_ = 1;
         std::int32_t next_teleport_id_ = 1;
         std::int64_t pending_keep_alive_id_ = 0;

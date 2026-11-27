@@ -1,5 +1,6 @@
 #include "network/connection.hpp"
 
+#include "protocol/disconnect.hpp"
 #include "protocol/handshake.hpp"
 #include "protocol/login.hpp"
 #include "protocol/packet.hpp"
@@ -77,7 +78,7 @@ namespace terila::network {
         // One packet at a time, erased before the next is read: the handshake, login and
         // configuration handlers parse the buffer from its start instead of from a framed
         // payload, so a window offset cannot be handed to them.
-        while (true) {
+        while (!closed_ && !closing_) {
             auto packet = terila::protocol::read_packet(read_accum_.data(), read_accum_.size());
             if (!packet.has_value()) {
                 return;
@@ -103,6 +104,11 @@ namespace terila::network {
     }
 
     void Connection::handle_read(const asio::error_code& error, std::size_t bytes_transferred) {
+        // The goodbye is already queued: whatever the peer still sends is not acted on.
+        if (closing_) {
+            return;
+        }
+
         if (error == asio::error::eof) {
             LOG_DEBUG(Network, "client disconnected (eof)");
             close();
@@ -158,7 +164,68 @@ namespace terila::network {
 
     void Connection::kick(std::string_view reason) {
         LOG_INFO(Network, "{}[/{}] kicked: {}", username_, remote_, reason);
-        close();
+        disconnect_with(reason);
+    }
+
+    void Connection::disconnect_with(std::string_view reason) {
+        if (closed_ || closing_) {
+            return;
+        }
+
+        const auto& ids = terila::protocol::packet_ids();
+        std::vector<std::uint8_t> out;
+        bool queued = false;
+        switch (state_) {
+        case State::Login:
+            queued = terila::protocol::write_login_disconnect(out, reason);
+            break;
+        case State::Configuration:
+            queued = terila::protocol::write_component_disconnect(out, ids.config_disconnect, reason);
+            break;
+        case State::Play:
+            queued = terila::protocol::write_component_disconnect(out, ids.play_disconnect, reason);
+            break;
+        case State::Handshake:
+        case State::Status:
+            // Neither state gives the client a packet to show a reason in.
+            break;
+        }
+
+        LOG_INFO(Network, "{}[/{}] disconnected: {}",
+            username_.empty() ? "unknown" : username_, remote_, reason);
+
+        if (!queued) {
+            close();
+            return;
+        }
+
+        // The packet has to leave before the socket does, so close() runs from the write
+        // that empties the queue instead of here.
+        closing_ = true;
+        asio::error_code ignored;
+        keep_alive_timer_.cancel(ignored);
+        login_timer_.cancel(ignored);
+        hang_up_after_write_ = true;
+        send(out);
+        if (!writing_) {
+            hang_up_after_write_ = false;
+            close();
+        }
+    }
+
+    void Connection::start_login_timeout() {
+        auto self = shared_from_this();
+        login_timer_.expires_after(std::chrono::seconds(30));
+        login_timer_.async_wait([self](const asio::error_code& error) {
+            if (error || self->closed_ || self->closing_) {
+                return;
+            }
+            if (self->state_ == State::Play) {
+                return;
+            }
+            LOG_WARN(Network, "login from {} did not finish in time, closing it", self->remote_);
+            self->disconnect_with("Took too long to log in");
+        });
     }
 
     void Connection::close() {
@@ -191,6 +258,7 @@ namespace terila::network {
 
         asio::error_code ignored;
         keep_alive_timer_.cancel(ignored);
+        login_timer_.cancel(ignored);
         socket_.close(ignored);
     }
 
@@ -224,6 +292,12 @@ namespace terila::network {
     void Connection::do_write() {
         if (write_queue_.empty()) {
             writing_ = false;
+            // The disconnect packet was the last thing queued, so this is where the socket
+            // finally goes.
+            if (hang_up_after_write_) {
+                hang_up_after_write_ = false;
+                close();
+            }
             return;
         }
         writing_ = true;

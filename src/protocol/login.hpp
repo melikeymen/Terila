@@ -43,7 +43,15 @@ namespace terila::protocol {
 		return true;
 	}
 
-	inline std::optional<LoginStartResult> read_login_start(const std::uint8_t* data, std::size_t length) {
+	// A complete packet that carries a name the server will not take is a refusal, not a
+	// packet still in flight: the caller has to answer it instead of waiting for more bytes,
+	// and `rejected` is how it tells the two apart.
+	inline std::optional<LoginStartResult> read_login_start(const std::uint8_t* data, std::size_t length,
+		bool* rejected = nullptr) {
+		if (rejected != nullptr) {
+			*rejected = false;
+		}
+
 		auto result = read_packet(data, length);
 		if (!result.has_value()) {
 			LOG_TRACE(Protocol, "read_login_start: incomplete packet ({} bytes)", length);
@@ -52,6 +60,9 @@ namespace terila::protocol {
 
 		if (result->id != packet_ids().login_start) {
 			LOG_WARN(Protocol, "read_login_start: unexpected packet id=0x{:02X} (expected 0x{:02X})", result->id, packet_ids().login_start);
+			if (rejected != nullptr) {
+				*rejected = true;
+			}
 			return std::nullopt;
 		}
 
@@ -60,12 +71,18 @@ namespace terila::protocol {
 		if (!username_result.has_value()) {
 			LOG_WARN(Protocol, "read_login_start: failed to read username (payload={} bytes)",
 				result->payload.size());
+			if (rejected != nullptr) {
+				*rejected = true;
+			}
 			return std::nullopt;
 		}
 
 		if (!is_valid_username(username_result->value)) {
 			LOG_WARN(Protocol, "read_login_start: invalid username length={} (expected 3-16, a-z/A-Z/0-9/_)",
 				username_result->value.size());
+			if (rejected != nullptr) {
+				*rejected = true;
+			}
 			return std::nullopt;
 		}
 
