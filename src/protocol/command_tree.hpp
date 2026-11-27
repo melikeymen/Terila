@@ -84,4 +84,17 @@ namespace terila::protocol {
         return properties;
     }
 
+    // brigadier:double properties: the same flag byte, but every bound is a full double.
+    // Writing them as integers shifts every following byte by four, which the client
+    // reports as a decode failure of the whole commands packet.
+    inline std::vector<std::uint8_t> double_properties(double min, bool has_max, double max) {
+        std::vector<std::uint8_t> properties;
+        properties.push_back(static_cast<std::uint8_t>(has_max ? 0x03 : 0x01));
+        terila::protocol::write_double(properties, min);
+        if (has_max) {
+            terila::protocol::write_double(properties, max);
+        }
+        return properties;
+    }
+
 } // namespace terila::protocol

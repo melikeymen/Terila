@@ -251,11 +251,16 @@ namespace terila::commands {
                 }
                 switch (node.parser.kind) {
                 case ParserKind::Integer:
-                case ParserKind::Real:
                     built.properties = protocol::integer_properties(
                         static_cast<std::int32_t>(node.parser.min),
                         node.parser.has_max,
                         static_cast<std::int32_t>(node.parser.max));
+                    break;
+                case ParserKind::Real:
+                    // brigadier:double spells its bounds as doubles, not as the integers
+                    // the parser compares against.
+                    built.properties = protocol::double_properties(node.parser.real_min,
+                        node.parser.has_max, node.parser.real_max);
                     break;
                 case ParserKind::Text:
                 case ParserKind::GreedyText:

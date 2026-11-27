@@ -15,8 +15,10 @@ namespace {
         terila::data::RegistryData data;
         data.command_argument_types = {
             { "brigadier:bool", 0 },
+            { "brigadier:double", 2 },
             { "brigadier:integer", 3 },
             { "brigadier:string", 5 },
+            { "minecraft:block_state", 12 },
             { "minecraft:entity", 6 },
             { "minecraft:item_stack", 14 },
             { "minecraft:vec3", 15 },
@@ -44,6 +46,93 @@ namespace {
             }
         }
         return nullptr;
+    }
+
+    // Reads a payload the way ClientboundCommandsPacket.readNode does. The walk only
+    // succeeds when every byte is consumed, so one property written with the wrong width
+    // shows up here instead of on a client's screen.
+    struct WireReader {
+        const std::vector<std::uint8_t>& bytes;
+        std::size_t at = 0;
+        bool failed = false;
+
+        std::uint8_t byte() {
+            if (at >= bytes.size()) {
+                failed = true;
+                return 0;
+            }
+            return bytes[at++];
+        }
+
+        std::int32_t varint() {
+            std::int32_t value = 0;
+            for (int shift = 0; shift < 35; shift += 7) {
+                const auto current = byte();
+                value |= static_cast<std::int32_t>(current & 0x7F) << shift;
+                if ((current & 0x80) == 0) {
+                    return value;
+                }
+            }
+            failed = true;
+            return 0;
+        }
+
+        void skip(std::int32_t count) {
+            if (count < 0 || at + static_cast<std::size_t>(count) > bytes.size()) {
+                failed = true;
+                return;
+            }
+            at += static_cast<std::size_t>(count);
+        }
+    };
+
+    // brigadier:integer 3, brigadier:long 4, brigadier:double 2, brigadier:float 1,
+    // brigadier:string 5, minecraft:entity 6; every other parser of the tree has no
+    // property bytes.
+    bool walk_tree(const std::vector<std::uint8_t>& bytes) {
+        WireReader reader{ bytes };
+        const auto count = reader.varint();
+        for (std::int32_t i = 0; i < count && !reader.failed; ++i) {
+            const auto flags = reader.byte();
+            const auto children = reader.varint();
+            for (std::int32_t child = 0; child < children; ++child) {
+                (void)reader.varint();
+            }
+            if ((flags & 0x08) != 0) {
+                (void)reader.varint();
+            }
+
+            const int type = flags & 0x03;
+            if (type == 2) {
+                reader.skip(reader.varint());   // the argument name
+                const auto parser = reader.varint();
+                if (parser == 3 || parser == 4) {
+                    const auto bounds = reader.byte();
+                    reader.skip((bounds & 0x01) != 0 ? 4 : 0);
+                    reader.skip((bounds & 0x02) != 0 ? 4 : 0);
+                }
+                else if (parser == 2 || parser == 1) {
+                    const auto bounds = reader.byte();
+                    reader.skip((bounds & 0x01) != 0 ? 8 : 0);
+                    reader.skip((bounds & 0x02) != 0 ? 8 : 0);
+                }
+                else if (parser == 5) {
+                    (void)reader.varint();      // the reading mode
+                }
+                else if (parser == 6) {
+                    (void)reader.byte();        // single / players only
+                }
+                if ((flags & 0x10) != 0) {
+                    reader.skip(reader.varint());   // the suggestion identifier
+                }
+            }
+            else if (type == 1) {
+                reader.skip(reader.varint());       // the literal name
+            }
+        }
+
+        (void)reader.varint();   // the root index
+        return !reader.failed && reader.at == bytes.size();
     }
 
 } // namespace
@@ -153,6 +242,31 @@ TEST(CommandTreeTest, IntegerPropertiesCarryTheMinimum) {
     EXPECT_EQ(properties[2], 0x00);
     EXPECT_EQ(properties[3], 0x00);
     EXPECT_EQ(properties[4], 0x01);
+}
+
+TEST(CommandTreeTest, DoublePropertiesCarryEightByteBounds) {
+    const auto properties = protocol::double_properties(0.0, true, 16.0);
+    ASSERT_EQ(properties.size(), 17u);
+    EXPECT_EQ(properties[0], 0x03);   // minimum and maximum
+
+    const auto min = protocol::read_double(properties.data(), properties.size(), 1);
+    const auto max = protocol::read_double(properties.data(), properties.size(), 9);
+    ASSERT_TRUE(min.has_value());
+    ASSERT_TRUE(max.has_value());
+    EXPECT_DOUBLE_EQ(*min, 0.0);
+    EXPECT_DOUBLE_EQ(*max, 16.0);
+}
+
+TEST(CommandTreeTest, TheWholeTreeDecodesWithoutALeftoverByte) {
+    const auto data = command_data();
+    const terila::item::ComponentIds components;
+    const auto registry = make_registry(data, components);
+    const auto nodes = registry.wire_tree();
+    ASSERT_FALSE(nodes.empty());
+
+    const auto bytes = protocol::write_command_tree(nodes, 0);
+    ASSERT_FALSE(bytes.empty());
+    EXPECT_TRUE(walk_tree(bytes));
 }
 
 TEST(CommandTreeTest, RejectsAVeryLongArgumentName) {

@@ -38,6 +38,10 @@ namespace terila::commands {
         std::string wire = "brigadier:string";
         std::int64_t min = 0;
         std::int64_t max = 0;
+        // A real argument carries its bounds as doubles on the wire; the integers above
+        // stay whole so the parser keeps one comparison path.
+        double real_min = 0.0;
+        double real_max = 0.0;
         bool has_min = false;
         bool has_max = false;
         bool single = false;
@@ -71,6 +75,8 @@ namespace terila::commands {
             parser.has_min = true;
             parser.max = static_cast<std::int64_t>(max);
             parser.has_max = has_max;
+            parser.real_min = min;
+            parser.real_max = max;
             return parser;
         }
 

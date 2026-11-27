@@ -35,6 +35,9 @@ All notable changes to Terila, newest first. Format follows
 
 ### Fixed
 
+- The commands packet no longer throws the client out on join: a `brigadier:double`
+  argument (`/damage`'s amount) now spells its bounds as doubles, so the argument
+  properties keep their width and the payload ends where the client expects it
 - The server reads `ServerboundPlayerAbilities` instead of ignoring it, so a creative or
   spectator player whose client toggles flight is not answered with a stale state
 - An abilities packet is sent only when that belief actually changes. It also overwrites
