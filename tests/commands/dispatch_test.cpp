@@ -32,6 +32,8 @@ namespace {
         int weather_kind = 0;
         std::int64_t weather_ticks = 0;
         bool stop_requested = false;
+        bool save_requested = false;
+        bool save_ok = true;
         bool world_spawn_set = false;
         double world_spawn_x = 0.0;
         double world_spawn_y = 0.0;
@@ -148,6 +150,11 @@ namespace {
         std::int32_t clear_items(std::int32_t, std::int32_t item_id, int max_count) override {
             clears.emplace_back(item_id, max_count);
             return 2;
+        }
+
+        bool save_all() override {
+            save_requested = true;
+            return save_ok;
         }
 
         bool stop_server() override {
@@ -790,6 +797,37 @@ TEST(CommandDispatchTest, WeatherWithoutADurationLastsFiveToFifteenMinutes) {
     EXPECT_EQ(harness.game.weather_kind, 2);
     EXPECT_GE(harness.game.weather_ticks, 300 * 20);
     EXPECT_LE(harness.game.weather_ticks, 900 * 20);
+}
+
+TEST(CommandDispatchTest, SaveAllWritesTheWorld) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "save-all", scope).ok);
+    EXPECT_TRUE(harness.game.save_requested);
+    ASSERT_FALSE(harness.replies.empty());
+    EXPECT_NE(harness.replies.front().find("Saved the game"), std::string::npos);
+}
+
+TEST(CommandDispatchTest, SaveAllAcceptsTheFlushSpelling) {
+    Harness harness;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_TRUE(harness.registry.run(origin, "save-all flush", scope).ok);
+    EXPECT_TRUE(harness.game.save_requested);
+}
+
+TEST(CommandDispatchTest, SaveAllReportsAWorldThatCouldNotBeWritten) {
+    Harness harness;
+    harness.game.save_ok = false;
+    auto origin = harness.origin();
+    commands::RunScope scope;
+
+    EXPECT_FALSE(harness.registry.run(origin, "save-all", scope).ok);
+    ASSERT_FALSE(harness.replies.empty());
+    EXPECT_NE(harness.replies.front().find("could not be saved"), std::string::npos);
 }
 
 TEST(CommandDispatchTest, KickClosesTheTargetWithItsReason) {

@@ -361,6 +361,12 @@ namespace terila::network {
                     }
                     return 0;
                 });
+                hub_->set_saver(entity_id_, [weak_self]() {
+                    if (const auto connection = weak_self.lock()) {
+                        return connection->save_world();
+                    }
+                    return false;
+                });
                 hub_->set_spawn_setter(entity_id_, [weak_self](double x, double y,
                     double z, float yaw, float pitch) {
                     if (const auto connection = weak_self.lock()) {

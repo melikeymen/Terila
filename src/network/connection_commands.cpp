@@ -222,6 +222,14 @@ namespace terila::network {
             return connection_.hub_->clear_items(entity, item_id, max_count);
         }
 
+        bool save_all() override {
+            const bool saved = connection_.hub_ != nullptr ? connection_.hub_->save_all()
+                                                           : connection_.save_world();
+            // The stores are shared by every connection in this process, so their metadata
+            // is flushed once, after the members wrote their columns.
+            return connection_.flush_stores() && saved;
+        }
+
         bool stop_server() override {
             return connection_.hub_ != nullptr && connection_.hub_->request_stop();
         }

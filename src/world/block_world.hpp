@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace terila::world {
@@ -145,6 +146,24 @@ namespace terila::world {
             const auto& table = cells(kind);
             const auto it = table.find(chunk_key(cx, cz));
             return it == table.end() ? 0 : it->second.size();
+        }
+
+        // Every column this dimension's overlay holds an edit for. A save walks it, because
+        // the save queue gives up its oldest entries when exploration outruns it and a
+        // dropped column still has its blocks here in memory.
+        std::vector<std::pair<std::int32_t, std::int32_t>> modified_columns(
+            DimensionKind kind = DimensionKind::Overworld) const {
+            std::vector<std::pair<std::int32_t, std::int32_t>> out;
+            const auto& table = cells(kind);
+            out.reserve(table.size());
+            for (const auto& [key, entries] : table) {
+                if (entries.empty()) {
+                    continue;
+                }
+                out.emplace_back(static_cast<std::int32_t>(key >> 32),
+                    static_cast<std::int32_t>(key & 0xFFFFFFFFu));
+            }
+            return out;
         }
 
         void apply(Chunk& chunk, std::int32_t air_state,

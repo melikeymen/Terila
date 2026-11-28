@@ -68,6 +68,10 @@ namespace terila::network {
         // /clear works on the inventory the owning connection holds, the way /give does.
         using Clearer = std::function<std::int32_t(std::int32_t item_id, int max_count)>;
 
+        // /save-all asks each connection to write the columns it holds, for the same reason:
+        // the chunk stores and the overlay live behind it.
+        using Saver = std::function<bool()>;
+
         // /stop asks the process to end, and whoever owns the io loop decides what that
         // means for sockets and saves.
         void set_stop_requester(std::function<bool()> requester) {
@@ -255,6 +259,30 @@ namespace terila::network {
             return it != players_.end() && it->second.clear
                 ? it->second.clear(item_id, max_count)
                 : 0;
+        }
+
+        void set_saver(std::int32_t entity_id, Saver saver)
+        {
+            const auto it = players_.find(entity_id);
+            if (it != players_.end()) {
+                it->second.save = std::move(saver);
+            }
+        }
+
+        // Every joined player writes its own columns. A member without a saver cannot happen
+        // for one still in the map, so its absence is not a failed save.
+        bool save_all() const
+        {
+            bool any = false;
+            for (const auto id : member_list()) {
+                const auto it = players_.find(id);
+                if (it == players_.end() || !it->second.save) {
+                    continue;
+                }
+                any = true;
+                it->second.save();
+            }
+            return any;
         }
 
         void set_kicker(std::int32_t entity_id, Kicker kicker)
@@ -500,6 +528,7 @@ namespace terila::network {
             Damager hurt;
             Killer slay;
             Clearer clear;
+            Saver save;
             Kicker kick;
             SpawnSetter set_spawn;
             Teleporter teleport;

@@ -7,6 +7,10 @@ All notable changes to Terila, newest first. Format follows
 
 ### Added
 
+- `/save-all [flush]`: every joined player's connection writes the columns its dimension
+  edited in memory and then everything still queued, and the region metadata of each
+  dimension is flushed once afterwards. The write is complete when the command returns, so
+  the `flush` spelling asks for nothing extra; it stays because that is what a player types
 - A contributor license agreement for pull requests: `.github/workflows/cla.yml` asks the
   authors to sign `CLA.md`, records the signature in `signatures/version1/cla.json` and
   reports the result as a pull request status

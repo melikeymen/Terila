@@ -151,6 +151,12 @@ namespace terila::network {
         // fluid simulations hear about it, and every running client is told.
         bool set_block_state(const terila::world::BlockPos& pos, std::int32_t state);
         void persist_chunk_edits(std::int32_t cx, std::int32_t cz);
+        // /save-all: writes every column this player's dimension edited in memory, then the
+        // ones still waiting in the queue.
+        bool save_world();
+        // The region metadata is one file per store, so a save flushes each of them once
+        // after every connection wrote its own columns.
+        bool flush_stores();
 
         bool joined() const { return joined_; }
 

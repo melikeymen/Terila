@@ -380,6 +380,34 @@ namespace terila::network {
         queue_persist(cx, cz, terila::world::encode::encode(chunk), true);
     }
 
+    // Writes what this player's dimension holds: first the columns the overlay edited, then
+    // whatever is still queued. A column whose entry the queue dropped is still edited in
+    // memory, so the overlay walk is what makes the save complete.
+    bool Connection::save_world() {
+        if (store_ == nullptr) {
+            return false;
+        }
+        for (const auto& [cx, cz] : world_.modified_columns(dimension_)) {
+            persist_chunk_edits(cx, cz);
+        }
+        flush_pending_saves(pending_saves_.size());
+        return true;
+    }
+
+    bool Connection::flush_stores() {
+        bool ok = true;
+        for (auto* store : stores_) {
+            if (store == nullptr) {
+                continue;
+            }
+            if (auto flushed = store->flush(); !flushed) {
+                LOG_WARN(Chunk, "flushing region metadata failed: {}", flushed.error().detail);
+                ok = false;
+            }
+        }
+        return ok;
+    }
+
     void Connection::queue_chunk_area(std::int32_t center_cx, std::int32_t center_cz) {
         // Rings go outwards, so the ground under the player arrives first.
         for (int ring = 0; ring <= view_distance_; ++ring) {

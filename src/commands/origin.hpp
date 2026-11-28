@@ -149,6 +149,9 @@ namespace terila::commands {
             (void)max_count;
             return 0;
         }
+        // Writes what every joined player holds and flushes the region metadata. False when
+        // nobody could write.
+        virtual bool save_all() { return false; }
         // Ends the process after the current tick. False when the build has nobody who
         // can end it.
         virtual bool stop_server() { return false; }

@@ -18,6 +18,16 @@ namespace terila::commands {
             return Result{ 1, true };
         }
 
+        Result run_save_all(Exec& exec) {
+            Origin& origin = exec.origin;
+            if (origin.game == nullptr || !origin.game->save_all()) {
+                origin.say("The world could not be saved");
+                return Result{ 0, false };
+            }
+            origin.say("Saved the game");
+            return Result{ 1, true };
+        }
+
         Result run_kick(Exec& exec) {
             Origin& origin = exec.origin;
             if (origin.game == nullptr) {
@@ -61,6 +71,13 @@ namespace terila::commands {
 
     void install_server_control(Registry& registry) {
         registry.root().literal("stop", Capability::Owner).executes(run_stop);
+
+        // The write is already done when the call returns, so the `flush` spelling of the
+        // command asks for nothing the plain one leaves out; the literal stays because that
+        // is what a player types.
+        Node& save_all = registry.root().literal("save-all", Capability::Owner);
+        save_all.executes(run_save_all);
+        save_all.literal("flush").executes(run_save_all);
 
         Node& kick = registry.root().literal("kick", Capability::Operator);
         Node& targets = kick.argument("targets", Parser::players());
