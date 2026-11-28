@@ -5,6 +5,7 @@
 #include "world/flat_generator.hpp"
 #include "world/terrain_generator.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
@@ -12,7 +13,9 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
+#include <vector>
 
 namespace terila::world {
 
@@ -124,6 +127,11 @@ namespace terila::world {
         // A fixed (8, 8) lands on whatever the seed produces there, which on a mountainous
         // seed is a peak. Walk a coarse grid instead and take the dry land closest to sea
         // level, preferring columns nearer the centre on ties.
+        //
+        // Every column of that grid is decided by the density field alone, so the columns are
+        // independent and the walk runs on as many threads as the machine offers. The order
+        // the scan would have met a column is carried along and used as the last tie-breaker,
+        // which keeps the answer the same one a single thread would have produced.
         SpawnPoint spawn_point(std::int32_t center_x = 8, std::int32_t center_z = 8,
             int radius = 256, int step = 16) const {
             SpawnPoint best;
@@ -135,43 +143,102 @@ namespace terila::world {
             }
 
             const int sea = sea_level();
-            bool best_land = best.surface_y >= sea;
-            int best_level = std::abs(best.surface_y - sea);
-            int best_travel = 0;
+            // Dry land first: a column under water puts the player in the sea. After that,
+            // how close the surface is to sea level decides, the walk from the centre only
+            // breaks ties - otherwise every far candidate loses to a peak next door - and
+            // the scan order decides a tie the two others leave.
+            struct Candidate {
+                bool empty = true;
+                bool land = false;
+                int level = 0;
+                int travel = 0;
+                int order = 0;
+                SpawnPoint point;
+            };
+            const auto beats = [](const Candidate& left, const Candidate& right) {
+                if (right.empty) {
+                    return !left.empty;
+                }
+                if (left.empty) {
+                    return false;
+                }
+                if (left.land != right.land) {
+                    return left.land;
+                }
+                if (left.level != right.level) {
+                    return left.level < right.level;
+                }
+                if (left.travel != right.travel) {
+                    return left.travel < right.travel;
+                }
+                return left.order < right.order;
+            };
 
-            for (int dx = -radius; dx <= radius; dx += step) {
-                for (int dz = -radius; dz <= radius; dz += step) {
-                    const int y = surface_height(center_x + dx, center_z + dz);
-                    // Dry land first: a column under water puts the player in the sea.
-                    // After that, how close the surface is to sea level decides, and the
-                    // walk from the centre only breaks ties - otherwise every candidate
-                    // far from the centre loses to a peak right next to it.
-                    const bool land = y >= sea;
-                    const int level = std::abs(y - sea);
-                    const int travel = std::abs(dx) + std::abs(dz);
+            Candidate chosen;
+            chosen.empty = false;
+            chosen.land = best.surface_y >= sea;
+            chosen.level = std::abs(best.surface_y - sea);
+            chosen.order = -1;
+            chosen.point = best;
 
-                    bool better = false;
-                    if (land != best_land) {
-                        better = land;
-                    }
-                    else if (level != best_level) {
-                        better = level < best_level;
-                    }
-                    else {
-                        better = travel < best_travel;
-                    }
+            const int steps = 2 * radius / step + 1;
+            const unsigned hardware = std::thread::hardware_concurrency();
+            const unsigned workers = std::max(1u, std::min<unsigned>(
+                hardware > 1 ? hardware - 1 : 1u, static_cast<unsigned>(steps)));
 
-                    if (better) {
-                        best_land = land;
-                        best_level = level;
-                        best_travel = travel;
-                        best.x = center_x + dx;
-                        best.z = center_z + dz;
-                        best.surface_y = y;
+            // One worker takes every `workers`-th row of the grid, so a row of expensive
+            // mountains cannot land on a single thread.
+            const auto scan = [&](unsigned worker) {
+                Candidate local;
+                for (int xi = static_cast<int>(worker); xi < steps; xi += static_cast<int>(workers)) {
+                    const int dx = -radius + xi * step;
+                    for (int zi = 0; zi < steps; ++zi) {
+                        const int dz = -radius + zi * step;
+                        const int y = surface_height(center_x + dx, center_z + dz);
+                        Candidate candidate;
+                        candidate.empty = false;
+                        candidate.land = y >= sea;
+                        candidate.level = std::abs(y - sea);
+                        candidate.travel = std::abs(dx) + std::abs(dz);
+                        candidate.order = xi * steps + zi;
+                        candidate.point.x = center_x + dx;
+                        candidate.point.z = center_z + dz;
+                        candidate.point.surface_y = y;
+                        if (beats(candidate, local)) {
+                            local = candidate;
+                        }
                     }
                 }
+                return local;
+            };
+
+            if (workers <= 1) {
+                const Candidate single = scan(0);
+                if (beats(single, chosen)) {
+                    chosen = single;
+                }
+                return chosen.point;
             }
-            return best;
+
+            std::vector<Candidate> results(workers);
+            std::vector<std::thread> pool;
+            pool.reserve(workers - 1);
+            for (unsigned worker = 1; worker < workers; ++worker) {
+                pool.emplace_back([&results, &scan, worker] {
+                    results[worker] = scan(worker);
+                });
+            }
+            results[0] = scan(0);
+            for (auto& thread : pool) {
+                thread.join();
+            }
+
+            for (const Candidate& candidate : results) {
+                if (beats(candidate, chosen)) {
+                    chosen = candidate;
+                }
+            }
+            return chosen.point;
         }
 
         // The y of the block that keeps the sky out of a column: above it the column sees

@@ -210,9 +210,13 @@ namespace terila::world::worldgen {
         const LightRules& light_rules() const { return light_rules_; }
         const Settings& settings() const { return settings_; }
 
+        // The height of a column is the density walk itself. The climate, the biome and the
+        // surface rules the column also carries are what the block fill paints with, and none
+        // of them can change this answer: a blended column already overwrites the height with
+        // its own walk. So a caller that asks for heights only - the spawn search asks nine
+        // hundred columns - pays one walk instead of five.
         int surface_height(std::int32_t x, std::int32_t z) const {
-            ColumnCache& cache = thread_cache();
-            return cached_column(x, z, cache).height;
+            return density_top(x, z);
         }
 
         int biome_at(std::int32_t x, std::int32_t z) const {
